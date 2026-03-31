@@ -31,8 +31,93 @@ jobs:
     - name: 🧪 Test
       run: cargo test --verbose
 
-  integration:
-    if: ${{ false }} # Disabled: requires Docker with mina images (self-hosted runners)
+  integration-native:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+
+    - name: 🛠️ Build minimina
+      run: cargo build --verbose
+
+    - name: 🔧 Create stub mina binary
+      run: |
+          mkdir -p /tmp/mina-bin
+          cat > /tmp/mina-bin/mina << 'STUB'
+          #!/bin/bash
+          # Stub mina binary for integration testing
+          case "$1" in
+            advanced)
+              echo "Keypair generated"
+              echo "Public key: B62qtest$(head -c 50 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 50)"
+              ;;
+            libp2p)
+              echo "libp2p keypair:CAESQtest$(head -c 50 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 80),12D3KooW$(head -c 30 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 40)"
+              # Create the key file if -privkey-path is given
+              for arg in "$@"; do
+                if [[ "$prev" == "-privkey-path" ]]; then
+                  mkdir -p "$(dirname "$arg")"
+                  echo '{"box_primitive":"xsalsa20poly1305","pw_primitive":"argon2i","nonce":"test","pwsalt":"test","pwdiff":[134217728,6],"ciphertext":"test"}' > "$arg"
+                  echo '{"box_primitive":"xsalsa20poly1305"}' > "$arg.pub"
+                  echo "12D3KooWtest" > "$arg.peerid"
+                fi
+                prev="$arg"
+              done
+              ;;
+            daemon)
+              echo "Mina daemon starting (stub)..."
+              # Keep running until killed
+              exec sleep infinity
+              ;;
+            internal)
+              echo "Mina internal command (stub)..."
+              exec sleep infinity
+              ;;
+            *)
+              echo "Stub mina: unknown command $1"
+              exit 0
+              ;;
+          esac
+          STUB
+          chmod +x /tmp/mina-bin/mina
+
+    - name: 🧪 Test native mode - topology network
+      shell: bash
+      run: |
+          export PATH="$(pwd)/target/debug:$PATH"
+
+          # Create network from topology (uses pre-existing keys, no mina keygen needed)
+          minimina --mode native --bin-path /tmp/mina-bin \
+            network create -n test-native \
+            -t tests/data/small_network/topology.json \
+            -g tests/data/small_network/genesis_ledger.json
+
+          # Verify network was created
+          minimina network info -n test-native
+          minimina network list
+
+          # Start the network (spawns stub mina processes)
+          minimina --mode native --bin-path /tmp/mina-bin \
+            network start -n test-native
+
+          # Check logs exist
+          minimina --mode native --bin-path /tmp/mina-bin \
+            node logs -i seed-0 -n test-native -r
+
+          # Stop the network
+          minimina --mode native --bin-path /tmp/mina-bin \
+            network stop -n test-native
+
+          # Delete the network
+          minimina --mode native --bin-path /tmp/mina-bin \
+            network delete -n test-native
+
+          echo "Native mode integration test passed!"
+
+  integration-docker:
+    if: ${{ false }} # Disabled: requires self-hosted runners with mina Docker images
     runs-on: ubuntu-latest
 
     steps:
