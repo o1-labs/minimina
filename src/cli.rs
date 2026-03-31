@@ -1,6 +1,13 @@
 //! # `minimina` Command-Line Interface (CLI)
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, ValueEnum, PartialEq)]
+pub enum ExecutionMode {
+    Docker,
+    Native,
+}
 
 #[derive(Parser)]
 #[command(
@@ -12,6 +19,14 @@ use clap::{Args, Parser, Subcommand};
 pub struct Cli {
     #[clap(subcommand)]
     pub command: Command,
+
+    /// Execution mode: docker (default) or native
+    #[clap(long, default_value = "docker", global = true)]
+    pub mode: ExecutionMode,
+
+    /// Path to mina binaries directory (native mode only)
+    #[clap(long, default_value = "/usr/local/bin", global = true)]
+    pub bin_path: PathBuf,
 }
 
 #[derive(Subcommand)]
