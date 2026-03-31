@@ -253,14 +253,11 @@ impl ServiceConfig {
             format!("/{CONFIG_DIRECTORY}"),
         ];
 
-        if let (Some(host), Some(port)) = (&self.snark_coordinator_host, self.snark_coordinator_port) {
+        if let (Some(host), Some(port)) =
+            (&self.snark_coordinator_host, self.snark_coordinator_port)
+        {
             base_command.push("-daemon-address".to_string());
-            base_command.push(format!(
-                "{}-{}:{}",
-                host,
-                network_name,
-                port
-            ));
+            base_command.push(format!("{}-{}:{}", host, network_name, port));
         } else {
             warn!(
                 "No snark coordinator port or host provided for snark worker node '{}'. This is not recommended.",

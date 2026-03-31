@@ -811,7 +811,11 @@ fn generate_default_topology(
     network_id: &str,
 ) -> Vec<service::ServiceConfig> {
     let seed_name = "mina-seed-1";
-    let libp2p_peerid = libp2p_keys[seed_name].key_string.split(',').next_back().unwrap();
+    let libp2p_peerid = libp2p_keys[seed_name]
+        .key_string
+        .split(',')
+        .next_back()
+        .unwrap();
     let peer = ServiceConfig::generate_peer(
         seed_name,
         network_id,
