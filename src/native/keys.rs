@@ -45,10 +45,10 @@ impl NativeKeysManager {
             .lines()
             .find_map(|line| line.strip_prefix("Public key: "))
             .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Could not parse public key from output: {}", stdout),
-                )
+                io::Error::other(format!(
+                    "Could not parse public key from output: {}",
+                    stdout
+                ))
             })?
             .trim()
             .to_string();
@@ -103,10 +103,10 @@ impl NativeKeysManager {
             .lines()
             .find_map(|line| line.strip_prefix("libp2p keypair:"))
             .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Could not parse libp2p keypair from output: {}", stdout),
-                )
+                io::Error::other(format!(
+                    "Could not parse libp2p keypair from output: {}",
+                    stdout
+                ))
             })?
             .trim()
             .to_string();
