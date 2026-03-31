@@ -2,12 +2,10 @@ name: Build
 
 on:
   push:
-    branches: 
-      - main
     tags:
       - '*'
   pull_request:
-    branches: 
+    branches:
       - main
 
 env:
@@ -29,7 +27,7 @@ jobs:
 
     - name: 🛠️ Build
       run: |
-          if [[ ${{ github.ref }} == "refs/heads/main" ]] || [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             cargo build --verbose --release
           else
             cargo build --verbose
@@ -55,9 +53,8 @@ jobs:
         echo "ref=$REF_NAME" >> $GITHUB_OUTPUT
 
     - name: 🤌 Get MiniMina from source
-      uses: MinaFoundation/install-minimina-action@v1
+      uses: o1-labs/install-minimina-action@v1
       with:
-        # Current commit or branch to use for MiniMina
         commit_or_branch: ${{ steps.extract_ref.outputs.ref }}
 
     - name: 🧪 Test default network
@@ -86,8 +83,8 @@ jobs:
           minimina network delete -n large
 
   deploy:
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
-    needs: 
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
       - build
       - integration
     runs-on: minafoundation-default-runners
@@ -95,21 +92,14 @@ jobs:
 
     steps:
     - name: 📥 Checkout
-      uses: actions/checkout@v3
-      
-    - name: 📦 Package
-      run: | 
-          cargo install cargo-deb
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-              cargo deb
-          else
-              # add -main suffix to version
-              version=$(grep "^version" Cargo.toml | head -1 | awk -F '"' '{print $2}')
-              modified_version="${version}-main"
-              cargo deb --deb-version="$modified_version"
-          fi
+      uses: actions/checkout@v4
 
-    - name: 📤 Upload 
+    - name: 📦 Package
+      run: |
+          cargo install cargo-deb
+          cargo deb
+
+    - name: 📤 Upload
       env:
         ACCESS_KEY_ID: ${{ secrets.ACCESS_KEY_ID }}
         SECRET_ACCESS_KEY: ${{ secrets.SECRET_ACCESS_KEY }}
@@ -118,14 +108,8 @@ jobs:
           sudo apt-get install -y rubygems locales
           sudo gem install deb-s3
 
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-              RELEASE=stable
-          else
-              RELEASE=unstable
-          fi
-
           sudo locale-gen en_US.UTF-8
           export LANG=en_US.UTF-8
           export LANGUAGE=en_US.UTF-8
           export LC_ALL=en_US.UTF-8
-          deb-s3 upload --s3-region=us-west-2 --bucket packages.o1test.net --lock --preserve-versions --access-key-id=$ACCESS_KEY_ID --secret-access-key=$SECRET_ACCESS_KEY --cache-control=max-age=120 --component $RELEASE --codename "ubuntu" ./target/debian/*.deb
+          deb-s3 upload --s3-region=us-west-2 --bucket packages.o1test.net --lock --preserve-versions --access-key-id=$ACCESS_KEY_ID --secret-access-key=$SECRET_ACCESS_KEY --cache-control=max-age=120 --component stable --codename "ubuntu" ./target/debian/*.deb
