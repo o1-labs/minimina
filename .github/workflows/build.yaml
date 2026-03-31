@@ -1,4 +1,4 @@
-name: Build
+name: CI
 
 on:
   push:
@@ -26,12 +26,7 @@ jobs:
       run: cargo clippy --all-targets --all-features -- -D warnings
 
     - name: 🛠️ Build
-      run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            cargo build --verbose --release
-          else
-            cargo build --verbose
-          fi
+      run: cargo build --verbose
 
     - name: 🧪 Test
       run: cargo test --verbose
@@ -40,6 +35,9 @@ jobs:
     runs-on: minafoundation-default-runners
 
     steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+
     - name: 🪄 Extract reference name
       id: extract_ref
       shell: bash
@@ -112,4 +110,4 @@ jobs:
           export LANG=en_US.UTF-8
           export LANGUAGE=en_US.UTF-8
           export LC_ALL=en_US.UTF-8
-          deb-s3 upload --s3-region=us-west-2 --bucket packages.o1test.net --lock --preserve-versions --access-key-id=$ACCESS_KEY_ID --secret-access-key=$SECRET_ACCESS_KEY --cache-control=max-age=120 --component stable --codename "ubuntu" ./target/debian/*.deb
+          deb-s3 upload --s3-region=us-west-2 --bucket packages.o1test.net --lock --preserve-versions --access-key-id=$ACCESS_KEY_ID --secret-access-key=$SECRET_ACCESS_KEY --cache-control=max-age=120 --component stable --codename noble ./target/debian/*.deb
