@@ -32,6 +32,7 @@ jobs:
       run: cargo test --verbose
 
   integration:
+    if: ${{ false }} # Disabled: requires Docker with mina images (self-hosted runners)
     runs-on: ubuntu-latest
 
     steps:
