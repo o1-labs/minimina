@@ -5,7 +5,7 @@
 //! It primarily focuses on operations related to networks and nodes:
 //!
 //! - `network`: Structures and implementations for serializing output related to various network operations like
-//!  creation, start, listing, stopping, and more.
+//!   creation, start, listing, stopping, and more.
 //! - `node`: Structures and implementations for serializing output concerning node information and various node-related actions.
 //! - `Error`: Represents an error structure to be serialized into JSON format with an accompanying error message.
 //!
