@@ -54,6 +54,7 @@ jobs:
       uses: o1-labs/install-minimina-action@v1
       with:
         commit_or_branch: ${{ steps.extract_ref.outputs.ref }}
+        repository: ${{ github.repository }}
 
     - name: 🧪 Test default network
       shell: bash
