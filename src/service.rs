@@ -253,13 +253,13 @@ impl ServiceConfig {
             format!("/{CONFIG_DIRECTORY}"),
         ];
 
-        if self.snark_coordinator_port.is_some() && self.snark_coordinator_host.is_some() {
+        if let (Some(host), Some(port)) = (&self.snark_coordinator_host, self.snark_coordinator_port) {
             base_command.push("-daemon-address".to_string());
             base_command.push(format!(
                 "{}-{}:{}",
-                self.snark_coordinator_host.as_ref().unwrap(),
+                host,
                 network_name,
-                self.snark_coordinator_port.unwrap()
+                port
             ));
         } else {
             warn!(

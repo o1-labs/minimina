@@ -47,8 +47,7 @@ impl KeysManager {
         let uid_gid = match get_current_user_uid_gid() {
             Some(uid_gid) => uid_gid,
             None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Err(std::io::Error::other(
                     "Unable to retrieve UID and GID of current user",
                 ))
             }

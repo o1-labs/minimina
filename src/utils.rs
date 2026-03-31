@@ -6,7 +6,7 @@
 use log::{debug, error};
 use std::{
     fs::File,
-    io::{self, ErrorKind},
+    io,
     path::PathBuf,
     process::{Command, Output},
 };
@@ -35,7 +35,7 @@ pub fn run_command(cmd: &str, args: &[&str]) -> io::Result<Output> {
         }
         Err(e) => {
             error!("Failed to run command: {e}");
-            Err(io::Error::new(ErrorKind::Other, e))
+            Err(io::Error::other(e))
         }
     }
 }
@@ -60,7 +60,7 @@ pub fn fetch_schema(url: &str, network_path: PathBuf) -> Result<PathBuf, reqwest
     let parsed_url = Url::parse(url).expect("Invalid URL");
     let filename = parsed_url
         .path_segments()
-        .and_then(|segments| segments.last())
+        .and_then(|mut segments| segments.next_back())
         .unwrap_or("schema.sql");
     let mut file_path = network_path;
 
