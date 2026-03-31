@@ -116,12 +116,7 @@ impl NativeManager {
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_file_err))
             .spawn()
-            .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Failed to start {}: {}", service_name, e),
-                )
-            })?;
+            .map_err(|e| io::Error::other(format!("Failed to start {}: {}", service_name, e)))?;
 
         let record = ProcessRecord {
             pid: child.id(),

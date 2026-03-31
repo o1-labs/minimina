@@ -33,14 +33,11 @@ impl NativeKeysManager {
             .output()?;
 
         if !output.status.success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "Failed to generate bp keypair for {}: {}",
-                    service_name,
-                    String::from_utf8_lossy(&output.stderr)
-                ),
-            ));
+            return Err(io::Error::other(format!(
+                "Failed to generate bp keypair for {}: {}",
+                service_name,
+                String::from_utf8_lossy(&output.stderr)
+            )));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -94,14 +91,11 @@ impl NativeKeysManager {
             .output()?;
 
         if !output.status.success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "Failed to generate libp2p keypair for {}: {}",
-                    service_name,
-                    String::from_utf8_lossy(&output.stderr)
-                ),
-            ));
+            return Err(io::Error::other(format!(
+                "Failed to generate libp2p keypair for {}: {}",
+                service_name,
+                String::from_utf8_lossy(&output.stderr)
+            )));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);

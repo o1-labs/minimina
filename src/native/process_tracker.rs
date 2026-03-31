@@ -39,8 +39,7 @@ impl ProcessTracker {
     }
 
     pub fn save(&self, records: &HashMap<String, ProcessRecord>) -> io::Result<()> {
-        let data = serde_json::to_string_pretty(records)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let data = serde_json::to_string_pretty(records).map_err(io::Error::other)?;
         std::fs::write(&self.path, data)
     }
 
