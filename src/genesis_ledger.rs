@@ -184,7 +184,7 @@ mod tests {
         let mut bp_keys_map: HashMap<String, NodeKey> = HashMap::new();
         let service_key = NodeKey {
             key_string: "test_key".to_string(),
-            key_path_docker: "test_key_path".to_string(),
+            key_path: "test_key_path".to_string(),
         };
         bp_keys_map.insert("node0".to_string(), service_key);
         let result = default::LedgerGenerator::generate(network_path, &bp_keys_map);
@@ -208,7 +208,7 @@ mod tests {
         let mut bp_keys_map: HashMap<String, NodeKey> = HashMap::new();
         let service_key = NodeKey {
             key_string: "test_key".to_string(),
-            key_path_docker: "test_key_path".to_string(),
+            key_path: "test_key_path".to_string(),
         };
         bp_keys_map.insert("node0".to_string(), service_key);
         let result = default::LedgerGenerator::generate(network_path, &bp_keys_map);
@@ -350,7 +350,7 @@ mod tests {
         let mut bp_keys_map: HashMap<String, NodeKey> = HashMap::new();
         let service_key = NodeKey {
             key_string: "test_key".to_string(),
-            key_path_docker: "test_key_path".to_string(),
+            key_path: "test_key_path".to_string(),
         };
         bp_keys_map.insert("node0".to_string(), service_key);
         let result = default::LedgerGenerator::generate(network_path, &bp_keys_map);

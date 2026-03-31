@@ -4,6 +4,7 @@ mod docker;
 mod genesis_ledger;
 mod graphql;
 mod keys;
+mod native;
 mod output;
 mod service;
 mod topology;
@@ -12,14 +13,15 @@ mod utils;
 use crate::{
     genesis_ledger::*,
     keys::{KeysManager, NodeKey},
+    native::{keys::NativeKeysManager, manager::NativeManager},
     output::{network, node},
     service::{ServiceConfig, ServiceType},
     utils::fetch_schema,
 };
 use clap::Parser;
 use cli::{
-    Cli, Command, CommandWithNetworkId, CommandWithNodeId, DefaultLogLevel, NetworkCommand,
-    NodeCommand,
+    Cli, Command, CommandWithNetworkId, CommandWithNodeId, DefaultLogLevel, ExecutionMode,
+    NetworkCommand, NodeCommand,
 };
 use directory_manager::DirectoryManager;
 use docker::manager::{ContainerState, DockerManager};
@@ -54,7 +56,10 @@ fn main() -> Result<()> {
     Builder::from_env(Env::default().default_filter_or(cli.command.log_level())).init();
 
     let directory_manager = DirectoryManager::new();
-    check_compose_version()?;
+    let mode = cli.mode;
+    let bin_path = cli.bin_path;
+
+    check_execution_environment(&mode, &bin_path)?;
 
     match cli.command {
         Command::Network(net_cmd) => match net_cmd {
@@ -77,6 +82,8 @@ fn main() -> Result<()> {
                     &network_id,
                     &mut bp_keys_opt,
                     &mut libp2p_keys_opt,
+                    &mode,
+                    &bin_path,
                 )?;
 
                 // build services from topology file
@@ -93,14 +100,26 @@ fn main() -> Result<()> {
                     return exit_with(format!("Failed to copy keys with error: {e}"));
                 }
 
-                // generate docker compose
-                if let Err(e) = docker.compose_generate_file(&services) {
-                    return exit_with(format!(
-                        "Failed to generate docker-compose.yaml with error: {e}"
-                    ));
+                match mode {
+                    ExecutionMode::Docker => {
+                        // generate docker compose
+                        if let Err(e) = docker.compose_generate_file(&services) {
+                            return exit_with(format!(
+                                "Failed to generate docker-compose.yaml with error: {e}"
+                            ));
+                        }
+                        create_network(&docker, &directory_manager, &network_id, &services)
+                    }
+                    ExecutionMode::Native => {
+                        let native = NativeManager::new(&network_path, &bin_path);
+                        if let Err(e) = native.generate_config(&services) {
+                            return exit_with(format!(
+                                "Failed to generate native config with error: {e}"
+                            ));
+                        }
+                        create_network_native(&native, &directory_manager, &network_id, &services)
+                    }
                 }
-
-                create_network(&docker, &directory_manager, &network_id, &services)
             }
 
             NetworkCommand::Info(cmd) => {
@@ -161,22 +180,36 @@ fn main() -> Result<()> {
                 let network_id = cmd.network_id;
                 check_network_exists(&network_id)?;
 
-                let docker = DockerManager::new(&directory_manager.network_path(&network_id));
-                match docker.compose_down(None, true, true) {
-                    Ok(_) => match directory_manager.delete_network_directory(&network_id) {
-                        Ok(_) => {
-                            println!("{}", network::Delete { network_id });
-                            Ok(())
+                let network_path = directory_manager.network_path(&network_id);
+
+                // Stop processes/containers first
+                match mode {
+                    ExecutionMode::Docker => {
+                        let docker = DockerManager::new(&network_path);
+                        if let Err(e) = docker.compose_down(None, true, true) {
+                            let error_message =
+                                format!("Failed to delete network '{network_id}': {e}");
+                            return exit_with(error_message);
                         }
-                        Err(e) => {
-                            let error_message = format!(
-                                "Failed to delete network directory for '{network_id}': {e}"
-                            );
-                            exit_with(error_message)
+                    }
+                    ExecutionMode::Native => {
+                        let native = NativeManager::new(&network_path, &bin_path);
+                        if let Err(e) = native.destroy() {
+                            let error_message =
+                                format!("Failed to delete network '{network_id}': {e}");
+                            return exit_with(error_message);
                         }
-                    },
+                    }
+                }
+
+                match directory_manager.delete_network_directory(&network_id) {
+                    Ok(_) => {
+                        println!("{}", network::Delete { network_id });
+                        Ok(())
+                    }
                     Err(e) => {
-                        let error_message = format!("Failed to delete network '{network_id}': {e}");
+                        let error_message =
+                            format!("Failed to delete network directory for '{network_id}': {e}");
                         exit_with(error_message)
                     }
                 }
@@ -204,27 +237,46 @@ fn main() -> Result<()> {
             NetworkCommand::Start(cmd) => {
                 let network_id = cmd.network_id().to_string();
                 let network_path = directory_manager.network_path(&network_id);
-                let docker = DockerManager::new(&network_path);
 
                 check_network_exists(&network_id)?;
                 if let Err(e) = directory_manager.check_genesis_timestamp(&network_id) {
                     warn!("{e} In case network is unstable consider updating by running 'network create' again.");
                 }
 
-                match docker.compose_start_all() {
-                    Ok(output) => {
-                        if cmd.verbose {
-                            println!("Status: {}", output.status);
-                            println!("Stdout: {}", String::from_utf8_lossy(&output.stdout));
-                            println!("Stderr: {}", String::from_utf8_lossy(&output.stderr));
+                match mode {
+                    ExecutionMode::Docker => {
+                        let docker = DockerManager::new(&network_path);
+                        match docker.compose_start_all() {
+                            Ok(output) => {
+                                if cmd.verbose {
+                                    println!("Status: {}", output.status);
+                                    println!("Stdout: {}", String::from_utf8_lossy(&output.stdout));
+                                    println!("Stderr: {}", String::from_utf8_lossy(&output.stderr));
+                                }
+                                println!("{}", network::Start { network_id });
+                                Ok(())
+                            }
+                            Err(e) => {
+                                let error_message =
+                                    format!("Failed to start network '{network_id}': {e}");
+                                exit_with(error_message)
+                            }
                         }
-
-                        println!("{}", network::Start { network_id });
-                        Ok(())
                     }
-                    Err(e) => {
-                        let error_message = format!("Failed to start network '{network_id}': {e}");
-                        exit_with(error_message)
+                    ExecutionMode::Native => {
+                        let native = NativeManager::new(&network_path, &bin_path);
+                        let services = directory_manager.get_services_info(&network_id)?;
+                        match native.start_all(&services, &network_id) {
+                            Ok(_) => {
+                                println!("{}", network::Start { network_id });
+                                Ok(())
+                            }
+                            Err(e) => {
+                                let error_message =
+                                    format!("Failed to start network '{network_id}': {e}");
+                                exit_with(error_message)
+                            }
+                        }
                     }
                 }
             }
@@ -234,16 +286,35 @@ fn main() -> Result<()> {
                 check_network_exists(&network_id)?;
 
                 let network_path = directory_manager.network_path(&network_id);
-                let docker = DockerManager::new(&network_path);
 
-                match docker.compose_stop_all() {
-                    Ok(_) => {
-                        println!("{}", network::Stop { network_id });
-                        Ok(())
+                match mode {
+                    ExecutionMode::Docker => {
+                        let docker = DockerManager::new(&network_path);
+                        match docker.compose_stop_all() {
+                            Ok(_) => {
+                                println!("{}", network::Stop { network_id });
+                                Ok(())
+                            }
+                            Err(e) => {
+                                let error_message =
+                                    format!("Failed to stop network '{network_id}': {e}");
+                                exit_with(error_message)
+                            }
+                        }
                     }
-                    Err(e) => {
-                        let error_message = format!("Failed to stop network '{network_id}': {e}");
-                        exit_with(error_message)
+                    ExecutionMode::Native => {
+                        let native = NativeManager::new(&network_path, &bin_path);
+                        match native.stop_all() {
+                            Ok(_) => {
+                                println!("{}", network::Stop { network_id });
+                                Ok(())
+                            }
+                            Err(e) => {
+                                let error_message =
+                                    format!("Failed to stop network '{network_id}': {e}");
+                                exit_with(error_message)
+                            }
+                        }
                     }
                 }
             }
@@ -373,41 +444,67 @@ fn main() -> Result<()> {
                 let node_id = cmd.node_id();
                 let network_id = cmd.network_id();
                 let network_path = directory_manager.network_path(network_id);
-                let docker = DockerManager::new(&network_path);
-                let services = directory_manager
-                    .get_services_info(network_id)
-                    .expect("Failed to get services info");
-                match docker.run_docker_logs(node_id, network_id) {
-                    Ok(output) => {
-                        if output.status.success() {
-                            info!("Successfully got logs for '{node_id}' on '{network_id}'");
-                            // uptime service logs to stderr
-                            let out = if is_node_uptime_service(services, node_id) {
-                                &output.stderr
-                            } else {
-                                &output.stdout
-                            };
-                            if cmd.raw_output {
-                                println!("{}", String::from_utf8_lossy(out));
-                            } else {
-                                println!(
-                                    "{}",
-                                    output::node::Logs {
-                                        logs: String::from_utf8_lossy(out).into(),
-                                        network_id: network_id.into(),
-                                        node_id: node_id.into(),
+
+                match mode {
+                    ExecutionMode::Docker => {
+                        let docker = DockerManager::new(&network_path);
+                        let services = directory_manager
+                            .get_services_info(network_id)
+                            .expect("Failed to get services info");
+                        match docker.run_docker_logs(node_id, network_id) {
+                            Ok(output) => {
+                                if output.status.success() {
+                                    info!(
+                                        "Successfully got logs for '{node_id}' on '{network_id}'"
+                                    );
+                                    let out = if is_node_uptime_service(services, node_id) {
+                                        &output.stderr
+                                    } else {
+                                        &output.stdout
+                                    };
+                                    if cmd.raw_output {
+                                        println!("{}", String::from_utf8_lossy(out));
+                                    } else {
+                                        println!(
+                                            "{}",
+                                            output::node::Logs {
+                                                logs: String::from_utf8_lossy(out).into(),
+                                                network_id: network_id.into(),
+                                                node_id: node_id.into(),
+                                            }
+                                        )
                                     }
-                                )
+                                } else {
+                                    let error_message = format!(
+                                        "Failed to get logs for '{node_id}' on '{network_id}': {}",
+                                        String::from_utf8_lossy(&output.stderr)
+                                    );
+                                    return exit_with(error_message);
+                                }
                             }
-                        } else {
-                            let error_message = format!(
-                                "Failed to get logs for '{node_id}' on '{network_id}': {}",
-                                String::from_utf8_lossy(&output.stderr)
-                            );
-                            return exit_with(error_message);
+                            Err(e) => error!("Error while running 'docker logs {node_id}'{e}"),
                         }
                     }
-                    Err(e) => error!("Error while running 'docker logs {node_id}'{e}"),
+                    ExecutionMode::Native => {
+                        let native = NativeManager::new(&network_path, &bin_path);
+                        match native.service_logs(node_id) {
+                            Ok(logs) => {
+                                if cmd.raw_output {
+                                    println!("{logs}");
+                                } else {
+                                    println!(
+                                        "{}",
+                                        output::node::Logs {
+                                            logs,
+                                            network_id: network_id.into(),
+                                            node_id: node_id.into(),
+                                        }
+                                    )
+                                }
+                            }
+                            Err(e) => error!("Error getting logs for '{node_id}': {e}"),
+                        }
+                    }
                 }
 
                 Ok(())
@@ -761,6 +858,8 @@ fn generate_default_genesis_ledger(
     libp2p_keys_opt: &mut Option<HashMap<String, NodeKey>>,
     network_path: &Path,
     docker_image: &str,
+    mode: &ExecutionMode,
+    bin_path: &Path,
 ) -> Result<()> {
     info!("Genesis ledger not provided. Generating default genesis ledger.");
 
@@ -779,18 +878,35 @@ fn generate_default_genesis_ledger(
     ]
     .concat();
 
-    // generate key-pairs for default services
-    let keys_manager = KeysManager::new(network_path, docker_image);
-    *bp_keys_opt = Some(
-        keys_manager
-            .generate_bp_key_pairs(&all_services)
-            .expect("Failed to generate key pairs for mina services."),
-    );
-    *libp2p_keys_opt = Some(
-        keys_manager
-            .generate_libp2p_key_pairs(&all_services)
-            .expect("Failed to generate libp2p key pairs for mina services."),
-    );
+    // generate key-pairs for default services based on mode
+    match mode {
+        ExecutionMode::Docker => {
+            let keys_manager = KeysManager::new(network_path, docker_image);
+            *bp_keys_opt = Some(
+                keys_manager
+                    .generate_bp_key_pairs(&all_services)
+                    .expect("Failed to generate key pairs for mina services."),
+            );
+            *libp2p_keys_opt = Some(
+                keys_manager
+                    .generate_libp2p_key_pairs(&all_services)
+                    .expect("Failed to generate libp2p key pairs for mina services."),
+            );
+        }
+        ExecutionMode::Native => {
+            let keys_manager = NativeKeysManager::new(network_path, bin_path);
+            *bp_keys_opt = Some(
+                keys_manager
+                    .generate_bp_key_pairs(&all_services)
+                    .expect("Failed to generate key pairs for mina services."),
+            );
+            *libp2p_keys_opt = Some(
+                keys_manager
+                    .generate_libp2p_key_pairs(&all_services)
+                    .expect("Failed to generate libp2p key pairs for mina services."),
+            );
+        }
+    }
 
     // generate default genesis ledger
     if let Err(e) = default::LedgerGenerator::generate(network_path, bp_keys_opt.as_ref().unwrap())
@@ -839,7 +955,7 @@ fn generate_default_topology(
         docker_image: Some(docker_image.into()),
         client_port: Some(4000),
         public_key: Some(bp_keys[bp_1_name].key_string.clone()),
-        public_key_path: Some(bp_keys[bp_1_name].key_path_docker.clone()),
+        public_key_path: Some(bp_keys[bp_1_name].key_path.clone()),
         libp2p_keypair: Some(libp2p_keys[bp_1_name].key_string.clone()),
         peers: Some(vec![peer.clone()]),
         ..Default::default()
@@ -852,7 +968,7 @@ fn generate_default_topology(
         docker_image: Some(docker_image.into()),
         client_port: Some(4005),
         public_key: Some(bp_keys[bp_2_name].key_string.clone()),
-        public_key_path: Some(bp_keys[bp_2_name].key_path_docker.clone()),
+        public_key_path: Some(bp_keys[bp_2_name].key_path.clone()),
         libp2p_keypair: Some(libp2p_keys[bp_2_name].key_string.clone()),
         peers: Some(vec![peer.clone()]),
         ..Default::default()
@@ -890,7 +1006,7 @@ fn generate_default_topology(
         docker_image: Some(docker_image.into()),
         client_port: Some(5005),
         public_key: Some(bp_keys[archive_node_name].key_string.clone()),
-        public_key_path: Some(bp_keys[archive_node_name].key_path_docker.clone()),
+        public_key_path: Some(bp_keys[archive_node_name].key_path.clone()),
         libp2p_keypair: Some(libp2p_keys[archive_node_name].key_string.clone()),
         peers: Some(vec![peer]),
         archive_docker_image: Some(docker_image_archive.into()),
@@ -959,6 +1075,8 @@ fn handle_genesis_ledger(
     network_id: &str,
     bp_keys_opt: &mut Option<HashMap<String, NodeKey>>,
     libp2p_keys_opt: &mut Option<HashMap<String, NodeKey>>,
+    mode: &ExecutionMode,
+    bin_path: &Path,
 ) -> Result<()> {
     let network_path = directory_manager.network_path(network_id);
 
@@ -984,6 +1102,8 @@ fn handle_genesis_ledger(
             libp2p_keys_opt,
             &network_path,
             DEFAULT_DAEMON_DOCKER_IMAGE,
+            mode,
+            bin_path,
         ),
     }
 }
@@ -1086,29 +1206,112 @@ fn handle_topology(
     }
 }
 
-fn check_compose_version() -> Result<()> {
-    let compose_version = DockerManager::compose_version();
-    match compose_version {
-        Some(version) => {
-            if version.as_str() < LEAST_COMPOSE_VERSION {
-                error!(
-                    "Docker compose version '{version}' is less than \
-                        the least supported version '{LEAST_COMPOSE_VERSION}'."
-                );
+fn check_execution_environment(mode: &ExecutionMode, bin_path: &Path) -> Result<()> {
+    match mode {
+        ExecutionMode::Docker => {
+            let compose_version = DockerManager::compose_version();
+            match compose_version {
+                Some(version) => {
+                    if version.as_str() < LEAST_COMPOSE_VERSION {
+                        error!(
+                            "Docker compose version '{version}' is less than \
+                                the least supported version '{LEAST_COMPOSE_VERSION}'."
+                        );
 
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            "docker compose needs to be updated",
+                        ));
+                    }
+
+                    Ok(())
+                }
+                None => {
+                    error!(
+                        "It seems that docker not installed! Please install docker and try again."
+                    );
+                    Err(Error::new(ErrorKind::NotFound, "docker is missing"))
+                }
+            }
+        }
+        ExecutionMode::Native => {
+            let mina_bin = bin_path.join("mina");
+            if !mina_bin.exists() {
+                error!(
+                    "Mina binary not found at '{}'. Please install mina or use --bin-path.",
+                    mina_bin.display()
+                );
                 return Err(Error::new(
-                    ErrorKind::InvalidInput,
-                    "docker compose needs to be updated",
+                    ErrorKind::NotFound,
+                    format!("mina binary not found at '{}'", mina_bin.display()),
                 ));
             }
-
             Ok(())
         }
-        None => {
-            error!("It seems that docker not installed! Please install docker and try again.");
-            Err(Error::new(ErrorKind::NotFound, "docker is missing"))
+    }
+}
+
+fn create_network_native(
+    native: &NativeManager,
+    directory_manager: &DirectoryManager,
+    network_id: &str,
+    services: &[ServiceConfig],
+) -> Result<()> {
+    // For native mode, create is a no-op (processes start on 'network start')
+    native.create(None)?;
+    info!("Successfully prepared native network '{network_id}'!");
+
+    // Handle archive node setup with local postgres
+    if let Some(archive_node) = ServiceConfig::get_archive_node(services) {
+        default::LedgerGenerator::generate_replayer_input(
+            &directory_manager.network_path(network_id),
+        )?;
+
+        // Create database using local psql
+        info!("Creating archive database using local postgres...");
+        let createdb_out = std::process::Command::new("createdb")
+            .args(["-U", "postgres", "archive"])
+            .output()?;
+
+        if !createdb_out.status.success() {
+            warn!(
+                "createdb may have failed (database might already exist): {}",
+                String::from_utf8_lossy(&createdb_out.stderr)
+            );
+        }
+
+        // Apply schema scripts directly via psql
+        if let Some(scripts) = &archive_node.archive_schema_files {
+            let network_path = directory_manager.network_path(network_id);
+            for script in scripts {
+                let file_path = fetch_schema(script, network_path.clone()).unwrap();
+                info!("Applying schema script: {}", file_path.display());
+                let psql_out = std::process::Command::new("psql")
+                    .args(["-U", "postgres", "-d", "archive", "-f"])
+                    .arg(&file_path)
+                    .output()?;
+
+                if !psql_out.status.success() {
+                    warn!(
+                        "psql schema application may have failed: {}",
+                        String::from_utf8_lossy(&psql_out.stderr)
+                    );
+                }
+            }
         }
     }
+
+    // generate network.json and services.json
+    if let Err(e) = directory_manager.save_network_info(network_id, services) {
+        error!("Error generating network.json: {e}")
+    }
+
+    if let Err(e) = directory_manager.save_services_info(network_id, services) {
+        error!("Error generating services.json: {e}")
+    }
+
+    println!("{}", output::generate_network_info(services, network_id));
+    Ok(())
 }
 
 fn exit_with(error_message: String) -> Result<()> {

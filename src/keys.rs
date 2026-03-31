@@ -26,7 +26,7 @@ use crate::utils::{get_current_user_uid_gid, run_command};
 #[derive(Debug)]
 pub struct NodeKey {
     pub key_string: String,
-    pub key_path_docker: String,
+    pub key_path: String,
 }
 
 pub struct KeysManager {
@@ -97,7 +97,7 @@ impl KeysManager {
 
         let keys = NodeKey {
             key_string: public_key,
-            key_path_docker: pkey_path,
+            key_path: pkey_path,
         };
         debug!("Generated keypair: {:?}", keys);
         Ok(keys)
@@ -149,7 +149,7 @@ impl KeysManager {
         let keypair = stdout_str.replace("libp2p keypair:", "").trim().to_string();
         let keys = NodeKey {
             key_string: keypair,
-            key_path_docker: pkey_path,
+            key_path: pkey_path,
         };
         debug!("Generated keypair: {:?}", keys);
         Ok(keys)

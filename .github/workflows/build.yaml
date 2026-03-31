@@ -31,8 +31,64 @@ jobs:
     - name: 🧪 Test
       run: cargo test --verbose
 
-  integration:
-    if: ${{ false }} # Disabled: requires Docker with mina images (self-hosted runners)
+  integration-native:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+
+    - name: 🛠️ Build minimina
+      run: cargo build --verbose
+
+    - name: 📦 Install mina from packages.o1test.net
+      run: |
+          echo "deb [trusted=yes] http://packages.o1test.net noble stable" | sudo tee /etc/apt/sources.list.d/mina.list
+          sudo apt-get update
+          sudo apt-get install -y mina-mainnet
+          which mina
+          mina version
+
+    - name: 🧪 Test native mode - topology network
+      shell: bash
+      run: |
+          export PATH="$(pwd)/target/debug:$PATH"
+          MINA_BIN_DIR=$(dirname $(which mina))
+
+          # Create network from topology (uses pre-existing keys)
+          minimina --mode native --bin-path "$MINA_BIN_DIR" \
+            network create -n test-native \
+            -t tests/data/small_network/topology.json \
+            -g tests/data/small_network/genesis_ledger.json
+
+          # Verify network was created
+          minimina network info -n test-native
+          minimina network list
+
+          # Start the network (spawns real mina processes)
+          minimina --mode native --bin-path "$MINA_BIN_DIR" \
+            network start -n test-native
+
+          # Give processes a moment to start
+          sleep 5
+
+          # Check logs exist
+          minimina --mode native --bin-path "$MINA_BIN_DIR" \
+            node logs -i seed-0 -n test-native -r
+
+          # Stop the network
+          minimina --mode native --bin-path "$MINA_BIN_DIR" \
+            network stop -n test-native
+
+          # Delete the network
+          minimina --mode native --bin-path "$MINA_BIN_DIR" \
+            network delete -n test-native
+
+          echo "Native mode integration test passed!"
+
+  integration-docker:
+    if: ${{ false }} # Disabled: requires self-hosted runners with mina Docker images
     runs-on: ubuntu-latest
 
     steps:
