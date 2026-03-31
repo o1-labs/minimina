@@ -42,54 +42,22 @@ jobs:
     - name: 🛠️ Build minimina
       run: cargo build --verbose
 
-    - name: 🔧 Create stub mina binary
+    - name: 📦 Install mina from packages.o1test.net
       run: |
-          mkdir -p /tmp/mina-bin
-          cat > /tmp/mina-bin/mina << 'STUB'
-          #!/bin/bash
-          # Stub mina binary for integration testing
-          case "$1" in
-            advanced)
-              echo "Keypair generated"
-              echo "Public key: B62qtest$(head -c 50 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 50)"
-              ;;
-            libp2p)
-              echo "libp2p keypair:CAESQtest$(head -c 50 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 80),12D3KooW$(head -c 30 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 40)"
-              # Create the key file if -privkey-path is given
-              for arg in "$@"; do
-                if [[ "$prev" == "-privkey-path" ]]; then
-                  mkdir -p "$(dirname "$arg")"
-                  echo '{"box_primitive":"xsalsa20poly1305","pw_primitive":"argon2i","nonce":"test","pwsalt":"test","pwdiff":[134217728,6],"ciphertext":"test"}' > "$arg"
-                  echo '{"box_primitive":"xsalsa20poly1305"}' > "$arg.pub"
-                  echo "12D3KooWtest" > "$arg.peerid"
-                fi
-                prev="$arg"
-              done
-              ;;
-            daemon)
-              echo "Mina daemon starting (stub)..."
-              # Keep running until killed
-              exec sleep infinity
-              ;;
-            internal)
-              echo "Mina internal command (stub)..."
-              exec sleep infinity
-              ;;
-            *)
-              echo "Stub mina: unknown command $1"
-              exit 0
-              ;;
-          esac
-          STUB
-          chmod +x /tmp/mina-bin/mina
+          echo "deb [trusted=yes] http://packages.o1test.net noble stable" | sudo tee /etc/apt/sources.list.d/mina.list
+          sudo apt-get update
+          sudo apt-get install -y mina-mainnet
+          which mina
+          mina version
 
     - name: 🧪 Test native mode - topology network
       shell: bash
       run: |
           export PATH="$(pwd)/target/debug:$PATH"
+          MINA_BIN_DIR=$(dirname $(which mina))
 
-          # Create network from topology (uses pre-existing keys, no mina keygen needed)
-          minimina --mode native --bin-path /tmp/mina-bin \
+          # Create network from topology (uses pre-existing keys)
+          minimina --mode native --bin-path "$MINA_BIN_DIR" \
             network create -n test-native \
             -t tests/data/small_network/topology.json \
             -g tests/data/small_network/genesis_ledger.json
@@ -98,20 +66,23 @@ jobs:
           minimina network info -n test-native
           minimina network list
 
-          # Start the network (spawns stub mina processes)
-          minimina --mode native --bin-path /tmp/mina-bin \
+          # Start the network (spawns real mina processes)
+          minimina --mode native --bin-path "$MINA_BIN_DIR" \
             network start -n test-native
 
+          # Give processes a moment to start
+          sleep 5
+
           # Check logs exist
-          minimina --mode native --bin-path /tmp/mina-bin \
+          minimina --mode native --bin-path "$MINA_BIN_DIR" \
             node logs -i seed-0 -n test-native -r
 
           # Stop the network
-          minimina --mode native --bin-path /tmp/mina-bin \
+          minimina --mode native --bin-path "$MINA_BIN_DIR" \
             network stop -n test-native
 
           # Delete the network
-          minimina --mode native --bin-path /tmp/mina-bin \
+          minimina --mode native --bin-path "$MINA_BIN_DIR" \
             network delete -n test-native
 
           echo "Native mode integration test passed!"
