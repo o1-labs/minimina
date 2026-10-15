@@ -59,7 +59,7 @@ jobs:
           cargo llvm-cov --locked --lcov --output-path lcov.info --fail-under-lines "$MIN_LINE_COVERAGE"
           cargo llvm-cov report --summary-only | tee -a "$GITHUB_STEP_SUMMARY"
       env:
-        MIN_LINE_COVERAGE: 75
+        MIN_LINE_COVERAGE: 80
 
     - name: 📤 Coverage report
       uses: actions/upload-artifact@v4
