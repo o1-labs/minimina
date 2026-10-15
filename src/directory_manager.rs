@@ -10,6 +10,7 @@
 //! - `network.json`: Contains the network topology representation in JSON format.
 //! - `peer_list_file.txt`: Contains the list of libp2p peers for the network.
 
+use crate::cli::ExecutionMode;
 use crate::genesis_ledger::GENESIS_LEDGER_JSON;
 use crate::output;
 use crate::service::ServiceConfig;
@@ -266,14 +267,18 @@ impl DirectoryManager {
         self.network_path(network_id).join("peer_list_file.txt")
     }
 
-    pub fn create_peer_list_file(&self, network_id: &str, peers: &[&ServiceConfig]) -> Result<()> {
+    pub fn create_peer_list_file(
+        &self,
+        network_id: &str,
+        peers: &[&ServiceConfig],
+        mode: ExecutionMode,
+    ) -> Result<()> {
         use std::io::Write;
 
         let peer_list_path = self.peer_list_file(network_id);
         let mut file = fs::File::create(peer_list_path)?;
 
         for peer in peers {
-            let peer_hostname = format!("{}-{}", peer.service_name, network_id);
             let external_port = peer.client_port.ok_or_else(|| {
                 invalid(format!("seed '{}' has no client_port", peer.service_name))
             })? + 2;
@@ -283,11 +288,14 @@ impl DirectoryManager {
                     peer.service_name
                 ))
             })?;
-            writeln!(
-                file,
-                "/dns4/{}/tcp/{}/p2p/{}",
-                peer_hostname, external_port, libp2p_key
-            )?;
+            let address = ServiceConfig::generate_peer(
+                &peer.service_name,
+                network_id,
+                libp2p_key,
+                external_port,
+                mode,
+            );
+            writeln!(file, "{address}")?;
         }
 
         Ok(())
