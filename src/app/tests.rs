@@ -146,7 +146,7 @@ fn create_over_existing_network_tears_it_down_first() {
     assert!(h
         .fake
         .lines()
-        .contains(&h.compose("small", "down --remove-orphans")));
+        .contains(&h.compose("small", "down --volumes --remove-orphans")));
 }
 
 #[test]
