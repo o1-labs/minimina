@@ -1,7 +1,7 @@
 use crate::service::{ServiceConfig, ServiceType};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
@@ -86,7 +86,8 @@ pub enum TopologyInfo {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Topology {
     #[serde(flatten)]
-    pub topology: HashMap<String, TopologyInfo>,
+    /// Sorted by node name, so every `create` gives a node the same ports.
+    pub topology: BTreeMap<String, TopologyInfo>,
 }
 
 impl TopologyInfo {
@@ -559,7 +560,7 @@ mod tests {
         .unwrap();
 
         let topology = Topology {
-            topology: HashMap::from([
+            topology: BTreeMap::from([
                 (bp_name, TopologyInfo::Node(bp_node)),
                 (seed_name, TopologyInfo::Node(seed_node)),
                 (snark_name, TopologyInfo::SnarkCoordinator(snark_node)),
@@ -621,5 +622,41 @@ mod tests {
         assert_eq!(num_seeds, 2);
         assert_eq!(num_scs, 1);
         assert_eq!(num_workers, 2);
+    }
+
+    #[test]
+    fn services_get_ports_in_name_order() {
+        let topology =
+            Topology::new(Path::new("tests/data/large_network/topology.json")).unwrap();
+        let first = topology.services(Path::new("/p"));
+        for _ in 0..5 {
+            let again = Topology::new(Path::new("tests/data/large_network/topology.json"))
+                .unwrap()
+                .services(Path::new("/p"));
+            let names = |v: &[ServiceConfig]| -> Vec<(String, Option<u16>)> {
+                v.iter()
+                    .map(|s| (s.service_name.clone(), s.client_port))
+                    .collect()
+            };
+            assert_eq!(names(&again), names(&first));
+        }
+        let ports: Vec<(&str, Option<u16>)> = first
+            .iter()
+            .filter(|s| s.client_port.is_some())
+            .map(|s| (s.service_name.as_str(), s.client_port))
+            .collect();
+        assert_eq!(
+            ports,
+            vec![
+                ("archive-node", Some(7075)),
+                ("empty_node-1", Some(7080)),
+                ("empty_node-2", Some(7085)),
+                ("observer", Some(7090)),
+                ("receiver", Some(7095)),
+                ("seed-0", Some(7100)),
+                ("seed-1", Some(7105)),
+                ("snark-node", Some(7110)),
+            ]
+        );
     }
 }

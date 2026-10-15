@@ -25,6 +25,7 @@ serde_norway = "0.9"
 anyhow = "1.0.103"
 
 [dev-dependencies]
+assert_cmd = "2"
 tempfile = "3"
 
 [package.metadata.deb]
