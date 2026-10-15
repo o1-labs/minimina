@@ -10,7 +10,6 @@ MiniMina is a command line tool for spinning up Mina networks locally on a user'
 ## Building
 
 ```bash
-cd src/app/minimina
 cargo build --release
 cp target/release/minimina ~/.local/bin
 ```
@@ -20,12 +19,16 @@ Assuming `~/.local/bin` is on your `$PATH`, `minimina` will be available from th
 ### Installing from Deb Package
 
 ```bash
-echo "deb [trusted=yes] http://packages.o1test.net ubuntu stable" | sudo tee /etc/apt/sources.list.d/mina.list
+# codename: bullseye, bookworm, focal, jammy or noble
+echo "deb [trusted=yes] http://packages.o1test.net $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+  | sudo tee /etc/apt/sources.list.d/minimina.list
 sudo apt-get update
 sudo apt-get install -y minimina
 ```
 
-> The `stable` repository contains the release version, while `unstable` mirrors the current state of the main branch.
+Releases are published from `v*` tags. The package has no runtime dependency besides libc (TLS is rustls), so the same binary is built once on the oldest supported glibc and published for every codename.
+
+To build the package locally: `scripts/deb-changelog.sh && cargo deb`.
 
 ## Testing
 
