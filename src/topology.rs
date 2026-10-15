@@ -24,7 +24,7 @@ pub struct ArchiveTopologyInfo {
     pub docker_image: Option<String>,
     pub archive_image: Option<String>,
     pub git_build: Option<GitBuild>,
-    pub schema_files: Vec<PathBuf>,
+    pub schema_files: Vec<String>,
     pub libp2p_pass: String,
     pub libp2p_keyfile: PathBuf,
     pub libp2p_peerid: String,
@@ -121,13 +121,7 @@ impl TopologyInfo {
                 public_key: Some(archive_info.pk.clone()),
                 private_key: Some(archive_info.sk.clone()),
                 peer_list_file: Some(peer_list_file.to_path_buf()),
-                archive_schema_files: Some(
-                    archive_info
-                        .schema_files
-                        .iter()
-                        .map(|path| path.to_str().unwrap().to_string())
-                        .collect(),
-                ),
+                archive_schema_files: Some(archive_info.schema_files.clone()),
                 archive_port: Some(archive_port),
                 archive_docker_image: archive_info.archive_image.clone(),
                 libp2p_keypair_path: Some(archive_info.libp2p_keyfile.clone()),
@@ -169,9 +163,9 @@ impl TopologyInfo {
 }
 
 impl Topology {
-    pub fn new(path: &Path) -> serde_json::Result<Self> {
-        let contents = std::fs::read_to_string(path).unwrap();
-        serde_json::from_str(&contents)
+    pub fn new(path: &Path) -> std::io::Result<Self> {
+        let contents = std::fs::read_to_string(path)?;
+        serde_json::from_str(&contents).map_err(std::io::Error::from)
     }
 
     pub fn services(&self, peer_list_file: &Path) -> Vec<ServiceConfig> {
@@ -199,8 +193,8 @@ impl Topology {
             .collect();
 
         for coordinator in snark_coordinator_services {
-            services.extend(
-                (1..=coordinator.worker_nodes.unwrap()).map(|i| ServiceConfig {
+            services.extend((1..=coordinator.worker_nodes.unwrap_or_default()).map(|i| {
+                ServiceConfig {
                     service_type: ServiceType::SnarkWorker,
                     service_name: format!("{}-worker_{}", coordinator.service_name, i),
                     docker_image: coordinator.docker_image.clone(),
@@ -208,8 +202,8 @@ impl Topology {
                     snark_worker_proof_level: coordinator.snark_worker_proof_level.clone(),
                     snark_coordinator_host: Some(coordinator.service_name.clone()),
                     ..Default::default()
-                }),
-            );
+                }
+            }));
         }
 
         services
@@ -312,7 +306,7 @@ mod tests {
                 docker_image: None,
                 git_build: Some(GitBuild::Commit(commit)),
                 service_type: ServiceType::ArchiveNode,
-                schema_files: vec![schema_file.into(), zkapp_table.into()],
+                schema_files: vec![schema_file, zkapp_table],
                 archive_image: Some("archive-image".into()),
                 libp2p_pass: "naughty blue potato".into(),
                 libp2p_keyfile: "/path/to/keyfile".into(),

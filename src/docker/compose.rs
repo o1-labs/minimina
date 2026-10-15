@@ -8,6 +8,7 @@ use log::debug;
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::io::{self, Error, ErrorKind};
 use std::path::Path;
 
 #[derive(Serialize)]
@@ -73,11 +74,17 @@ const POSTGRES_DATA: &str = "postgres-data";
 const RAYON_NUM_THREADS: u32 = 2;
 
 impl DockerCompose {
-    pub fn generate(configs: &[ServiceConfig], network_path: &Path) -> String {
-        let network_path_string = network_path
-            .to_str()
-            .expect("Failed to convert network path to str");
-        let network_name = network_path.file_name().unwrap().to_str().unwrap();
+    pub fn generate(configs: &[ServiceConfig], network_path: &Path) -> io::Result<String> {
+        let network_path_string = path_str(network_path)?;
+        let network_name = network_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                invalid(format!(
+                    "network path '{}' has no UTF-8 file name",
+                    network_path.display()
+                ))
+            })?;
 
         //insert volumes for each service
         let mut volumes = configs.iter().fold(HashMap::new(), |mut acc, config| {
@@ -119,10 +126,10 @@ impl DockerCompose {
                                 format!("{network_path_string}:/local-network"),
                                 format!("{service_name}:/{CONFIG_DIRECTORY}"),
                             ]),
-                            image: config
-                                .docker_image
-                                .clone()
-                                .expect("Failed to get mina daemon docker image"),
+                            image: match required(&config.docker_image, "docker_image", config) {
+                                Ok(image) => image,
+                                Err(e) => return Some(Err(e)),
+                            },
                             command: Some(match config.service_type {
                                 ServiceType::Seed => config.generate_seed_command(),
                                 ServiceType::BlockProducer => config
@@ -151,14 +158,14 @@ impl DockerCompose {
                             },
                             ..Default::default()
                         };
-                        Some((
+                        Some(Ok((
                             format!("{}-{network_name}", config.service_name.clone()),
                             service,
-                        ))
+                        )))
                     }
                 }
             })
-            .collect();
+            .collect::<io::Result<_>>()?;
 
         // Add ArchiveNode service bits
         if let Some(archive_config) = ServiceConfig::get_archive_node(configs) {
@@ -196,10 +203,11 @@ impl DockerCompose {
                 archive_service_name.clone(),
                 Service {
                     container_name: archive_service_name.clone(),
-                    image: archive_config
-                        .archive_docker_image
-                        .clone()
-                        .expect("Failed to get mina archive docker image"),
+                    image: required(
+                        &archive_config.archive_docker_image,
+                        "archive_docker_image",
+                        archive_config,
+                    )?,
                     command: Some(archive_command),
                     volumes: Some(vec![
                         format!("{}:/data", archive_node_name),
@@ -224,10 +232,7 @@ impl DockerCompose {
                         format!("{network_path_string}:/local-network"),
                         format!("{archive_node_name}:/{CONFIG_DIRECTORY}"),
                     ]),
-                    image: archive_config
-                        .docker_image
-                        .clone()
-                        .expect("Failed to get mina daemon docker image"),
+                    image: required(&archive_config.docker_image, "docker_image", archive_config)?,
                     command: Some(archive_command),
                     ports: match archive_config.client_port {
                         Some(port) => {
@@ -255,17 +260,21 @@ impl DockerCompose {
             );
             let mut uptime_service_env = HashMap::new();
             let app_config = Self::get_filename(
-                uptime_service_backend
-                    .uptime_service_backend_app_config
-                    .as_ref()
-                    .expect("Cannot get uptime_service_backend_app_config"),
-            );
+                required(
+                    &uptime_service_backend.uptime_service_backend_app_config,
+                    "uptime_service_backend_app_config",
+                    uptime_service_backend,
+                )?
+                .as_path(),
+            )?;
             let minasheets_config = Self::get_filename(
-                uptime_service_backend
-                    .uptime_service_backend_minasheets
-                    .as_ref()
-                    .expect("Cannot get uptime_service_backend_minasheets"),
-            );
+                required(
+                    &uptime_service_backend.uptime_service_backend_minasheets,
+                    "uptime_service_backend_minasheets",
+                    uptime_service_backend,
+                )?
+                .as_path(),
+            )?;
             uptime_service_env.insert(
                 "CONFIG_FILE".to_string(),
                 format!("/local-network/uptime_service_config/{app_config}"),
@@ -284,10 +293,11 @@ impl DockerCompose {
                         format!("{network_path_string}/uptime-storage:/uptime-storage"),
                     ]),
                     environment: Some(uptime_service_env),
-                    image: uptime_service_backend
-                        .docker_image
-                        .clone()
-                        .expect("Failed to get uptime_service docker image"),
+                    image: required(
+                        &uptime_service_backend.docker_image,
+                        "docker_image",
+                        uptime_service_backend,
+                    )?,
                     ports: Some(vec!["8080:8080".to_string()]),
                     ..Default::default()
                 },
@@ -315,10 +325,10 @@ impl DockerCompose {
             services,
         };
 
-        let yaml_output = serde_norway::to_string(&compose).unwrap();
+        let yaml_output = serde_norway::to_string(&compose).map_err(Error::other)?;
         let generated_file = Self::post_process_yaml(yaml_output);
         debug!("Generated docker-compose.yaml: {}", generated_file);
-        generated_file
+        Ok(generated_file)
     }
 
     // fix the format of the yaml output
@@ -336,13 +346,31 @@ impl DockerCompose {
         .replace("null", "")
     }
 
-    fn get_filename(path: &Path) -> String {
+    fn get_filename(path: &Path) -> io::Result<String> {
         path.file_name()
-            .expect("Failed to get filename")
-            .to_str()
-            .expect("Failed to convert filename to str")
-            .to_string()
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+            .ok_or_else(|| invalid(format!("'{}' has no UTF-8 file name", path.display())))
     }
+}
+
+fn invalid(msg: String) -> Error {
+    Error::new(ErrorKind::InvalidData, msg)
+}
+
+fn path_str(path: &Path) -> io::Result<&str> {
+    path.to_str()
+        .ok_or_else(|| invalid(format!("path '{}' is not valid UTF-8", path.display())))
+}
+
+/// Returns a clone of a topology field that the compose file needs.
+fn required<T: Clone>(field: &Option<T>, name: &str, config: &ServiceConfig) -> io::Result<T> {
+    field.clone().ok_or_else(|| {
+        invalid(format!(
+            "service '{}' has no '{name}' in its topology",
+            config.service_name
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -391,7 +419,7 @@ mod tests {
             },
         ];
         let network_path = Path::new("/not-a-real-path");
-        let docker_compose = DockerCompose::generate(&configs, network_path);
+        let docker_compose = DockerCompose::generate(&configs, network_path).unwrap();
         println!("{:?}", docker_compose);
         assert!(docker_compose.contains("seed"));
         assert!(docker_compose.contains("block-producer"));
@@ -428,7 +456,7 @@ mod tests {
             },
         ];
         let network_path = Path::new("/not-a-real-path");
-        let docker_compose = DockerCompose::generate(&configs, network_path);
+        let docker_compose = DockerCompose::generate(&configs, network_path).unwrap();
         println!("{}", docker_compose);
         assert!(docker_compose.contains("seed"));
         assert!(docker_compose.contains("block-producer"));
@@ -441,13 +469,13 @@ mod tests {
 
     #[test]
     fn test_generate_compose_from_topology() -> std::io::Result<()> {
-        use crate::{topology::Topology, DirectoryManager};
+        use crate::{directory_manager::DirectoryManager, topology::Topology};
         let tempdir = tempfile::Builder::new()
             .prefix("test_generate_compose_from_topology")
             .tempdir()
             .expect("Cannot create temporary directory");
         let tmp_network_path = tempdir.path();
-        let dir_manager = DirectoryManager::_new_with_base_path(tmp_network_path.to_path_buf());
+        let dir_manager = DirectoryManager::with_base_path(tmp_network_path.to_path_buf());
         let network_id = "test_network";
         let network_path = dir_manager.network_path(network_id);
         dir_manager.generate_dir_structure(network_id)?;
@@ -457,7 +485,7 @@ mod tests {
         let topology: Topology = serde_json::from_str(&contents)?;
         let peers_file = dir_manager.peer_list_file(network_id);
         let services = topology.services(&peers_file);
-        let compose_contents = DockerCompose::generate(&services, &network_path);
+        let compose_contents = DockerCompose::generate(&services, &network_path).unwrap();
 
         assert!(compose_contents.contains("snark-node"));
         assert!(compose_contents.contains("archive-node"));
@@ -487,7 +515,7 @@ mod tests {
             ..Default::default()
         }];
         let network_path = Path::new("/not-a-real-path/network-id");
-        let docker_compose = DockerCompose::generate(&configs, network_path);
+        let docker_compose = DockerCompose::generate(&configs, network_path).unwrap();
         println!("{}", docker_compose);
         assert!(docker_compose.contains("mina-archive777-network-id"));
         assert!(docker_compose.contains("mina-archive777-service-network-id"));

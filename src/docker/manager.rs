@@ -10,13 +10,14 @@
 use crate::directory_manager::NETWORK_KEYPAIRS;
 use crate::genesis_ledger::REPLAYER_INPUT_JSON;
 use crate::{
-    docker::compose::DockerCompose, docker::compose::CONFIG_DIRECTORY, service::ServiceConfig,
-    utils::run_command,
+    docker::compose::DockerCompose, docker::compose::CONFIG_DIRECTORY, runner::Runner,
+    service::ServiceConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Error, ErrorKind, Write};
+use std::rc::Rc;
 use std::{
     io::Result,
     path::{Path, PathBuf},
@@ -83,20 +84,26 @@ pub struct ComposeInfo {
 pub struct DockerManager {
     pub network_path: PathBuf,
     pub compose_path: PathBuf,
+    runner: Rc<dyn Runner>,
 }
 
 impl DockerManager {
-    pub fn new(network_path: &Path) -> Self {
+    pub fn new(network_path: &Path, runner: Rc<dyn Runner>) -> Self {
         let compose_path = network_path.join("docker-compose.yaml");
         DockerManager {
             network_path: network_path.to_path_buf(),
             compose_path,
+            runner,
         }
+    }
+
+    fn docker(&self, args: &[&str]) -> Result<Output> {
+        self.runner.run("docker".as_ref(), args, &[])
     }
 
     pub fn compose_generate_file(&self, configs: &[ServiceConfig]) -> Result<()> {
         let mut file = File::create(&self.compose_path)?;
-        let contents = DockerCompose::generate(configs, &self.network_path);
+        let contents = DockerCompose::generate(configs, &self.network_path)?;
         file.write_all(contents.as_bytes())?;
         Ok(())
     }
@@ -104,19 +111,12 @@ impl DockerManager {
     pub fn exec(&self, service: &str, cmd: &[&str]) -> Result<Output> {
         let mut args = vec!["exec", "-i", service];
         args.extend_from_slice(cmd);
-        let out = run_command("docker", &args)?;
-        Ok(out)
+        self.docker(&args)
     }
 
     pub fn cp(&self, service: &str, src: &Path, dest: &Path) -> Result<Output> {
-        let destination = format!("{}:{}", service, dest.to_str().unwrap());
-        let args = vec!["cp", src.to_str().unwrap(), destination.as_str()];
-        let out = run_command("docker", &args)?;
-        Ok(out)
-    }
-
-    pub fn _compose_up(&self) -> Result<Output> {
-        self.run_docker_compose(&["up", "-d"])
+        let destination = format!("{}:{}", service, utf8(dest)?);
+        self.docker(&["cp", utf8(src)?, destination.as_str()])
     }
 
     pub fn compose_down(
@@ -285,81 +285,63 @@ impl DockerManager {
         self.run_docker_compose(cmd)
     }
 
-    #[allow(dead_code)]
-    pub fn compose_client_status(
-        &self,
-        node_id: &str,
-        network_id: &str,
-        client_port: u16,
-    ) -> Result<Output> {
-        let service = format!("{node_id}-{network_id}");
-        let cmd = &[
-            "exec",
-            &service,
-            "mina",
-            "client",
-            "status",
-            "-daemon-port",
-            &client_port.to_string(),
-        ];
-        self.run_docker_compose(cmd)
-    }
-
     /// Filter container by service name
     /// returns Option<ContainerInfo>
     pub fn filter_container_by_name(
         &self,
         containers: Vec<ContainerInfo>,
         service_name: &str,
-    ) -> Option<ContainerInfo> {
-        let containers: Vec<ContainerInfo> = containers
+    ) -> Result<Option<ContainerInfo>> {
+        let mut matching = containers
             .into_iter()
-            .filter(|container| container.service == service_name)
-            .collect();
-
-        if containers.is_empty() {
-            None
-        } else {
-            assert!(
-                containers.len() == 1,
-                "Expected 1 container for '{}', found {}",
-                service_name,
-                containers.len()
-            );
-            Some(containers.into_iter().next().unwrap())
+            .filter(|container| container.service == service_name);
+        let first = matching.next();
+        let extra = matching.count();
+        if extra > 0 {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "Expected 1 container for '{service_name}', found {}",
+                    extra + 1
+                ),
+            ));
         }
+        Ok(first)
     }
 
     fn run_docker_compose(&self, subcommands: &[&str]) -> Result<Output> {
         let network_id = self
             .network_path
             .file_name()
-            .expect("Failed to extract file name")
-            .to_str()
-            .expect("Failed to convert OsStr to str");
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!(
+                        "network path '{}' has no UTF-8 file name",
+                        self.network_path.display()
+                    ),
+                )
+            })?;
 
-        let base_args = &[
-            "compose",
-            "-f",
-            self.compose_path
-                .to_str()
-                .expect("Failed to convert file path to str"),
-            "-p",
-            network_id,
-        ];
-
-        let mut args: Vec<&str> = base_args.to_vec();
+        let mut args = vec!["compose", "-f", utf8(&self.compose_path)?, "-p", network_id];
         args.extend_from_slice(subcommands);
-
-        let out = run_command("docker", &args)?;
-        Ok(out)
+        self.docker(&args)
     }
 
     pub fn run_docker_logs(&self, node_id: &str, network_id: &str) -> Result<Output> {
         let container = format!("{node_id}-{network_id}");
-        let args: Vec<&str> = vec!["logs", &container];
-        run_command("docker", &args)
+        self.docker(&["logs", &container])
     }
+}
+
+fn utf8(path: &Path) -> Result<&str> {
+    path.to_str().ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            format!("path '{}' is not valid UTF-8", path.display()),
+        )
+    })
 }
 
 impl fmt::Display for ContainerState {
@@ -375,5 +357,112 @@ impl fmt::Display for ContainerState {
             ContainerState::Unknown => "unknown",
         };
         write!(f, "{}", state_str)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runner::fake::FakeRunner;
+
+    fn ps_line(service: &str, state: &str) -> String {
+        format!(
+            r#"{{"ID":"1","Name":"{service}","Image":"i","Command":"c","CreatedAt":"t","State":"{state}","Status":"s","Health":"","ExitCode":0,"Labels":"","Service":"{service}"}}"#
+        )
+    }
+
+    fn manager(fake: &Rc<FakeRunner>) -> DockerManager {
+        DockerManager::new(Path::new("/home/u/.minimina/net"), fake.clone())
+    }
+
+    #[test]
+    fn compose_commands_use_network_project() {
+        let fake = Rc::new(FakeRunner::default());
+        let docker = manager(&fake);
+        docker.compose_stop(vec!["a-net", "b-net"]).unwrap();
+        docker
+            .compose_down(Some("a-net".into()), true, true)
+            .unwrap();
+        assert_eq!(
+            fake.lines(),
+            vec![
+                "docker compose -f /home/u/.minimina/net/docker-compose.yaml -p net stop a-net b-net",
+                "docker compose -f /home/u/.minimina/net/docker-compose.yaml -p net down a-net --volumes --rmi all --remove-orphans",
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_ps_parses_json_lines_and_filters() {
+        let fake = Rc::new(FakeRunner::default());
+        let stdout = format!(
+            "{}\nnot json\n{}\n",
+            ps_line("seed-net", "running"),
+            ps_line("bp-net", "exited")
+        );
+        fake.reply(0, &stdout, "");
+        let docker = manager(&fake);
+        let containers = docker.compose_ps(Some(ContainerState::Running)).unwrap();
+        assert_eq!(containers.len(), 2);
+        assert_eq!(containers[1].state, ContainerState::Exited);
+        assert!(fake.lines()[0].ends_with("ps -a --format json --filter status=running"));
+
+        let seed = docker
+            .filter_container_by_name(containers, "seed-net")
+            .unwrap()
+            .unwrap();
+        assert_eq!(seed.state, ContainerState::Running);
+    }
+
+    #[test]
+    fn filter_container_rejects_duplicates() {
+        let fake = Rc::new(FakeRunner::default());
+        let docker = manager(&fake);
+        let dup = |s| serde_json::from_str::<ContainerInfo>(&ps_line(s, "running")).unwrap();
+        assert!(docker
+            .filter_container_by_name(vec![dup("x")], "y")
+            .unwrap()
+            .is_none());
+        let err = docker
+            .filter_container_by_name(vec![dup("x"), dup("x")], "x")
+            .unwrap_err();
+        assert_eq!(err.to_string(), "Expected 1 container for 'x', found 2");
+    }
+
+    #[test]
+    fn compose_ls_parses_projects() {
+        let fake = Rc::new(FakeRunner::default());
+        fake.reply(
+            0,
+            r#"[{"Name":"net","Status":"running(2)","ConfigFiles":"/c.yaml"}]"#,
+            "",
+        );
+        let ls = manager(&fake).compose_ls().unwrap();
+        assert_eq!(ls[0].name, "net");
+        assert_eq!(ls[0].config_files, "/c.yaml");
+    }
+
+    #[test]
+    fn archive_helpers_target_network_services() {
+        let fake = Rc::new(FakeRunner::default());
+        let docker = manager(&fake);
+        docker.compose_dump_archive_data("net").unwrap();
+        docker.compose_run_replayer("arch-service", "net").unwrap();
+        docker
+            .compose_import_account("bp", "net", "bp.json")
+            .unwrap();
+        docker
+            .cp("pg", Path::new("/tmp/a.sql"), Path::new("/tmp/b.sql"))
+            .unwrap();
+        let lines = fake.lines();
+        assert!(lines[0].ends_with("exec postgres-net pg_dump --insert -U postgres archive"));
+        assert!(lines[1].contains(
+            "exec arch-service-net mina-replayer --continue-on-error --input-file /local-network/replayer_input.json"
+        ));
+        assert!(lines[1].contains("postgres://postgres:postgres@postgres-net:5432/archive"));
+        assert!(lines[2].ends_with(
+            "run --rm --entrypoint mina bp-net accounts import --privkey-path /local-network/network-keypairs/bp.json --config-directory /config-directory"
+        ));
+        assert_eq!(lines[3], "docker cp /tmp/a.sql pg:/tmp/b.sql");
     }
 }
