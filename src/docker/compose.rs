@@ -7,7 +7,6 @@ use crate::service::{ServiceConfig, ServiceType};
 use log::debug;
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
-use serde_yaml;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -316,7 +315,7 @@ impl DockerCompose {
             services,
         };
 
-        let yaml_output = serde_yaml::to_string(&compose).unwrap();
+        let yaml_output = serde_norway::to_string(&compose).unwrap();
         let generated_file = Self::post_process_yaml(yaml_output);
         debug!("Generated docker-compose.yaml: {}", generated_file);
         generated_file
@@ -348,8 +347,6 @@ impl DockerCompose {
 
 #[cfg(test)]
 mod tests {
-    use tempdir::TempDir;
-
     use super::*;
     use crate::service::ServiceType;
 
@@ -445,7 +442,9 @@ mod tests {
     #[test]
     fn test_generate_compose_from_topology() -> std::io::Result<()> {
         use crate::{topology::Topology, DirectoryManager};
-        let tempdir = TempDir::new("test_generate_compose_from_topology")
+        let tempdir = tempfile::Builder::new()
+            .prefix("test_generate_compose_from_topology")
+            .tempdir()
             .expect("Cannot create temporary directory");
         let tmp_network_path = tempdir.path();
         let dir_manager = DirectoryManager::_new_with_base_path(tmp_network_path.to_path_buf());
