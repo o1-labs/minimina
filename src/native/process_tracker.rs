@@ -20,7 +20,6 @@ pub struct ProcessTracker {
     path: PathBuf,
 }
 
-#[allow(dead_code)]
 impl ProcessTracker {
     pub fn new(network_path: &Path) -> Self {
         ProcessTracker {
@@ -66,5 +65,49 @@ impl ProcessTracker {
 
     pub fn is_alive(pid: u32) -> bool {
         signal::kill(Pid::from_raw(pid as i32), None).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(name: &str, pid: u32) -> ProcessRecord {
+        ProcessRecord {
+            pid,
+            service_name: name.into(),
+            started_at: "now".into(),
+            log_file: "l".into(),
+            config_dir: "c".into(),
+        }
+    }
+
+    #[test]
+    fn add_get_remove_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let tracker = ProcessTracker::new(dir.path());
+        assert!(tracker.list().unwrap().is_empty());
+
+        tracker.add(record("a", 1)).unwrap();
+        tracker.add(record("b", 2)).unwrap();
+        assert_eq!(tracker.get("a").unwrap().unwrap().pid, 1);
+        assert_eq!(tracker.list().unwrap().len(), 2);
+
+        tracker.remove("a").unwrap();
+        assert!(tracker.get("a").unwrap().is_none());
+        assert_eq!(tracker.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn corrupt_tracker_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("processes.json"), "{").unwrap();
+        let err = ProcessTracker::new(dir.path()).list().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn is_alive_detects_own_process() {
+        assert!(ProcessTracker::is_alive(std::process::id()));
     }
 }

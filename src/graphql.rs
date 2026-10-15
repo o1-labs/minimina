@@ -1,7 +1,7 @@
 use log::info;
 
-use crate::{directory_manager::DirectoryManager, exit_with, output::network, TIMEOUT_IN_SECS};
-use std::{self, io::Result};
+use crate::{directory_manager::DirectoryManager, output::network, utils::TIMEOUT_IN_SECS};
+use std::io::{Error, ErrorKind, Result};
 
 pub struct GraphQl {
     directory_manager: DirectoryManager,
@@ -12,17 +12,16 @@ impl GraphQl {
         Self { directory_manager }
     }
 
-    pub fn get_endpoint(&self, node_id: &str, network_id: &str) -> Option<String> {
-        let nodes = self.directory_manager.get_network_info(network_id);
-        match nodes {
-            Ok(nodes) => {
-                let info = serde_json::from_str::<network::Create>(&nodes).unwrap();
-                let node = info.nodes.get(node_id)?;
-                let graphql_endpoint = node.graphql_uri.as_ref()?;
-                Some(graphql_endpoint.to_string())
-            }
-            Err(_) => None,
-        }
+    /// Returns the node's GraphQL URI, or `None` if the network or node has none.
+    pub fn get_endpoint(&self, node_id: &str, network_id: &str) -> Result<Option<String>> {
+        let Ok(nodes) = self.directory_manager.get_network_info(network_id) else {
+            return Ok(None);
+        };
+        let info = serde_json::from_str::<network::Create>(&nodes).map_err(Error::from)?;
+        Ok(info
+            .nodes
+            .get(node_id)
+            .and_then(|node| node.graphql_uri.clone()))
     }
 
     /// Waits for graphql server to start
@@ -46,8 +45,9 @@ impl GraphQl {
             }
         }
         if !graphql_running {
-            return exit_with(format!(
-                "Failed to start graphql '{gql_ep}' within {TIMEOUT_IN_SECS}s",
+            return Err(Error::new(
+                ErrorKind::TimedOut,
+                format!("Failed to start graphql '{gql_ep}' within {TIMEOUT_IN_SECS}s"),
             ));
         }
         Ok(())
@@ -79,21 +79,19 @@ impl GraphQl {
             .post(gql_ep)
             .header("Content-Type", "application/json")
             .body(query)
-            .send();
-        if let Err(e) = response {
-            return exit_with(format!(
-                "Failed to send request to graphql endpoint '{gql_ep}': {e}",
-            ));
-        }
+            .send()
+            .map_err(|e| {
+                Error::other(format!(
+                    "Failed to send request to graphql endpoint '{gql_ep}': {e}"
+                ))
+            })?;
 
-        // Read the response body
-        let response_body = response.unwrap().text();
-        if let Err(e) = response_body {
-            return exit_with(format!(
-                "Failed to read response body from graphql endpoint '{gql_ep}': {e}",
-            ));
-        }
-        info!("Response body: {}", response_body.unwrap());
+        let response_body = response.text().map_err(|e| {
+            Error::other(format!(
+                "Failed to read response body from graphql endpoint '{gql_ep}': {e}"
+            ))
+        })?;
+        info!("Response body: {response_body}");
 
         Ok(())
     }
@@ -150,23 +148,33 @@ mod test {
         }";
         let base_path = PathBuf::from(tempdir.path());
         let network_id = "test_deserialize";
-        let directory_manager = DirectoryManager::_new_with_base_path(base_path);
+        let directory_manager = DirectoryManager::with_base_path(base_path);
         directory_manager
             .create_network_directory(network_id)
             .unwrap();
         let network_info_file = directory_manager.network_file_path(network_id);
-        let mut file = File::create(network_info_file).unwrap();
+        let mut file = File::create(&network_info_file).unwrap();
         file.write_all(network_info_str.as_bytes()).unwrap();
 
         let graphql = GraphQl::new(directory_manager);
 
         let endpoint = graphql.get_endpoint("mina-bp-1", network_id).unwrap();
-        assert_eq!(endpoint, "http://localhost:4001/graphql");
+        assert_eq!(endpoint.as_deref(), Some("http://localhost:4001/graphql"));
 
         let endpoint = graphql.get_endpoint("mina-bp-2", network_id).unwrap();
-        assert_eq!(endpoint, "http://localhost:4006/graphql");
+        assert_eq!(endpoint.as_deref(), Some("http://localhost:4006/graphql"));
 
-        let endpoint = graphql.get_endpoint("mina-snark-worker-1", network_id);
+        let endpoint = graphql
+            .get_endpoint("mina-snark-worker-1", network_id)
+            .unwrap();
         assert_eq!(endpoint, None);
+
+        let endpoint = graphql
+            .get_endpoint("mina-bp-1", "no-such-network")
+            .unwrap();
+        assert_eq!(endpoint, None);
+
+        std::fs::write(&network_info_file, "{").unwrap();
+        assert!(graphql.get_endpoint("mina-bp-1", network_id).is_err());
     }
 }

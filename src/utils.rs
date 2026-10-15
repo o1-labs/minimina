@@ -1,44 +1,18 @@
 //! # Utils Module
 //!
-//! This module provides utility functions to run external commands
-//! and fetch the UID and GID of the current user.
+//! This module provides utility functions to fetch archive schema files
+//! and the UID and GID of the current user.
 
-use log::{debug, error};
+use log::debug;
 use std::{
     fs::File,
-    io,
+    io::{self, Write},
     path::PathBuf,
-    process::{Command, Output},
 };
 use url::Url;
 
-/// Run an external command and capture its output.
-/// Logs the command, its output, and any potential errors.
-///
-/// # Arguments
-///
-/// * `cmd` - A string slice that holds the name of the command.
-/// * `args` - A slice of string slices that contain the arguments to the command.
-///
-/// # Returns
-///
-/// * `io::Result<Output>` - The output from the command execution.
-pub fn run_command(cmd: &str, args: &[&str]) -> io::Result<Output> {
-    debug!("Running command: {cmd} {}", args.join(" "));
-
-    match Command::new(cmd).args(args).output() {
-        Ok(output) => {
-            debug!("status: {}", output.status);
-            debug!("stdout: {}", String::from_utf8_lossy(&output.stdout));
-            debug!("stderr: {}", String::from_utf8_lossy(&output.stderr));
-            Ok(output)
-        }
-        Err(e) => {
-            error!("Failed to run command: {e}");
-            Err(io::Error::other(e))
-        }
-    }
-}
+/// Timeout in seconds for waiting operations
+pub const TIMEOUT_IN_SECS: u16 = 180;
 
 /// Fetch the UID and GID of the current user.
 ///
@@ -54,10 +28,15 @@ pub fn get_current_user_uid_gid() -> Option<String> {
 
 /// Fetch the schema from a given URL and save it to a file.
 /// The file is saved in the given network path.
-pub fn fetch_schema(url: &str, network_path: PathBuf) -> Result<PathBuf, reqwest::Error> {
+pub fn fetch_schema(url: &str, network_path: PathBuf) -> io::Result<PathBuf> {
     debug!("Fetching schema from: {url}");
 
-    let parsed_url = Url::parse(url).expect("Invalid URL");
+    let parsed_url = Url::parse(url).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid schema URL '{url}': {e}"),
+        )
+    })?;
     let filename = parsed_url
         .path_segments()
         .and_then(|mut segments| segments.next_back())
@@ -65,17 +44,12 @@ pub fn fetch_schema(url: &str, network_path: PathBuf) -> Result<PathBuf, reqwest
     let mut file_path = network_path;
 
     file_path.push(filename);
-    let response = reqwest::blocking::get(parsed_url)?;
-    let mut file = File::create(&file_path).expect("Failed to create file");
-
-    std::io::copy(
-        &mut response
-            .bytes()
-            .expect("Failed to read bytes from response")
-            .as_ref(),
-        &mut file,
-    )
-    .expect("Failed to write to file");
+    let http_error = |e: reqwest::Error| io::Error::other(format!("fetching '{url}': {e}"));
+    let bytes = reqwest::blocking::get(parsed_url)
+        .map_err(http_error)?
+        .bytes()
+        .map_err(http_error)?;
+    File::create(&file_path)?.write_all(&bytes)?;
 
     Ok(file_path)
 }
@@ -83,13 +57,6 @@ pub fn fetch_schema(url: &str, network_path: PathBuf) -> Result<PathBuf, reqwest
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_run_command() {
-        let output = run_command("echo", &["hello", "world"]).unwrap();
-        assert!(output.status.success());
-        assert_eq!(String::from_utf8_lossy(&output.stdout), "hello world\n");
-    }
 
     #[test]
     fn test_get_current_user_uid_gid() {

@@ -33,3 +33,43 @@ pub fn collect_all_ports(services: &[ServiceConfig]) -> Vec<u16> {
     }
     ports
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collects_daemon_archive_and_postgres_ports() {
+        let services = vec![
+            ServiceConfig {
+                service_type: ServiceType::Seed,
+                client_port: Some(3100),
+                ..Default::default()
+            },
+            ServiceConfig {
+                service_type: ServiceType::ArchiveNode,
+                client_port: Some(5000),
+                archive_port: Some(3086),
+                ..Default::default()
+            },
+            ServiceConfig {
+                service_type: ServiceType::SnarkWorker,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            collect_all_ports(&services),
+            vec![3100, 3101, 3102, 3103, 3104, 5000, 5001, 5002, 5003, 5004, 3086, 5432]
+        );
+    }
+
+    #[test]
+    fn reports_port_in_use() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let err = check_ports_available(&[port]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
+        drop(listener);
+        check_ports_available(&[port]).unwrap();
+    }
+}

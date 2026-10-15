@@ -37,7 +37,7 @@ pub mod network {
         pub config_dir: String,
     }
 
-    #[derive(Debug, Serialize, PartialEq)]
+    #[derive(Debug, Default, Serialize, PartialEq)]
     pub struct List {
         pub networks: Vec<ListInfo>,
     }

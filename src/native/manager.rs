@@ -17,7 +17,6 @@ pub struct NativeManager {
     pub bin_path: PathBuf,
 }
 
-#[allow(dead_code)]
 impl NativeManager {
     pub fn new(network_path: &Path, bin_path: &Path) -> Self {
         NativeManager {
@@ -47,11 +46,6 @@ impl NativeManager {
             fs::create_dir_all(self.config_dir_for_service(&config.service_name))?;
         }
         Ok(())
-    }
-
-    /// No-op for native mode - processes are created on start
-    pub fn create(&self, _specific_service: Option<String>) -> Result<std::process::Output> {
-        Command::new("true").output()
     }
 
     pub fn start_all(&self, services: &[ServiceConfig], network_id: &str) -> Result<()> {
@@ -90,12 +84,20 @@ impl NativeManager {
         let config_dir = self.config_dir_for_service(service_name);
         fs::create_dir_all(&config_dir)?;
 
-        let network_path_str = self.network_path.to_str().unwrap();
-        let config_dir_str = config_dir.to_str().unwrap();
+        let utf8 = |p: &Path| {
+            p.to_str().map(str::to_string).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("path '{}' is not valid UTF-8", p.display()),
+                )
+            })
+        };
+        let network_path_str = utf8(&self.network_path)?;
+        let config_dir_str = utf8(&config_dir)?;
 
         // Build command based on service type
         let (binary, args) =
-            self.build_command(service, network_id, network_path_str, config_dir_str)?;
+            self.build_command(service, network_id, &network_path_str, &config_dir_str)?;
 
         info!(
             "Starting service '{}' with command: {} {}",
@@ -361,5 +363,137 @@ impl NativeManager {
                 let _ = signal::kill(nix_pid, Signal::SIGKILL);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manager() -> NativeManager {
+        NativeManager::new(Path::new("/net"), Path::new("/opt/mina"))
+    }
+
+    fn args_for(service: &ServiceConfig) -> (PathBuf, Vec<String>) {
+        manager()
+            .build_command(service, "net", "/net", "/net/config-directory/x")
+            .unwrap()
+    }
+
+    fn value_of<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+            .map(String::as_str)
+    }
+
+    #[test]
+    fn daemon_ports_follow_client_port() {
+        let seed = ServiceConfig {
+            service_type: ServiceType::Seed,
+            service_name: "seed".into(),
+            client_port: Some(3100),
+            libp2p_keypair_path: Some("k".into()),
+            ..Default::default()
+        };
+        let (bin, args) = args_for(&seed);
+        assert_eq!(bin, Path::new("/opt/mina/mina"));
+        assert_eq!(args[0], "daemon");
+        assert!(args.contains(&"-seed".to_string()));
+        for (flag, port) in [
+            ("-client-port", "3100"),
+            ("-rest-port", "3101"),
+            ("-external-port", "3102"),
+            ("-metrics-port", "3103"),
+            ("-libp2p-metrics-port", "3104"),
+        ] {
+            assert_eq!(value_of(&args, flag), Some(port), "{flag}");
+        }
+        assert_eq!(
+            value_of(&args, "-config-file"),
+            Some("/net/genesis_ledger.json")
+        );
+        assert_eq!(
+            value_of(&args, "-libp2p-keypair"),
+            Some("/net/libp2p-keypairs/seed.json")
+        );
+    }
+
+    #[test]
+    fn block_producer_uses_peer_list_and_key() {
+        let bp = ServiceConfig {
+            service_type: ServiceType::BlockProducer,
+            service_name: "bp".into(),
+            client_port: Some(4000),
+            private_key_path: Some("k".into()),
+            peer_list_file: Some("p".into()),
+            libp2p_keypair: Some("inline".into()),
+            ..Default::default()
+        };
+        let (_, args) = args_for(&bp);
+        assert_eq!(
+            value_of(&args, "-peer-list-file"),
+            Some("/net/peer_list_file.txt")
+        );
+        assert_eq!(
+            value_of(&args, "-block-producer-key"),
+            Some("/net/network-keypairs/bp.json")
+        );
+        assert_eq!(value_of(&args, "-libp2p-keypair"), Some("inline"));
+        assert!(!args.contains(&"-seed".to_string()));
+    }
+
+    #[test]
+    fn snark_coordinator_and_worker() {
+        let coordinator = ServiceConfig {
+            service_type: ServiceType::SnarkCoordinator,
+            service_name: "coord".into(),
+            client_port: Some(7000),
+            public_key: Some("B62q".into()),
+            snark_coordinator_fees: Some("0.001".into()),
+            peers: Some(vec!["/ip4/1/tcp/2/p2p/x".into()]),
+            ..Default::default()
+        };
+        let (_, args) = args_for(&coordinator);
+        assert_eq!(value_of(&args, "-run-snark-coordinator"), Some("B62q"));
+        assert_eq!(value_of(&args, "-snark-worker-fee"), Some("0.001"));
+        assert_eq!(value_of(&args, "-work-selection"), Some("seq"));
+        assert_eq!(value_of(&args, "-peer"), Some("/ip4/1/tcp/2/p2p/x"));
+
+        let worker = ServiceConfig {
+            service_type: ServiceType::SnarkWorker,
+            service_name: "w".into(),
+            snark_coordinator_host: Some("coord".into()),
+            snark_coordinator_port: Some(7000),
+            snark_worker_proof_level: Some("none".into()),
+            ..Default::default()
+        };
+        let (_, args) = args_for(&worker);
+        assert_eq!(args[..2], ["internal", "snark-worker"]);
+        assert_eq!(value_of(&args, "-daemon-address"), Some("127.0.0.1:7000"));
+        assert_eq!(value_of(&args, "-proof-level"), Some("none"));
+    }
+
+    #[test]
+    fn archive_node_points_at_archive_port() {
+        let archive = ServiceConfig {
+            service_type: ServiceType::ArchiveNode,
+            service_name: "arch".into(),
+            client_port: Some(5000),
+            archive_port: Some(3086),
+            ..Default::default()
+        };
+        let (_, args) = args_for(&archive);
+        assert_eq!(value_of(&args, "-archive-address"), Some("127.0.0.1:3086"));
+    }
+
+    #[test]
+    fn logs_of_unknown_service_are_empty_and_stop_reports_missing() {
+        let net = tempfile::tempdir().unwrap();
+        let native = NativeManager::new(net.path(), Path::new("/opt/mina"));
+        assert_eq!(native.service_logs("ghost").unwrap(), "");
+        let err = native.stop_service("ghost").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(native.list_services().unwrap().is_empty());
     }
 }
