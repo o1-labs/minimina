@@ -2,6 +2,7 @@
 name = "minimina"
 version = "0.2.0"
 edition = "2021"
+rust-version = "1.92"
 license = "LICENSE"
 description = """\
 MiniMina is a command line tool aimed at providing the capability \
@@ -12,9 +13,9 @@ to spin up Mina networks locally on a user's computer."""
 clap = { version = "4.4.6", features = ["derive"] }
 dirs = "5.0.1"
 log = { version = "0.4.20" }
-env_logger = { version = "0.10.0" }
-serde = { version = "1.0.188", features = ["derive"] }
-serde_json = "1.0.107"
+env_logger = { version = "0.11.6" }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "^1.0.109"
 serde_yaml = "0.9.25"
 chrono = "0.4.31"
 uzers = "0.11.3"
