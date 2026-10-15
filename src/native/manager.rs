@@ -760,25 +760,22 @@ mod tests {
         }
     }
 
+    /// Start of 10 ports nobody else in this test run uses: a per-process counter
+    /// below the ephemeral range, skipping blocks something on the host holds.
     fn free_port() -> u16 {
-        // five consecutive free ports starting at an OS-chosen one
+        use std::sync::atomic::{AtomicU16, Ordering};
+        static NEXT: AtomicU16 = AtomicU16::new(0);
+        let base = 20000 + (std::process::id() % 500) as u16 * 20;
         loop {
-            let port = std::net::TcpListener::bind("0.0.0.0:0")
-                .unwrap()
-                .local_addr()
-                .unwrap()
-                .port();
-            if port < 60000
-                && port_manager::check_ports_available(
-                    &(0..5)
-                        .map(|o| port_manager::PortUse {
-                            port: port + o,
-                            service: "probe".into(),
-                        })
-                        .collect::<Vec<_>>(),
-                )
-                .is_ok()
-            {
+            let port = base + NEXT.fetch_add(10, Ordering::SeqCst);
+            assert!(port < 32000, "ran out of test ports");
+            let block: Vec<_> = (0..10)
+                .map(|o| port_manager::PortUse {
+                    port: port + o,
+                    service: "probe".into(),
+                })
+                .collect();
+            if port_manager::check_ports_available(&block).is_ok() {
                 return port;
             }
         }
