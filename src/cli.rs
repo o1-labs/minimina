@@ -1,12 +1,23 @@
 //! # `minimina` Command-Line Interface (CLI)
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, ValueEnum, PartialEq)]
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ExecutionMode {
     Docker,
     Native,
+}
+
+impl std::fmt::Display for ExecutionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ExecutionMode::Docker => "docker",
+            ExecutionMode::Native => "native",
+        })
+    }
 }
 
 #[derive(Parser)]
@@ -20,9 +31,10 @@ pub struct Cli {
     #[clap(subcommand)]
     pub command: Command,
 
-    /// Execution mode: docker (default) or native
-    #[clap(long, default_value = "docker", global = true)]
-    pub mode: ExecutionMode,
+    /// Execution mode: docker or native. `network create` defaults to docker;
+    /// other commands use the mode the network was created with.
+    #[clap(long, global = true)]
+    pub mode: Option<ExecutionMode>,
 
     /// Path to mina binaries directory (native mode only).
     /// If omitted, minimina searches /usr/local/bin, /usr/bin, and PATH.
@@ -56,7 +68,7 @@ pub enum NetworkCommand {
     /// Start a local network
     Start(StartNetworkArgs),
     /// Stop a local network
-    Stop(NetworkId),
+    Stop(StopNetworkArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -64,6 +76,24 @@ pub struct NetworkId {
     /// Network identifier
     #[clap(short, long, default_value = "default")]
     pub network_id: String,
+}
+
+/// Seconds to wait after SIGTERM before SIGKILL (native) or `docker compose stop -t` (docker).
+#[derive(Args, Debug, Clone, Default)]
+pub struct ShutdownTimeout {
+    /// Seconds to wait for a graceful shutdown before killing
+    /// [default: 60 in native mode, docker compose default in docker mode]
+    #[clap(long = "timeout")]
+    pub secs: Option<u64>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct StopNetworkArgs {
+    #[clap(flatten)]
+    pub network_id: NetworkId,
+
+    #[clap(flatten)]
+    pub timeout: ShutdownTimeout,
 }
 
 #[derive(Args, Clone)]
@@ -105,7 +135,7 @@ pub enum NodeCommand {
     /// Start a node
     Start(StartNodeCommandArgs),
     /// Stop a node
-    Stop(NodeCommandArgs),
+    Stop(StopNodeArgs),
     /// Dump the node's logs to stdout
     Logs(NodeCommandArgs),
     /// Dump the node's precomputed blocks to stdout
@@ -158,6 +188,15 @@ pub struct StartNodeCommandArgs {
 
     #[clap(flatten)]
     pub node_args: NodeCommandArgs,
+}
+
+#[derive(Args, Debug)]
+pub struct StopNodeArgs {
+    #[clap(flatten)]
+    pub node_args: NodeCommandArgs,
+
+    #[clap(flatten)]
+    pub timeout: ShutdownTimeout,
 }
 
 #[derive(Args, Debug)]
@@ -223,6 +262,7 @@ log_level!(NodeCommandArgs);
 network_id!(StartNetworkArgs);
 network_id!(CreateNetworkArgs);
 network_id!(NodeCommandArgs);
+network_id!(StopNetworkArgs);
 
 node_id!(NodeCommandArgs);
 
@@ -238,10 +278,37 @@ impl DefaultLogLevel for Command {
                 NodeCommand::DumpArchiveData(args)
                 | NodeCommand::DumpPrecomputedBlocks(args)
                 | NodeCommand::Logs(args)
-                | NodeCommand::Stop(args) => args.log_level(),
+                | NodeCommand::Stop(StopNodeArgs {
+                    node_args: args, ..
+                }) => args.log_level(),
                 NodeCommand::Start(args) => args.node_args.log_level(),
                 NodeCommand::RunReplayer(args) => args.node_args.log_level(),
             },
+        }
+    }
+}
+
+impl Command {
+    /// Network the command operates on; `None` for `network list`.
+    pub fn network_id(&self) -> Option<&str> {
+        match self {
+            Command::Network(cmd) => match cmd {
+                NetworkCommand::Create(args) => Some(args.network_id()),
+                NetworkCommand::Start(args) => Some(args.network_id()),
+                NetworkCommand::Stop(args) => Some(args.network_id()),
+                NetworkCommand::Delete(args)
+                | NetworkCommand::Status(args)
+                | NetworkCommand::Info(args) => Some(&args.network_id),
+                NetworkCommand::List => None,
+            },
+            Command::Node(cmd) => Some(match cmd {
+                NodeCommand::Start(args) => args.node_args.network_id(),
+                NodeCommand::Stop(args) => args.node_args.network_id(),
+                NodeCommand::RunReplayer(args) => args.node_args.network_id(),
+                NodeCommand::Logs(args)
+                | NodeCommand::DumpPrecomputedBlocks(args)
+                | NodeCommand::DumpArchiveData(args) => args.network_id(),
+            }),
         }
     }
 }
@@ -330,7 +397,8 @@ mod tests {
 
         match cli.command {
             Command::Network(NetworkCommand::Stop(args)) => {
-                assert_eq!(args.network_id, "test");
+                assert_eq!(args.network_id(), "test");
+                assert_eq!(args.timeout.secs, None);
             }
             _ => panic!("Unexpected command parsed"),
         }
@@ -391,8 +459,8 @@ mod tests {
 
         match cli.command {
             Command::Node(NodeCommand::Stop(args)) => {
-                assert_eq!(args.node_id(), "test");
-                assert_eq!(args.network_id(), "banana");
+                assert_eq!(args.node_args.node_id(), "test");
+                assert_eq!(args.node_args.network_id(), "banana");
             }
             _ => panic!("Unexpected command parsed"),
         }

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 pub mod network {
     use serde::{Deserialize, Serialize};
 
-    use crate::docker::manager::{ComposeInfo, ContainerInfo};
+    use crate::docker::manager::{ComposeInfo, ContainerInfo, ContainerState};
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
     pub struct Create {
@@ -108,6 +108,33 @@ pub mod network {
 
             self.status = network_status;
             self.docker_compose_file = config_files;
+        }
+
+        /// Fill the status from the native process table
+        pub fn update_from_processes(
+            &mut self,
+            processes: &[crate::native::manager::ProcessStatus],
+        ) {
+            let running = processes.iter().filter(|p| p.alive).count();
+            self.status = if running > 0 {
+                format!("running({running})")
+            } else {
+                "not_running".to_string()
+            };
+            self.docker_compose_file = String::new();
+            self.services = processes
+                .iter()
+                .map(|p| super::node::Status {
+                    id: p.name.clone(),
+                    state: if p.alive {
+                        ContainerState::Running
+                    } else {
+                        ContainerState::Exited
+                    },
+                    status: format!("pid {}", p.pid),
+                    docker_image: String::new(),
+                })
+                .collect();
         }
 
         /// Parse the output of `docker compose ps --format json` to get the status of the nodes

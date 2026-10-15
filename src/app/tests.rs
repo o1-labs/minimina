@@ -74,16 +74,15 @@ fn path_arg(p: &Path) -> &str {
 }
 
 #[test]
-fn list_without_networks_succeeds() {
+fn list_without_networks_succeeds_without_docker() {
     let h = Harness::new();
-    h.docker_ok();
     h.run(&["network", "list"]).unwrap();
+    assert!(h.fake.lines().is_empty());
 }
 
 #[test]
 fn info_on_missing_network_fails() {
     let h = Harness::new();
-    h.docker_ok();
     let err = h.run(&["network", "info", "-n", "nope"]).unwrap_err();
     assert!(err.to_string().contains("network 'nope' does not exist"));
 }
@@ -92,7 +91,7 @@ fn info_on_missing_network_fails() {
 fn docker_environment_failure_stops_before_any_command() {
     let h = Harness::new();
     h.fake.reply(127, "", "");
-    let err = h.run(&["network", "list"]).unwrap_err();
+    let err = h.run(&["network", "start", "-n", "x"]).unwrap_err();
     assert!(err.to_string().contains("Docker is not installed"));
     assert_eq!(h.fake.lines(), vec!["docker --version"]);
 }
@@ -324,7 +323,10 @@ fn native_default_network_generates_keys_with_mina() {
         vec![("MINA_PRIVKEY_PASS".into(), "naughty blue worm".into())]
     );
     assert!(calls[6].line().contains("libp2p generate-keypair"));
-    assert_eq!(calls[12].line(), "createdb -U postgres archive");
+    assert_eq!(
+        calls[12].line(),
+        "psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c DROP DATABASE IF EXISTS minimina_def"
+    );
     drop(calls);
 
     let net = h.dirs.network_path("def");
@@ -347,4 +349,134 @@ fn native_mode_requires_mina_binary() {
         ])
         .unwrap_err();
     assert!(err.to_string().contains("Mina binary not found"));
+}
+
+fn native_args<'a>(bin: &'a tempfile::TempDir, rest: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec!["--mode", "native", "--bin-path", path_arg(bin.path())];
+    args.extend_from_slice(rest);
+    args
+}
+
+#[test]
+fn native_network_remembers_its_mode() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    h.run(&native_args(
+        &bin,
+        &[
+            "network",
+            "create",
+            "-n",
+            "nat",
+            "-t",
+            SMALL_TOPOLOGY,
+            "-g",
+            SMALL_LEDGER,
+        ],
+    ))
+    .unwrap();
+    let meta = crate::network_meta::NetworkMeta::load(&h.dirs.network_path("nat"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.mode, crate::cli::ExecutionMode::Native);
+    assert_eq!(meta.bin_path.as_deref(), Some(bin.path()));
+
+    // no --mode / --bin-path: native is taken from minimina.json, docker is never called
+    h.run(&["network", "status", "-n", "nat"]).unwrap();
+    h.run(&["network", "stop", "-n", "nat"]).unwrap();
+    h.run(&["node", "stop", "-n", "nat", "-i", "seed-0"])
+        .unwrap_err();
+    assert!(h.fake.lines().is_empty(), "{:?}", h.fake.lines());
+
+    let err = h
+        .run(&["--mode", "docker", "network", "stop", "-n", "nat"])
+        .unwrap_err();
+    assert!(err.to_string().contains("was created in native mode"));
+
+    h.run(&["network", "delete", "-n", "nat"]).unwrap();
+    assert!(!h.dirs.network_path_exists("nat"));
+    assert!(h.fake.lines().is_empty());
+}
+
+#[test]
+fn docker_network_records_docker_mode() {
+    let h = Harness::new();
+    h.docker_ok();
+    h.create_small("small").unwrap();
+    let meta = crate::network_meta::NetworkMeta::load(&h.dirs.network_path("small"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.mode, crate::cli::ExecutionMode::Docker);
+    assert_eq!(meta.bin_path, None);
+}
+
+#[test]
+fn network_without_metadata_defaults_to_docker() {
+    let h = Harness::new();
+    h.docker_ok();
+    h.create_small("old").unwrap();
+    std::fs::remove_file(h.dirs.network_path("old").join("minimina.json")).unwrap();
+    h.docker_ok();
+    h.run(&["network", "stop", "-n", "old"]).unwrap();
+    assert_eq!(h.fake.lines().last().unwrap(), &h.compose("old", "stop"));
+}
+
+#[test]
+fn recreating_a_native_network_does_not_call_docker() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let create = native_args(
+        &bin,
+        &[
+            "network",
+            "create",
+            "-n",
+            "nat",
+            "-t",
+            SMALL_TOPOLOGY,
+            "-g",
+            SMALL_LEDGER,
+        ],
+    );
+    h.run(&create).unwrap();
+    h.run(&create).unwrap();
+    assert!(h.fake.lines().is_empty());
+}
+
+#[test]
+fn docker_stop_passes_timeout() {
+    let h = Harness::new();
+    h.docker_ok();
+    h.create_small("small").unwrap();
+    h.docker_ok();
+    h.run(&["network", "stop", "-n", "small", "--timeout", "90"])
+        .unwrap();
+    assert_eq!(
+        h.fake.lines().last().unwrap(),
+        &h.compose("small", "stop -t 90")
+    );
+}
+
+#[test]
+fn native_node_start_rejects_unknown_node() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    h.run(&native_args(
+        &bin,
+        &[
+            "network",
+            "create",
+            "-n",
+            "nat",
+            "-t",
+            SMALL_TOPOLOGY,
+            "-g",
+            SMALL_LEDGER,
+        ],
+    ))
+    .unwrap();
+    let err = h
+        .run(&["node", "start", "-n", "nat", "-i", "ghost"])
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("Node 'ghost' does not exist in network 'nat'"));
 }
