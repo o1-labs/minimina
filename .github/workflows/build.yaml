@@ -139,20 +139,23 @@ jobs:
     container: ubuntu:focal
     env:
       DEBIAN_FRONTEND: noninteractive
+      # explicit: rustup refuses $HOME=/github/home while running as root
+      CARGO_HOME: /usr/local/cargo
+      RUSTUP_HOME: /usr/local/rustup
     steps:
     - name: 🧰 Build tools
       run: |
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl git gcc libc6-dev
-          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
 
     - name: 📥 Checkout
       uses: actions/checkout@v4
 
-    - uses: taiki-e/install-action@v2
-      with:
-        tool: cargo-deb
+    # prebuilt cargo-deb needs glibc 2.34; focal has 2.31
+    - name: 🧰 cargo-deb
+      run: cargo install cargo-deb --locked
 
     - name: 📦 Build package
       run: |
