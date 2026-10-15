@@ -63,6 +63,14 @@ impl Harness {
     }
 }
 
+/// Runner calls other than `mina version` (the installed-config probe).
+fn non_probe_calls(fake: &FakeRunner) -> Vec<String> {
+    fake.lines()
+        .into_iter()
+        .filter(|l| !l.ends_with("/mina version"))
+        .collect()
+}
+
 fn fake_mina_dir() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("mina"), "").unwrap();
@@ -285,7 +293,7 @@ fn native_create_prepares_directories_without_running_anything() {
     assert!(net.join("logs").is_dir());
     assert!(net.join("config-directory/seed-0").is_dir());
     assert!(net.join("services.json").exists());
-    assert!(h.fake.lines().is_empty());
+    assert!(non_probe_calls(&h.fake).is_empty());
 }
 
 #[test]
@@ -299,6 +307,7 @@ fn native_default_network_generates_keys_with_mina() {
         h.fake
             .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");
     }
+    h.fake.reply(1, "", ""); // mina version: no installed config
     // stop at the archive database step so the test never fetches schemas over HTTP
     h.fake.reply_err(std::io::ErrorKind::NotFound);
     h.run(&[
@@ -314,7 +323,7 @@ fn native_default_network_generates_keys_with_mina() {
     .unwrap_err();
 
     let calls = h.fake.calls.borrow();
-    assert_eq!(calls.len(), 13);
+    assert_eq!(calls.len(), 14);
     assert!(calls[0]
         .line()
         .contains("advanced generate-keypair -privkey-path"));
@@ -323,8 +332,9 @@ fn native_default_network_generates_keys_with_mina() {
         vec![("MINA_PRIVKEY_PASS".into(), "naughty blue worm".into())]
     );
     assert!(calls[6].line().contains("libp2p generate-keypair"));
+    assert!(calls[12].line().ends_with("/mina version"));
     assert_eq!(
-        calls[12].line(),
+        calls[13].line(),
         "psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c DROP DATABASE IF EXISTS minimina_def"
     );
     drop(calls);
@@ -386,7 +396,7 @@ fn native_network_remembers_its_mode() {
     h.run(&["network", "stop", "-n", "nat"]).unwrap();
     h.run(&["node", "stop", "-n", "nat", "-i", "seed-0"])
         .unwrap_err();
-    assert!(h.fake.lines().is_empty(), "{:?}", h.fake.lines());
+    assert!(non_probe_calls(&h.fake).is_empty(), "{:?}", h.fake.lines());
 
     let err = h
         .run(&["--mode", "docker", "network", "stop", "-n", "nat"])
@@ -395,7 +405,7 @@ fn native_network_remembers_its_mode() {
 
     h.run(&["network", "delete", "-n", "nat"]).unwrap();
     assert!(!h.dirs.network_path_exists("nat"));
-    assert!(h.fake.lines().is_empty());
+    assert!(non_probe_calls(&h.fake).is_empty());
 }
 
 #[test]
@@ -440,7 +450,7 @@ fn recreating_a_native_network_does_not_call_docker() {
     );
     h.run(&create).unwrap();
     h.run(&create).unwrap();
-    assert!(h.fake.lines().is_empty());
+    assert!(non_probe_calls(&h.fake).is_empty());
 }
 
 #[test]

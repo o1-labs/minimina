@@ -5,7 +5,7 @@ use crate::{
     cli::{CommandWithNetworkId, ExecutionMode, NetworkCommand, ShutdownTimeout},
     docker::manager::{ContainerState, DockerManager},
     genesis_ledger::default,
-    native::manager::NativeManager,
+    native::{manager::NativeManager, mina_locator},
     network_meta::NetworkMeta,
     output::{self, network},
     runner::check,
@@ -299,6 +299,15 @@ fn create_network_native(
     network_id: &str,
     services: &[ServiceConfig],
 ) -> Result<()> {
+    if let Some(config) =
+        mina_locator::installed_network_config(ctx.runner.as_ref(), ctx.bin_path()?)
+    {
+        warn!(
+            "{} is merged into every config this mina runs with: its fork point, peers and \
+             constants override the local network. Use a generic mina build for a clean network.",
+            config.display()
+        );
+    }
     info!("Successfully prepared native network '{network_id}'!");
 
     // Handle archive node setup with local postgres
