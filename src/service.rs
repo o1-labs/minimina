@@ -7,6 +7,7 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::cli::ExecutionMode;
 use crate::{
     docker::compose::CONFIG_DIRECTORY, genesis_ledger::GENESIS_LEDGER_JSON, topology::GitBuild,
 };
@@ -70,17 +71,20 @@ pub struct ServiceConfig {
 }
 
 impl ServiceConfig {
+    /// libp2p address of a seed: its compose service name in docker mode,
+    /// localhost in native mode (every node shares the host).
     pub fn generate_peer(
         seed_name: &str,
         network_name: &str,
         libp2p_peerid: &str,
         external_port: u16,
+        mode: ExecutionMode,
     ) -> String {
-        let seed_host = format!("{}-{}", seed_name, network_name);
-        format!(
-            "/dns4/{}/tcp/{}/p2p/{}",
-            seed_host, external_port, libp2p_peerid
-        )
+        let host = match mode {
+            ExecutionMode::Docker => format!("dns4/{seed_name}-{network_name}"),
+            ExecutionMode::Native => "ip4/127.0.0.1".to_string(),
+        };
+        format!("/{host}/tcp/{external_port}/p2p/{libp2p_peerid}")
     }
 
     /// Generate base daemon command common for most mina services
