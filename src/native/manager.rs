@@ -735,15 +735,24 @@ mod tests {
     }
 
     /// A network dir plus a bin dir whose `mina` and `mina-archive` run `script`.
+    ///
+    /// Holds a lock for the test's lifetime: a fork in one test thread inherits the
+    /// port probe sockets of another until `exec`, so spawning tests run one at a time.
     struct Sandbox {
         net: tempfile::TempDir,
         bin: tempfile::TempDir,
+        _serial: std::sync::MutexGuard<'static, ()>,
     }
+
+    static SPAWNING_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     impl Sandbox {
         fn new(script: &str) -> Self {
             use std::os::unix::fs::PermissionsExt;
             let sandbox = Sandbox {
+                _serial: SPAWNING_TESTS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
                 net: tempfile::tempdir().unwrap(),
                 bin: tempfile::tempdir().unwrap(),
             };
