@@ -108,9 +108,11 @@ mod test {
         use std::fs::File;
         use std::io::Write;
         use std::path::PathBuf;
-        use tempdir::TempDir;
 
-        let tempdir = TempDir::new("test_get_endpoint").expect("Cannot create temporary directory");
+        let tempdir = tempfile::Builder::new()
+            .prefix("test_get_endpoint")
+            .tempdir()
+            .expect("Cannot create temporary directory");
         let network_info_str = "{
             \"network_id\": \"test_deserialize\",
             \"nodes\": {

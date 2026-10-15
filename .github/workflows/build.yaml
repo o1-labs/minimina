@@ -5,16 +5,13 @@ on:
     tags:
       - '*'
   pull_request:
-    branches:
-      - main
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  fmt:
     runs-on: ubuntu-latest
-
     steps:
     - name: 📥 Checkout
       uses: actions/checkout@v4
@@ -22,14 +19,53 @@ jobs:
     - name: ✅ Format
       run: cargo fmt --all -- --check
 
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+
+    - uses: Swatinem/rust-cache@v2
+
     - name: 🔍 Lint
       run: cargo clippy --all-targets --all-features -- -D warnings
 
-    - name: 🛠️ Build
-      run: cargo build --verbose
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
 
-    - name: 🧪 Test
-      run: cargo test --verbose
+    - name: 🛡️ Advisories, licenses, bans, sources
+      uses: EmbarkStudios/cargo-deny-action@v2
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+
+    - uses: Swatinem/rust-cache@v2
+
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-llvm-cov
+
+    - name: 🛠️ Build
+      run: cargo build --locked --verbose
+
+    - name: 🧪 Test with coverage
+      run: |
+          cargo llvm-cov --locked --lcov --output-path lcov.info --fail-under-lines "$MIN_LINE_COVERAGE"
+          cargo llvm-cov report --summary-only | tee -a "$GITHUB_STEP_SUMMARY"
+      env:
+        MIN_LINE_COVERAGE: 45
+
+    - name: 📤 Coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: lcov
+        path: lcov.info
 
   integration-native:
     needs: build
@@ -141,6 +177,9 @@ jobs:
   deploy:
     if: startsWith(github.ref, 'refs/tags/')
     needs:
+      - fmt
+      - clippy
+      - deny
       - build
     runs-on: ubuntu-latest
     environment: package
