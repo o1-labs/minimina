@@ -124,6 +124,8 @@ fn docker_create_from_topology_writes_network_files() {
         assert!(net.join(file).exists(), "missing {file}");
     }
     assert_eq!(h.fake.lines()[2..], [h.compose("small", "create")]);
+    let peers = std::fs::read_to_string(net.join("peer_list_file.txt")).unwrap();
+    assert!(peers.starts_with("/dns4/seed-0-small/tcp/"), "{peers}");
     assert!(h.dirs.get_network_info("small").unwrap().contains("seed-0"));
 }
 
@@ -290,6 +292,12 @@ fn native_create_prepares_directories_without_running_anything() {
     .unwrap();
 
     let net = h.dirs.network_path("nat");
+    // native nodes share the host: the seed is dialled on localhost, not a compose DNS name
+    let peers = std::fs::read_to_string(net.join("peer_list_file.txt")).unwrap();
+    assert!(
+        peers.starts_with("/ip4/127.0.0.1/tcp/") && peers.contains("/p2p/12D3KooW"),
+        "{peers}"
+    );
     assert!(net.join("logs").is_dir());
     assert!(net.join("config-directory/seed-0").is_dir());
     assert!(net.join("services.json").exists());
