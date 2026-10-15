@@ -219,10 +219,7 @@ fn check_setup_network(ctx: &Context, docker: &DockerManager, network_id: &str) 
             }
             _ => {
                 // volumes hold the old chain and archive data
-                check(
-                    docker.compose_down(None, true)?,
-                    "removing the old network",
-                )?;
+                check(docker.compose_down(None, true)?, "removing the old network")?;
             }
         }
         ctx.dirs.delete_network_directory(network_id)?;
