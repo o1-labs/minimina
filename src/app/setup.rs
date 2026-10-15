@@ -241,7 +241,6 @@ fn generate_default_topology(
         peers: Some(vec![peer]),
         archive_docker_image: Some(docker_image_archive.into()),
         archive_schema_files: Some(vec![
-            format!("https://raw.githubusercontent.com/MinaProtocol/mina/{IMAGE_COMMIT_HASH}/src/app/archive/zkapp_tables.sql"),
             format!("https://raw.githubusercontent.com/MinaProtocol/mina/{IMAGE_COMMIT_HASH}/src/app/archive/create_schema.sql"),
         ]),
         archive_port: Some(3086),

@@ -119,11 +119,11 @@ impl DockerManager {
         self.docker(&["cp", utf8(src)?, destination.as_str()])
     }
 
+    /// Removes containers (and volumes); images are kept, since other networks share them.
     pub fn compose_down(
         &self,
         specific_service: Option<String>,
         remove_volumes: bool,
-        remove_images: bool,
     ) -> Result<Output> {
         let mut args = vec!["down"];
         let specific_service = specific_service.as_deref();
@@ -133,11 +133,6 @@ impl DockerManager {
 
         if remove_volumes {
             args.push("--volumes");
-        }
-
-        if remove_images {
-            args.push("--rmi");
-            args.push("all");
         }
 
         args.push("--remove-orphans");
@@ -387,14 +382,12 @@ mod tests {
         docker
             .compose_stop(vec!["a-net", "b-net"], Some(30))
             .unwrap();
-        docker
-            .compose_down(Some("a-net".into()), true, true)
-            .unwrap();
+        docker.compose_down(Some("a-net".into()), true).unwrap();
         assert_eq!(
             fake.lines(),
             vec![
                 "docker compose -f /home/u/.minimina/net/docker-compose.yaml -p net stop -t 30 a-net b-net",
-                "docker compose -f /home/u/.minimina/net/docker-compose.yaml -p net down a-net --volumes --rmi all --remove-orphans",
+                "docker compose -f /home/u/.minimina/net/docker-compose.yaml -p net down a-net --volumes --remove-orphans",
             ]
         );
     }

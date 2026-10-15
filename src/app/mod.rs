@@ -26,16 +26,11 @@ use std::{
 /// Overrides the postgres server used by native archive nodes at `network create`.
 const POSTGRES_URI_ENV: &str = "MINIMINA_POSTGRES_URI";
 
-// Hardcoded daemon image for default network
-// TODO: This image is very old (berkeley-rc1). Update to a more current image in a separate PR.
-const DEFAULT_DAEMON_DOCKER_IMAGE: &str =
-    "gcr.io/o1labs-192920/mina-daemon:2.0.0berkeley-rc1-1551e2f-bullseye-berkeley";
-
-// Hardcoded archive image for default network
+// Images and archive schema of the default network: Mina 4.0.2, devnet profile.
+const DEFAULT_DAEMON_DOCKER_IMAGE: &str = "minaprotocol/mina-daemon:4.0.2-84b8d96-bookworm-devnet";
 const DEFAULT_ARCHIVE_DOCKER_IMAGE: &str =
-    "gcr.io/o1labs-192920/mina-archive:2.0.0berkeley-rc1-1551e2f-bullseye";
-
-const IMAGE_COMMIT_HASH: &str = "1551e2f";
+    "minaprotocol/mina-archive:4.0.2-84b8d96-bookworm-devnet";
+const IMAGE_COMMIT_HASH: &str = "84b8d96";
 
 /// Everything a command handler needs from its environment.
 pub struct Context {

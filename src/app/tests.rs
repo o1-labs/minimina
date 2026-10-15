@@ -180,7 +180,7 @@ fn docker_start_stop_delete_drive_compose() {
     for expected in [
         h.compose("small", "start"),
         h.compose("small", "stop"),
-        h.compose("small", "down --volumes --rmi all --remove-orphans"),
+        h.compose("small", "down --volumes --remove-orphans"),
     ] {
         assert!(
             lines.contains(&expected),
@@ -479,4 +479,133 @@ fn native_node_start_rejects_unknown_node() {
         .run(&["node", "start", "-n", "nat", "-i", "ghost"])
         .unwrap_err();
     assert!(format!("{err:#}").contains("Node 'ghost' does not exist in network 'nat'"));
+}
+
+const LARGE_TOPOLOGY: &str = "tests/data/large_network/topology.json";
+const LARGE_LEDGER: &str = "tests/data/large_network/genesis_ledger.json";
+
+/// The large network (with an archive node) whose schema is a local file.
+fn archive_topology(dir: &Path) -> std::path::PathBuf {
+    let schema = dir.join("create_schema.sql");
+    std::fs::write(&schema, "CREATE TABLE blocks ();").unwrap();
+    let mut topology: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(LARGE_TOPOLOGY).unwrap()).unwrap();
+    topology["archive-node"]["schema_files"] = serde_json::json!([schema.to_str().unwrap()]);
+    let path = dir.join("topology.json");
+    std::fs::write(&path, topology.to_string()).unwrap();
+    path
+}
+
+/// Replies for `network create` up to the schema step of the archive database.
+fn queue_archive_create(h: &Harness, network_id: &str) {
+    let postgres = format!("postgres-{network_id}");
+    let ps = format!(
+        r#"{{"ID":"1","Name":"{postgres}","Image":"postgres:17","Command":"","CreatedAt":"","State":"running","Status":"Up","Health":"","ExitCode":0,"Labels":"","Service":"{postgres}"}}"#
+    );
+    h.docker_ok()
+        .reply(0, "", "") // compose create
+        .reply(0, "", "") // compose start postgres
+        .reply(0, &ps, "") // compose ps
+        .reply(2, "", "no response") // pg_isready: still in init
+        .reply(0, "", "") // pg_isready
+        .reply(0, "", "") // createdb
+        .reply(0, "", ""); // docker cp schema
+}
+
+#[test]
+fn docker_archive_create_waits_for_postgres_and_applies_schema() {
+    let h = Harness::new();
+    let dir = tempfile::tempdir().unwrap();
+    let topology = archive_topology(dir.path());
+    queue_archive_create(&h, "arch");
+    h.run(&[
+        "network",
+        "create",
+        "-n",
+        "arch",
+        "-t",
+        path_arg(&topology),
+        "-g",
+        LARGE_LEDGER,
+    ])
+    .unwrap();
+
+    let lines = h.fake.lines();
+    let pos = |needle: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no `{needle}` in {lines:#?}"))
+    };
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|l| l.contains("pg_isready -h 127.0.0.1"))
+            .count(),
+        2
+    );
+    assert!(pos("pg_isready") < pos("createdb -U postgres archive"));
+    assert!(lines[pos("docker cp")].ends_with("postgres-arch:/tmp/create_schema.sql"));
+    assert!(lines[pos("psql")].ends_with(
+        "exec -i postgres-arch psql -U postgres -d archive -v ON_ERROR_STOP=1 -f /tmp/create_schema.sql"
+    ));
+    assert!(lines.last().unwrap().ends_with("stop postgres-arch"));
+}
+
+#[test]
+fn docker_archive_create_fails_on_schema_error() {
+    let h = Harness::new();
+    let dir = tempfile::tempdir().unwrap();
+    let topology = archive_topology(dir.path());
+    queue_archive_create(&h, "arch");
+    h.fake.reply(3, "", "ERROR: syntax error");
+    let err = h
+        .run(&[
+            "network",
+            "create",
+            "-n",
+            "arch",
+            "-t",
+            path_arg(&topology),
+            "-g",
+            LARGE_LEDGER,
+        ])
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "applying schema create_schema.sql failed (exit status: 3): ERROR: syntax error"
+    );
+}
+
+#[test]
+fn docker_archive_create_fails_when_createdb_fails() {
+    let h = Harness::new();
+    let dir = tempfile::tempdir().unwrap();
+    let topology = archive_topology(dir.path());
+    let postgres = "postgres-arch";
+    let ps = format!(
+        r#"{{"ID":"1","Name":"{postgres}","Image":"postgres:17","Command":"","CreatedAt":"","State":"running","Status":"Up","Health":"","ExitCode":0,"Labels":"","Service":"{postgres}"}}"#
+    );
+    h.docker_ok()
+        .reply(0, "", "")
+        .reply(0, "", "")
+        .reply(0, &ps, "")
+        .reply(0, "", "")
+        .reply(1, "", "container is not running");
+    let err = h
+        .run(&[
+            "network",
+            "create",
+            "-n",
+            "arch",
+            "-t",
+            path_arg(&topology),
+            "-g",
+            LARGE_LEDGER,
+        ])
+        .unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("creating the archive database failed"));
+    assert!(err.to_string().contains("container is not running"));
 }

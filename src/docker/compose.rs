@@ -71,6 +71,8 @@ struct Service {
 
 pub const CONFIG_DIRECTORY: &str = "config-directory";
 const POSTGRES_DATA: &str = "postgres-data";
+// postgres:18+ refuses the /var/lib/postgresql/data mount, so the major version is pinned
+const POSTGRES_IMAGE: &str = "postgres:17";
 const RAYON_NUM_THREADS: u32 = 2;
 
 impl DockerCompose {
@@ -178,7 +180,7 @@ impl DockerCompose {
                 postgres_name.clone(),
                 Service {
                     container_name: postgres_name.clone(),
-                    image: "postgres".to_string(),
+                    image: POSTGRES_IMAGE.to_string(),
                     environment: Some(postgres_environment),
                     volumes: Some(vec![format!("{}:/var/lib/postgresql/data", POSTGRES_DATA)]),
                     ports: Some(vec!["5432".to_string()]),
@@ -426,7 +428,7 @@ mod tests {
         assert!(docker_compose.contains("snark-coordinator"));
         assert!(docker_compose.contains("snark-worker"));
         assert!(docker_compose.contains("mina-archive555"));
-        assert!(docker_compose.contains("postgres"));
+        assert!(docker_compose.contains("image: postgres:17"));
         assert!(docker_compose.contains("postgres-data"));
         assert!(docker_compose.contains("-archive-address"));
         assert!(docker_compose.contains("archive-node-image"));

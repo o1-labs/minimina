@@ -1,11 +1,29 @@
 //! Host checks done before any command runs.
 
 use crate::{cli::ExecutionMode, native::mina_locator, runner::Runner};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context as _, Result};
 use std::path::PathBuf;
 
 // The least supported version of docker compose
-const LEAST_COMPOSE_VERSION: &str = "2.21.0";
+const LEAST_COMPOSE_VERSION: (u32, u32, u32) = (2, 21, 0);
+
+/// Parses `MAJOR.MINOR[.PATCH]` with an optional `v` prefix and `-`/`+` suffix
+/// (`2.29.1`, `v2.29.1-desktop.1`).
+fn parse_version(version: &str) -> Option<(u32, u32, u32)> {
+    let core = version
+        .trim()
+        .trim_start_matches('v')
+        .split(['-', '+'])
+        .next()?;
+    let mut parts = core.split('.').map(str::parse::<u32>);
+    let major = parts.next()?.ok()?;
+    let minor = parts.next()?.ok()?;
+    let patch = parts.next().unwrap_or(Ok(0)).ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
 
 /// Docker mode needs `docker` and the compose v2 plugin; native mode needs nothing here.
 pub fn check_execution_environment(mode: &ExecutionMode, runner: &dyn Runner) -> Result<()> {
@@ -27,10 +45,13 @@ pub fn check_execution_environment(mode: &ExecutionMode, runner: &dyn Runner) ->
     match runner.run("docker".as_ref(), &["compose", "version", "--short"], &[]) {
         Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if version.as_str() < LEAST_COMPOSE_VERSION {
+            let parsed = parse_version(&version)
+                .with_context(|| format!("Unrecognised Docker Compose version '{version}'"))?;
+            if parsed < LEAST_COMPOSE_VERSION {
+                let (major, minor, patch) = LEAST_COMPOSE_VERSION;
                 bail!(
                     "Docker Compose version '{version}' is older than \
-                     the minimum supported version '{LEAST_COMPOSE_VERSION}'. \
+                     the minimum supported version '{major}.{minor}.{patch}'. \
                      Please update Docker Compose: https://docs.docker.com/compose/install/"
                 );
             }
@@ -121,6 +142,38 @@ mod tests {
         fake.reply(0, "", "").reply(0, "2.20.3", "");
         let err = check_execution_environment(&ExecutionMode::Docker, &fake).unwrap_err();
         assert!(err.to_string().contains("older than"));
+    }
+
+    #[test]
+    fn compose_versions_compare_numerically() {
+        assert_eq!(parse_version("2.29.1"), Some((2, 29, 1)));
+        assert_eq!(parse_version("v2.30.3-desktop.1\n"), Some((2, 30, 3)));
+        assert_eq!(parse_version("2.40"), Some((2, 40, 0)));
+        assert_eq!(parse_version("2.x"), None);
+        assert_eq!(parse_version("1.2.3.4"), None);
+        // the string comparison accepted these
+        assert!(parse_version("2.3.0").unwrap() < LEAST_COMPOSE_VERSION);
+        assert!(parse_version("2.100.0").unwrap() > LEAST_COMPOSE_VERSION);
+    }
+
+    #[test]
+    fn docker_mode_rejects_old_compose_that_sorts_after_as_text() {
+        let fake = FakeRunner::default();
+        fake.reply(0, "", "").reply(0, "2.3.0", "");
+        let err = check_execution_environment(&ExecutionMode::Docker, &fake).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("older than the minimum supported version '2.21.0'"));
+    }
+
+    #[test]
+    fn docker_mode_rejects_unparseable_compose_version() {
+        let fake = FakeRunner::default();
+        fake.reply(0, "", "").reply(0, "dev", "");
+        let err = check_execution_environment(&ExecutionMode::Docker, &fake).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Unrecognised Docker Compose version 'dev'"));
     }
 
     #[test]
