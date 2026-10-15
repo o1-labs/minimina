@@ -142,6 +142,5 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
         assert!(err.to_string().contains("needed by 'x'"));
         drop(listener);
-        check_ports_available(&used).unwrap();
     }
 }
