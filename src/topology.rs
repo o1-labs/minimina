@@ -626,8 +626,7 @@ mod tests {
 
     #[test]
     fn services_get_ports_in_name_order() {
-        let topology =
-            Topology::new(Path::new("tests/data/large_network/topology.json")).unwrap();
+        let topology = Topology::new(Path::new("tests/data/large_network/topology.json")).unwrap();
         let first = topology.services(Path::new("/p"));
         for _ in 0..5 {
             let again = Topology::new(Path::new("tests/data/large_network/topology.json"))

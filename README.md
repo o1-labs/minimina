@@ -33,8 +33,15 @@ To build the package locally: `scripts/deb-changelog.sh && cargo deb`.
 ## Testing
 
 ```bash
-cargo test
+cargo test                 # unit + CLI tests; no docker or mina needed
+cargo llvm-cov --summary-only
+
+# end-to-end: real daemons must produce a block (minutes; CI runs both)
+cargo test --test e2e -- --ignored native_small_network_produces_blocks   # needs a generic mina build
+cargo test --test e2e -- --ignored docker_small_network_produces_blocks   # needs docker
 ```
+
+Use a generic mina build (`mina-devnet-generic`, `*-generic` images) for local networks: network packages install `config_<commit>.json`, which the daemon merges into every config, so the public network's peer list and fork point leak into the local one.
 
 ## Usage
 
@@ -80,7 +87,6 @@ The default network is stored at `~/.minimina/default/` (override with `$MINIMIN
 ├── services.json
 ├── genesis_ledger.json
 ├── create_schema.sql
-├── zkapp_tables.sql
 ├── libp2p-keypairs/    (12 files)
 └── network-keypairs/   (12 files)
 ```
