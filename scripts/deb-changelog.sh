@@ -3,8 +3,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-version=$(cargo metadata --no-deps --format-version 1 \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+# `cargo pkgid` prints path+file:///dir#minimina@1.2.3 (or ...#1.2.3)
+version=$(cargo pkgid | sed -E 's/.*[#@]//')
 commit=$(git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
 maintainer=$(sed -n 's/^maintainer = "\(.*\)"$/\1/p' Cargo.toml)
 
