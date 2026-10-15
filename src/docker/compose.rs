@@ -35,6 +35,10 @@ where
 #[derive(Serialize)]
 struct Defaults {
     environment: Environment,
+    /// A non-seed daemon exits when it finds no peers at boot, which happens when it
+    /// is up before the seed; restarting retries until the seed accepts connections.
+    /// `docker compose stop` is not overridden by this.
+    restart: &'static str,
 }
 
 #[derive(Serialize)]
@@ -309,6 +313,7 @@ impl DockerCompose {
         let compose = DockerCompose {
             version: "3.8".to_string(),
             x_defaults: Defaults {
+                restart: "on-failure",
                 environment: Environment {
                     mina_privkey_pass: "naughty blue worm".to_string(),
                     mina_libp2p_pass: "naughty blue worm".to_string(),
@@ -429,6 +434,7 @@ mod tests {
         assert!(docker_compose.contains("snark-worker"));
         assert!(docker_compose.contains("mina-archive555"));
         assert!(docker_compose.contains("image: postgres:17"));
+        assert!(docker_compose.contains("restart: on-failure"));
         assert!(docker_compose.contains("postgres-data"));
         assert!(docker_compose.contains("-archive-address"));
         assert!(docker_compose.contains("archive-node-image"));
