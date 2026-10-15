@@ -13,7 +13,7 @@ use assert_cmd::Command;
 use serde_json::Value;
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -21,10 +21,18 @@ const SMALL_TOPOLOGY: &str = "tests/data/small_network/topology.json";
 const SMALL_LEDGER: &str = "tests/data/small_network/genesis_ledger.json";
 const DEFAULT_IMAGE: &str = "minaprotocol/mina-daemon:4.0.1-1e9d141-bookworm-devnet-generic";
 /// Daemon start (genesis proof) plus a few 2-minute slots, with room for slow runners.
-const BLOCK_TIMEOUT: Duration = Duration::from_secs(40 * 60);
+/// `MINIMINA_E2E_TIMEOUT_SECS` overrides it.
+fn block_timeout() -> Duration {
+    std::env::var("MINIMINA_E2E_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map_or(Duration::from_secs(40 * 60), Duration::from_secs)
+}
 
 struct Network {
-    home: tempfile::TempDir,
+    /// `MINIMINA_HOME`: under `MINIMINA_E2E_KEEP` (kept for CI to upload) or a temp dir.
+    home: PathBuf,
+    _temp: Option<tempfile::TempDir>,
     id: &'static str,
     mode_args: Vec<String>,
 }
@@ -33,7 +41,7 @@ impl Network {
     fn minimina(&self, args: &[&str]) -> Value {
         let out = Command::cargo_bin("minimina")
             .unwrap()
-            .env("MINIMINA_HOME", self.home.path())
+            .env("MINIMINA_HOME", self.home.as_path())
             .args(args)
             .output()
             .unwrap();
@@ -47,8 +55,20 @@ impl Network {
     }
 
     fn create(id: &'static str, mode_args: Vec<String>, topology: &Path) -> (Self, Value) {
+        let (home, temp) = match std::env::var("MINIMINA_E2E_KEEP") {
+            Ok(keep) => {
+                let home = Path::new(&keep).join(id);
+                fs::create_dir_all(&home).unwrap();
+                (home, None)
+            }
+            Err(_) => {
+                let temp = tempfile::tempdir().unwrap();
+                (temp.path().to_path_buf(), Some(temp))
+            }
+        };
         let net = Network {
-            home: tempfile::tempdir().unwrap(),
+            home,
+            _temp: temp,
             id,
             mode_args,
         };
@@ -106,59 +126,99 @@ impl Network {
                 }
             }
             assert!(
-                start.elapsed() < BLOCK_TIMEOUT,
+                start.elapsed() < block_timeout(),
                 "no block within {}s; logs under {}",
-                BLOCK_TIMEOUT.as_secs(),
-                self.home.path().display()
+                block_timeout().as_secs(),
+                self.home.as_path().display()
             );
             std::thread::sleep(Duration::from_secs(20));
         }
     }
 }
 
-impl Drop for Network {
-    fn drop(&mut self) {
-        // keep the evidence before tearing down: CI uploads MINIMINA_E2E_KEEP
-        if std::thread::panicking() {
-            if let Ok(keep) = std::env::var("MINIMINA_E2E_KEEP") {
-                let keep = Path::new(&keep).join(self.id);
-                let _ = fs::create_dir_all(&keep);
-                let _ = std::process::Command::new("cp")
-                    .arg("-r")
-                    .arg(self.home.path())
-                    .arg(keep.join("home"))
-                    .status();
-                // docker mode: container output is the daemon log
-                let names = std::process::Command::new("docker")
-                    .args(["ps", "-a", "--format", "{{.Names}}"])
-                    .args([
-                        "--filter",
-                        &format!("label=com.docker.compose.project={}", self.id),
-                    ])
-                    .output();
-                for name in names
-                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-                    .unwrap_or_default()
-                    .lines()
-                {
-                    if let Ok(out) = std::process::Command::new("docker")
-                        .args(["logs", name])
-                        .output()
-                    {
-                        let _ = fs::write(
-                            keep.join(format!("{name}.log")),
-                            [out.stdout, out.stderr].concat(),
-                        );
-                    }
-                }
+impl Network {
+    /// Prints what a failed run needs: network status and the tail of every node log.
+    fn report_failure(&self) {
+        let status = Command::cargo_bin("minimina")
+            .unwrap()
+            .env("MINIMINA_HOME", &self.home)
+            .args(["network", "status", "-n", self.id])
+            .output();
+        if let Ok(out) = status {
+            eprintln!(
+                "--- network status\n{}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+        }
+        let logs = self.home.join(".minimina").join(self.id).join("logs");
+        for entry in fs::read_dir(&logs).into_iter().flatten().flatten() {
+            let text = fs::read_to_string(entry.path()).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            eprintln!(
+                "--- {} (last 40 of {} lines)",
+                entry.path().display(),
+                lines.len()
+            );
+            for line in &lines[lines.len().saturating_sub(40)..] {
+                eprintln!("{}", &line[..line.len().min(400)]);
             }
         }
-        // runs on failure too, so nodes never outlive the test
+        // docker mode: container output is the daemon log
+        let names = std::process::Command::new("docker")
+            .args(["ps", "-a", "--format", "{{.Names}} {{.Status}}"])
+            .args([
+                "--filter",
+                &format!("label=com.docker.compose.project={}", self.id),
+            ])
+            .output();
+        for line in names
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+            .lines()
+        {
+            eprintln!("--- container {line}");
+            let name = line.split_whitespace().next().unwrap_or_default();
+            if let Ok(out) = std::process::Command::new("docker")
+                .args(["logs", "--tail", "40", name])
+                .output()
+            {
+                eprintln!(
+                    "{}",
+                    String::from_utf8_lossy(&[out.stdout, out.stderr].concat())
+                );
+            }
+            if let Ok(out) = std::process::Command::new("docker")
+                .args(["logs", name])
+                .output()
+            {
+                let _ = fs::write(
+                    self.home.join(format!("{name}.log")),
+                    [out.stdout, out.stderr].concat(),
+                );
+            }
+        }
+    }
+}
+
+impl Drop for Network {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.report_failure();
+        }
+        // runs on failure too, so nodes never outlive the test; with
+        // MINIMINA_E2E_KEEP the logs stay because only containers/processes go
         let _ = Command::cargo_bin("minimina")
             .unwrap()
-            .env("MINIMINA_HOME", self.home.path())
-            .args(["network", "delete", "-n", self.id])
+            .env("MINIMINA_HOME", &self.home)
+            .args(["network", "stop", "-n", self.id, "--timeout", "30"])
             .output();
+        if self._temp.is_some() || !std::thread::panicking() {
+            let _ = Command::cargo_bin("minimina")
+                .unwrap()
+                .env("MINIMINA_HOME", &self.home)
+                .args(["network", "delete", "-n", self.id])
+                .output();
+        }
     }
 }
 
@@ -187,7 +247,7 @@ fn native_small_network_produces_blocks() {
     assert_eq!(status["status"], "running(2)", "{status}");
     let logs = Command::cargo_bin("minimina")
         .unwrap()
-        .env("MINIMINA_HOME", net.home.path())
+        .env("MINIMINA_HOME", net.home.as_path())
         .args(["node", "logs", "-n", net.id, "-i", "receiver", "-r"])
         .output()
         .unwrap();

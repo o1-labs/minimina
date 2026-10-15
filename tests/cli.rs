@@ -28,7 +28,12 @@ impl Env {
             bin: tempfile::tempdir().unwrap(),
         };
         let mina = env.bin.path().join("mina");
-        fs::write(&mina, "#!/bin/sh\necho \"mina $*\"\nexec sleep 300\n").unwrap();
+        // `mina version` must return: native create probes it for an installed config
+        fs::write(
+            &mina,
+            "#!/bin/sh\n[ \"$1\" = version ] && { echo 'Commit 0000000000'; exit 0; }\necho \"mina $*\"\nexec sleep 300\n",
+        )
+        .unwrap();
         fs::set_permissions(&mina, fs::Permissions::from_mode(0o755)).unwrap();
         env
     }
