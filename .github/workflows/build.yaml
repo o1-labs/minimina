@@ -67,112 +67,68 @@ jobs:
         name: lcov
         path: lcov.info
 
-  integration-native:
+  e2e-native:
     needs: build
     runs-on: ubuntu-latest
-
+    timeout-minutes: 60
     steps:
     - name: 📥 Checkout
       uses: actions/checkout@v4
 
-    - name: 🛠️ Build minimina
-      run: cargo build --verbose
+    - uses: Swatinem/rust-cache@v2
 
-    - name: 📦 Install mina from packages.o1test.net
+    - name: 📦 Install generic mina from packages.o1test.net
+      # generic: network packages install config_<commit>.json, which the daemon
+      # merges into every config (public peer list and fork point)
       run: |
-          echo "deb [trusted=yes] http://packages.o1test.net noble stable" | sudo tee /etc/apt/sources.list.d/mina.list
+          echo "deb [trusted=yes] https://packages.o1test.net noble stable" | sudo tee /etc/apt/sources.list.d/mina.list
           sudo apt-get update
-          sudo apt-get install -y mina-mainnet
-          which mina
+          sudo apt-get install -y mina-devnet-generic
           mina version
 
-    - name: 🧪 Test native mode - topology network
-      shell: bash
-      run: |
-          export PATH="$(pwd)/target/debug:$PATH"
-          MINA_BIN_DIR=$(dirname $(which mina))
+    - name: 🧪 Native network produces blocks
+      run: cargo test --locked --test e2e -- --ignored --nocapture native_small_network_produces_blocks
+      env:
+        MINIMINA_E2E_KEEP: ${{ runner.temp }}/e2e
 
-          # Create network from topology (uses pre-existing keys)
-          minimina --mode native --bin-path "$MINA_BIN_DIR" \
-            network create -n test-native \
-            -t tests/data/small_network/topology.json \
-            -g tests/data/small_network/genesis_ledger.json
+    - name: 📤 Network directory on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: e2e-native
+        path: ${{ runner.temp }}/e2e
 
-          # Verify network was created
-          minimina network info -n test-native
-          minimina network list
-
-          # Start the network (spawns real mina processes)
-          minimina --mode native --bin-path "$MINA_BIN_DIR" \
-            network start -n test-native
-
-          # Give processes a moment to start
-          sleep 5
-
-          # Check logs exist
-          minimina --mode native --bin-path "$MINA_BIN_DIR" \
-            node logs -i seed-0 -n test-native -r
-
-          # Stop the network
-          minimina --mode native --bin-path "$MINA_BIN_DIR" \
-            network stop -n test-native
-
-          # Delete the network
-          minimina --mode native --bin-path "$MINA_BIN_DIR" \
-            network delete -n test-native
-
-          echo "Native mode integration test passed!"
-
-  integration-docker:
-    if: ${{ false }} # Disabled: requires self-hosted runners with mina Docker images
+  e2e-docker:
+    needs: build
     runs-on: ubuntu-latest
-
+    timeout-minutes: 75
+    env:
+      MINIMINA_E2E_IMAGE: minaprotocol/mina-daemon:4.0.1-1e9d141-bookworm-devnet-generic
     steps:
+    - name: 🧹 Free disk for the daemon image
+      run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
     - name: 📥 Checkout
       uses: actions/checkout@v4
 
-    - name: 🪄 Extract reference name
-      id: extract_ref
-      shell: bash
-      run: |
-        if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-          REF_NAME=${{ github.head_ref }}
-        else
-          REF_NAME=$(echo ${GITHUB_REF#refs/*/})
-        fi
-        echo "Extracted reference name: $REF_NAME"
-        echo "ref=$REF_NAME" >> $GITHUB_OUTPUT
+    - uses: Swatinem/rust-cache@v2
 
-    - name: 🤌 Get MiniMina from source
-      uses: o1-labs/install-minimina-action@v1
+    - name: 🐳 Pull daemon image
+      run: docker pull "$MINIMINA_E2E_IMAGE"
+
+    - name: 🧪 Docker network produces blocks
+      run: cargo test --locked --test e2e -- --ignored --nocapture docker_small_network_produces_blocks
+      env:
+        MINIMINA_E2E_KEEP: ${{ runner.temp }}/e2e
+
+    - name: 📤 Network directory and container logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
       with:
-        commit_or_branch: ${{ steps.extract_ref.outputs.ref }}
-        repository: ${{ github.repository }}
-
-    - name: 🧪 Test default network
-      shell: bash
-      run: |
-          minimina network create
-          minimina network start
-          minimina network status
-          minimina network info
-          minimina node stop -i mina-bp-1
-          minimina node start -i mina-bp-1
-          minimina network stop
-          minimina network delete
-
-    - name: 🧪 Test network from topology
-      shell: bash
-      run: |
-          cd minimina
-          minimina network create -n large -t tests/data/large_network/topology.json -g tests/data/large_network/genesis_ledger.json
-          minimina network start -n large
-          minimina network status -n large
-          minimina network info -n large
-          minimina node stop -n large -i empty_node-1
-          minimina node start -n large -i empty_node-1
-          minimina network stop -n large
-          minimina network delete -n large
+        name: e2e-docker
+        path: ${{ runner.temp }}/e2e
 
   deploy:
     if: startsWith(github.ref, 'refs/tags/')

@@ -308,7 +308,7 @@ fn native_default_network_generates_keys_with_mina() {
             .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");
     }
     h.fake.reply(1, "", ""); // mina version: no installed config
-    // stop at the archive database step so the test never fetches schemas over HTTP
+                             // stop at the archive database step so the test never fetches schemas over HTTP
     h.fake.reply_err(std::io::ErrorKind::NotFound);
     h.run(&[
         "--mode",
