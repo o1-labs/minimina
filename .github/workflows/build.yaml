@@ -78,11 +78,13 @@ jobs:
     - name: 🛠️ Build minimina
       run: cargo build --verbose
 
-    - name: 📦 Install mina from packages.o1test.net
+    - name: 📦 Install generic mina from packages.o1test.net
+      # generic: network packages install config_<commit>.json, which the daemon
+      # merges into every config (public fork point and peers); the seed then exits
       run: |
-          echo "deb [trusted=yes] http://packages.o1test.net noble stable" | sudo tee /etc/apt/sources.list.d/mina.list
+          echo "deb [trusted=yes] https://packages.o1test.net noble stable" | sudo tee /etc/apt/sources.list.d/mina.list
           sudo apt-get update
-          sudo apt-get install -y mina-mainnet
+          sudo apt-get install -y mina-devnet-generic
           which mina
           mina version
 
