@@ -168,7 +168,11 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
                 ExecutionMode::Native => {
                     let services = ctx.dirs.get_services_info(&network_id)?;
                     ctx.native(&network_id)?
-                        .start_all(&services, &network_id)
+                        .start_all(
+                            &services,
+                            &network_id,
+                            std::time::Duration::from_secs(cmd.seed_timeout),
+                        )
                         .with_context(|| format!("Failed to start network '{network_id}'"))?;
                 }
             }
