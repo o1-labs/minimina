@@ -77,7 +77,6 @@ The default network is stored at `~/.minimina/default/` (override with `$MINIMIN
 ├── services.json
 ├── genesis_ledger.json
 ├── create_schema.sql
-├── zkapp_tables.sql
 ├── libp2p-keypairs/    (12 files)
 └── network-keypairs/   (12 files)
 ```

@@ -35,6 +35,10 @@ where
 #[derive(Serialize)]
 struct Defaults {
     environment: Environment,
+    /// A non-seed daemon exits when it finds no peers at boot, which happens when it
+    /// is up before the seed; restarting retries until the seed accepts connections.
+    /// `docker compose stop` is not overridden by this.
+    restart: &'static str,
 }
 
 #[derive(Serialize)]
@@ -71,6 +75,8 @@ struct Service {
 
 pub const CONFIG_DIRECTORY: &str = "config-directory";
 const POSTGRES_DATA: &str = "postgres-data";
+// postgres:18+ refuses the /var/lib/postgresql/data mount, so the major version is pinned
+const POSTGRES_IMAGE: &str = "postgres:17";
 const RAYON_NUM_THREADS: u32 = 2;
 
 impl DockerCompose {
@@ -178,7 +184,7 @@ impl DockerCompose {
                 postgres_name.clone(),
                 Service {
                     container_name: postgres_name.clone(),
-                    image: "postgres".to_string(),
+                    image: POSTGRES_IMAGE.to_string(),
                     environment: Some(postgres_environment),
                     volumes: Some(vec![format!("{}:/var/lib/postgresql/data", POSTGRES_DATA)]),
                     ports: Some(vec!["5432".to_string()]),
@@ -307,6 +313,7 @@ impl DockerCompose {
         let compose = DockerCompose {
             version: "3.8".to_string(),
             x_defaults: Defaults {
+                restart: "on-failure",
                 environment: Environment {
                     mina_privkey_pass: "naughty blue worm".to_string(),
                     mina_libp2p_pass: "naughty blue worm".to_string(),
@@ -426,7 +433,8 @@ mod tests {
         assert!(docker_compose.contains("snark-coordinator"));
         assert!(docker_compose.contains("snark-worker"));
         assert!(docker_compose.contains("mina-archive555"));
-        assert!(docker_compose.contains("postgres"));
+        assert!(docker_compose.contains("image: postgres:17"));
+        assert!(docker_compose.contains("restart: on-failure"));
         assert!(docker_compose.contains("postgres-data"));
         assert!(docker_compose.contains("-archive-address"));
         assert!(docker_compose.contains("archive-node-image"));

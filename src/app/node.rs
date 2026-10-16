@@ -289,7 +289,7 @@ fn start_docker(
 
     if cmd.fresh_state {
         info!("Starting node '{node_id}' in network '{network_id}' with fresh state.");
-        docker.compose_down(Some(container.clone()), true, false)?;
+        docker.compose_down(Some(container.clone()), true)?;
         docker.compose_create(Some(container.clone()))?;
     }
 
