@@ -13,6 +13,15 @@ use std::{
 };
 
 const SMALL_TOPOLOGY: &str = "tests/data/small_network/topology.json";
+
+const FAKE_MINA: &str = r#"#!/bin/sh
+[ "$1" = version ] && { echo 'Commit 0000000000'; exit 0; }
+echo "mina $*"
+port=""; prev=""
+for a in "$@"; do [ "$prev" = "-external-port" ] && port=$a; prev=$a; done
+[ -n "$port" ] && exec python3 -c "import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('0.0.0.0', $port)); s.listen(); time.sleep(300)"
+exec sleep 300
+"#;
 const SMALL_LEDGER: &str = "tests/data/small_network/genesis_ledger.json";
 
 struct Env {
@@ -28,12 +37,10 @@ impl Env {
             bin: tempfile::tempdir().unwrap(),
         };
         let mina = env.bin.path().join("mina");
-        // `mina version` must return: native create probes it for an installed config
-        fs::write(
-            &mina,
-            "#!/bin/sh\n[ \"$1\" = version ] && { echo 'Commit 0000000000'; exit 0; }\necho \"mina $*\"\nexec sleep 300\n",
-        )
-        .unwrap();
+        // `mina version` must return (native create probes it for an installed config),
+        // and the daemon listens on -external-port like a seed's libp2p, which
+        // `network start` waits for before starting the other nodes
+        fs::write(&mina, FAKE_MINA).unwrap();
         fs::set_permissions(&mina, fs::Permissions::from_mode(0o755)).unwrap();
         env
     }

@@ -123,7 +123,16 @@ impl NativeManager {
 
     /// Starts every service; fails without starting anything if one is already running
     /// or a port is taken, and stops what it started if a later service fails.
-    pub fn start_all(&self, services: &[ServiceConfig], network_id: &str) -> Result<()> {
+    ///
+    /// Seeds go first: a non-seed daemon exits ("crashing because this is not a seed
+    /// node") when it finds no peer during its initialization, so the others start
+    /// only once every seed accepts libp2p connections, or `seed_timeout` passes.
+    pub fn start_all(
+        &self,
+        services: &[ServiceConfig],
+        network_id: &str,
+        seed_timeout: Duration,
+    ) -> Result<()> {
         let running: Vec<String> = self
             .status()?
             .into_iter()
@@ -138,18 +147,77 @@ impl NativeManager {
         }
         port_manager::check_ports_available(&port_manager::collect_all_ports(services)?)?;
 
-        for service in services {
-            if service.service_type == ServiceType::UptimeServiceBackend {
-                warn!(
-                    "Skipping uptime service backend '{}' in native mode",
-                    service.service_name
-                );
-                continue;
-            }
-            if let Err(e) = self.spawn_service(service, network_id) {
-                warn!("Stopping the services already started after: {e}");
-                self.stop_all(Duration::from_secs(10))?;
-                return Err(e);
+        let (seeds, others): (Vec<&ServiceConfig>, Vec<&ServiceConfig>) = services
+            .iter()
+            .filter(|s| {
+                let skip = s.service_type == ServiceType::UptimeServiceBackend;
+                if skip {
+                    warn!(
+                        "Skipping uptime service backend '{}' in native mode",
+                        s.service_name
+                    );
+                }
+                !skip
+            })
+            .partition(|s| s.service_type == ServiceType::Seed);
+
+        let result = seeds
+            .iter()
+            .try_for_each(|s| self.spawn_service(s, network_id))
+            .and_then(|()| match others.is_empty() {
+                true => Ok(()),
+                false => self.wait_for_seeds(&seeds, seed_timeout),
+            })
+            .and_then(|()| {
+                others
+                    .iter()
+                    .try_for_each(|s| self.spawn_service(s, network_id))
+            });
+        if let Err(e) = result {
+            warn!("Stopping the services already started after: {e}");
+            self.stop_all(Duration::from_secs(10))?;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Waits until every seed accepts TCP connections on its libp2p (external) port.
+    fn wait_for_seeds(&self, seeds: &[&ServiceConfig], timeout: Duration) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        for seed in seeds {
+            let port = seed.client_port.map(|p| p + 2).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("seed '{}' has no client_port", seed.service_name),
+                )
+            })?;
+            info!(
+                "Waiting for seed '{}' to accept connections on port {port}",
+                seed.service_name
+            );
+            let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+            while std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_err() {
+                let record = self.tracker().get(&seed.service_name)?;
+                if !record.as_ref().is_some_and(ProcessRecord::is_alive) {
+                    return Err(io::Error::other(format!(
+                        "seed '{}' exited during startup; see {}",
+                        seed.service_name,
+                        self.logs_dir()
+                            .join(format!("{}.log", seed.service_name))
+                            .display()
+                    )));
+                }
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "seed '{}' did not accept connections on port {port} within {}s",
+                            seed.service_name,
+                            timeout.as_secs()
+                        ),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(500));
             }
         }
         Ok(())
@@ -790,6 +858,27 @@ mod tests {
         }
     }
 
+    /// Fake daemon body that listens on its `-external-port` (as a seed's libp2p
+    /// does) after `delay` seconds, then idles.
+    fn listening_daemon(delay: u32) -> String {
+        format!(
+            r#"port=""; prev=""
+for a in "$@"; do [ "$prev" = "-external-port" ] && port=$a; prev=$a; done
+sleep {delay}
+[ -n "$port" ] && exec python3 -c "import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('0.0.0.0', $port)); s.listen(); time.sleep(300)"
+exec sleep 300"#
+        )
+    }
+
+    const SEED_WAIT: Duration = Duration::from_secs(20);
+
+    fn producer(name: &str) -> ServiceConfig {
+        ServiceConfig {
+            service_type: ServiceType::BlockProducer,
+            ..seed(name)
+        }
+    }
+
     fn seed(name: &str) -> ServiceConfig {
         ServiceConfig {
             service_type: ServiceType::Seed,
@@ -876,10 +965,10 @@ mod tests {
         let sandbox = Sandbox::new("exec sleep 300");
         let native = sandbox.manager();
         let services = vec![seed("a"), seed("b")];
-        native.start_all(&services, "net").unwrap();
+        native.start_all(&services, "net", SEED_WAIT).unwrap();
         assert_eq!(alive(&native), vec!["a", "b"]);
 
-        let err = native.start_all(&services, "net").unwrap_err();
+        let err = native.start_all(&services, "net", SEED_WAIT).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(err.to_string(), "already running: a, b");
         native.stop_all(Duration::from_secs(5)).unwrap();
@@ -887,16 +976,60 @@ mod tests {
 
     #[test]
     fn start_all_rolls_back_when_a_service_fails() {
-        let sandbox = Sandbox::new("exec sleep 300");
+        let sandbox = Sandbox::new(&listening_daemon(0));
         fs::remove_file(sandbox.bin.path().join("mina-archive")).unwrap();
         let native = sandbox.manager();
         let mut archive = seed("arch");
         archive.service_type = ServiceType::ArchiveNode;
         archive.archive_port = Some(free_port());
 
-        let err = native.start_all(&[seed("a"), archive], "net").unwrap_err();
+        let err = native
+            .start_all(&[seed("a"), archive], "net", SEED_WAIT)
+            .unwrap_err();
         assert!(err.to_string().contains("mina-archive"), "{err}");
         assert!(alive(&native).is_empty(), "seed 'a' must be stopped again");
+    }
+
+    #[test]
+    fn non_seeds_start_after_the_seed_accepts_connections() {
+        let sandbox = Sandbox::new(&listening_daemon(1));
+        let native = sandbox.manager();
+        let started = Instant::now();
+        native
+            .start_all(&[producer("bp"), seed("s")], "net", SEED_WAIT)
+            .unwrap();
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        assert_eq!(alive(&native), vec!["bp", "s"]);
+        let record = |n: &str| native.tracker().get(n).unwrap().unwrap();
+        assert!(record("s").started_at <= record("bp").started_at);
+        native.stop_all(Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn seed_exiting_during_startup_fails_fast_without_starting_others() {
+        let sandbox = Sandbox::new("exit 3");
+        let native = sandbox.manager();
+        let started = Instant::now();
+        let err = native
+            .start_all(&[seed("s"), producer("bp")], "net", SEED_WAIT)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("seed 's' exited during startup"),
+            "{err}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(native.tracker().get("bp").unwrap().is_none());
+    }
+
+    #[test]
+    fn seed_that_never_listens_times_out() {
+        let sandbox = Sandbox::new("exec sleep 300");
+        let native = sandbox.manager();
+        let err = native
+            .start_all(&[seed("s"), producer("bp")], "net", Duration::from_secs(1))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(alive(&native).is_empty(), "the seed is stopped again");
     }
 
     #[test]

@@ -128,6 +128,11 @@ pub struct StartNetworkArgs {
     /// Specify log level
     #[clap(short = 'l', long, default_value = "warn")]
     pub log_level: String,
+
+    /// Native mode: seconds to wait for the seeds' libp2p ports before starting
+    /// the other nodes (non-seed daemons exit if they find no peer at boot)
+    #[clap(long, default_value_t = 900)]
+    pub seed_timeout: u64,
 }
 
 #[derive(Subcommand)]
