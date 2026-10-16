@@ -175,6 +175,22 @@ MiniMina supports two deployment modes:
 - **Docker mode** (`src/docker/`): Uses Docker Compose to manage containerized Mina nodes
 - **Native mode** (`src/native/`): Spawns Mina processes directly on the host machine
 
+### Native mode
+
+```bash
+minimina --mode native [--bin-path /usr/local/bin] network create -n local -t topology.json -g genesis_ledger.json
+minimina network start -n local          # mode and bin path come from the network
+minimina network status -n local
+minimina node stop -n local -i seed-0 --timeout 30
+minimina network stop -n local
+```
+
+- `network create` records the mode, `mina` directory and postgres URI in `<network>/minimina.json`; later commands use them, and a conflicting `--mode` is an error. Networks without the file are treated as docker networks.
+- `network start` starts the seeds first and starts the other nodes only when every seed accepts connections on its libp2p port (`--seed-timeout`, default 900 s): a non-seed daemon exits if it finds no peer during its initialization. Seeds are dialled on `127.0.0.1`.
+- Each node is a process group (the daemon and its `libp2p_helper`). `stop` sends SIGTERM to all groups at once and SIGKILL after `--timeout` seconds (default 60). A second `start` of a running node or network is refused.
+- Logs are appended to `<network>/logs/<node>.log`; `node logs`, `node dump-precomputed-blocks`, `node dump-archive-data` and `node run-replayer` work in both modes.
+- Archive nodes run `mina-archive` (from the same directory as `mina`) against a database `minimina_<network_id>`, recreated on every `network create`. The postgres server is `postgres://postgres:postgres@localhost:5432` unless `MINIMINA_POSTGRES_URI` is set at create time; `psql`, `pg_dump` and `mina-replayer` must be installed.
+
 ### Integration with Lucy
 
 MiniMina is designed to work with [Lucy](../test_executive/README.md) (the Mina integration test executive). Lucy generates network topology and genesis files, then uses MiniMina to create and manage the test network:
