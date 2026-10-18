@@ -130,6 +130,97 @@ jobs:
         name: e2e-docker
         path: ${{ runner.temp }}/e2e
 
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    # oldest glibc of the supported codenames (bullseye, focal: 2.31); with rustls
+    # the binary needs nothing else, so this one package serves all of them.
+    # focal, not bullseye: the bullseye-security pool no longer serves its packages
+    container: ubuntu:focal
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      # explicit: rustup refuses $HOME=/github/home while running as root
+      CARGO_HOME: /usr/local/cargo
+      RUSTUP_HOME: /usr/local/rustup
+    steps:
+    - name: 🧰 Build tools
+      run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git gcc libc6-dev
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+
+    # prebuilt cargo-deb needs glibc 2.34; focal has 2.31
+    - name: 🧰 cargo-deb
+      run: cargo install cargo-deb --locked
+
+    - name: 📦 Build package
+      run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          cargo build --release --locked
+          scripts/deb-changelog.sh
+          cargo deb --no-build
+
+    - name: 🏷️ Tag matches Cargo.toml version
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+          version=$(cargo pkgid | sed -E 's/.*[#@]//')
+          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: deb
+        path: target/debian/*.deb
+
+  package-test:
+    needs: package
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [debian:bullseye, debian:bookworm, ubuntu:focal, ubuntu:jammy, ubuntu:noble]
+    container: ${{ matrix.image }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: deb
+
+    - name: 🧪 Install and run
+      run: |
+          apt-get update
+          apt-get install -y ./minimina_*.deb
+          minimina --version
+          MINIMINA_HOME=$(mktemp -d) minimina network list
+          dpkg -L minimina
+
+    - name: 🧹 Remove
+      run: |
+          apt-get remove -y minimina
+          ! command -v minimina
+
+  lintian:
+    needs: package
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: deb
+
+    - name: 🔍 Lintian
+      run: |
+          apt-get update
+          apt-get install -y --no-install-recommends lintian
+          lintian --fail-on error --info ./minimina_*.deb
+
   deploy:
     if: startsWith(github.ref, 'refs/tags/')
     needs:
@@ -137,29 +228,30 @@ jobs:
       - clippy
       - deny
       - build
+      - e2e-native
+      - e2e-docker
+      - package-test
+      - lintian
     runs-on: ubuntu-latest
     environment: package
 
     steps:
-    - name: 📥 Checkout
-      uses: actions/checkout@v4
+    - uses: actions/download-artifact@v4
+      with:
+        name: deb
 
-    - name: 📦 Package
-      run: |
-          cargo install cargo-deb
-          cargo deb
-
-    - name: 📤 Upload
+    - name: 📤 Upload to every codename
       env:
         ACCESS_KEY_ID: ${{ secrets.ACCESS_KEY_ID }}
         SECRET_ACCESS_KEY: ${{ secrets.SECRET_ACCESS_KEY }}
+        LANG: C.UTF-8
+        LC_ALL: C.UTF-8
       run: |
           sudo apt-get update
-          sudo apt-get install -y rubygems locales
+          sudo apt-get install -y rubygems
           sudo gem install deb-s3
-
-          sudo locale-gen en_US.UTF-8
-          export LANG=en_US.UTF-8
-          export LANGUAGE=en_US.UTF-8
-          export LC_ALL=en_US.UTF-8
-          deb-s3 upload --s3-region=us-west-2 --bucket packages.o1test.net --lock --preserve-versions --access-key-id=$ACCESS_KEY_ID --secret-access-key=$SECRET_ACCESS_KEY --cache-control=max-age=120 --component stable --codename noble ./target/debian/*.deb
+          for codename in bullseye bookworm focal jammy noble; do
+            deb-s3 upload --s3-region=us-west-2 --bucket packages.o1test.net --lock --preserve-versions \
+              --access-key-id="$ACCESS_KEY_ID" --secret-access-key="$SECRET_ACCESS_KEY" \
+              --cache-control=max-age=120 --component stable --codename "$codename" ./minimina_*.deb
+          done
