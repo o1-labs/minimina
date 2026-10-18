@@ -5,7 +5,7 @@ use crate::{
     cli::{CommandWithNetworkId, ExecutionMode, NetworkCommand, ShutdownTimeout},
     docker::manager::{ContainerState, DockerManager},
     genesis_ledger::default,
-    native::manager::NativeManager,
+    native::{manager::NativeManager, mina_locator},
     network_meta::NetworkMeta,
     output::{self, network},
     runner::check,
@@ -114,7 +114,7 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             match ctx.mode {
                 ExecutionMode::Docker => {
                     ctx.docker(&network_id)
-                        .compose_down(None, true, true)
+                        .compose_down(None, true)
                         .with_context(|| format!("Failed to delete network '{network_id}'"))?;
                 }
                 ExecutionMode::Native => {
@@ -222,7 +222,8 @@ fn check_setup_network(ctx: &Context, docker: &DockerManager, network_id: &str) 
                 .stop_all(shutdown_timeout(&ShutdownTimeout::default()))?;
             }
             _ => {
-                docker.compose_down(None, false, false)?;
+                // volumes hold the old chain and archive data
+                check(docker.compose_down(None, true)?, "removing the old network")?;
             }
         }
         ctx.dirs.delete_network_directory(network_id)?;
@@ -273,10 +274,14 @@ fn create_network(
         }
         info!("Successfully started postgres container in network '{network_id}'!");
 
-        // make sure postgres is running
+        // make sure postgres is running and accepting connections
         container_is_running(docker, &postgres_name)?;
+        postgres_is_ready(docker, &postgres_name)?;
         // create database
-        docker.exec(&postgres_name, &["createdb", "-U", "postgres", "archive"])?;
+        check(
+            docker.exec(&postgres_name, &["createdb", "-U", "postgres", "archive"])?,
+            "creating the archive database",
+        )?;
         // apply schema scripts
         let scripts = archive_node
             .archive_schema_files
@@ -284,7 +289,10 @@ fn create_network(
             .context("archive node has no schema files")?;
         apply_schema_scripts(docker, &postgres_name, scripts, &network_path)?;
         // stop postgres
-        docker.compose_stop(vec![&postgres_name], None)?;
+        check(
+            docker.compose_stop(vec![&postgres_name], None)?,
+            "stopping postgres",
+        )?;
     }
 
     save_network_files(ctx, network_id, services);
@@ -296,6 +304,15 @@ fn create_network_native(
     network_id: &str,
     services: &[ServiceConfig],
 ) -> Result<()> {
+    if let Some(config) =
+        mina_locator::installed_network_config(ctx.runner.as_ref(), ctx.bin_path()?)
+    {
+        warn!(
+            "{} is merged into every config this mina runs with: its fork point, peers and \
+             constants override the local network. Use a generic mina build for a clean network.",
+            config.display()
+        );
+    }
     info!("Successfully prepared native network '{network_id}'!");
 
     // Handle archive node setup with local postgres
@@ -361,6 +378,22 @@ fn container_is_running(docker: &DockerManager, container_name: &str) -> Result<
     bail!("Failed to start container '{container_name}' within {TIMEOUT_IN_SECS}s")
 }
 
+/// Waits until postgres accepts TCP connections. The image's init phase runs a
+/// temporary socket-only server, so a socket check can pass before the restart.
+fn postgres_is_ready(docker: &DockerManager, postgres_name: &str) -> Result<()> {
+    for _ in 0..TIMEOUT_IN_SECS {
+        let out = docker.exec(
+            postgres_name,
+            &["pg_isready", "-h", "127.0.0.1", "-U", "postgres"],
+        )?;
+        if out.status.success() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    bail!("postgres '{postgres_name}' not ready within {TIMEOUT_IN_SECS}s")
+}
+
 /// Applies provided schema `scripts` to the postgres db, `postgres_name`
 fn apply_schema_scripts(
     docker: &DockerManager,
@@ -377,13 +410,16 @@ fn apply_schema_scripts(
             .with_context(|| format!("schema '{script}' has no file name"))?;
         let docker_file_path = Path::new("/tmp").join(file_name);
         info!("Copying schema script: {}", file_name.to_string_lossy());
-        docker.cp(postgres_name, &file_path, &docker_file_path)?;
+        check(
+            docker.cp(postgres_name, &file_path, &docker_file_path)?,
+            &format!("copying schema {}", file_name.to_string_lossy()),
+        )?;
         in_container.push((file_name.to_string_lossy().into_owned(), docker_file_path));
     }
     // then apply scripts 1 by 1
     for (file_name, docker_file_path) in &in_container {
         info!("Applying schema script: {file_name}");
-        docker.exec(
+        let out = docker.exec(
             postgres_name,
             &[
                 "psql",
@@ -391,10 +427,13 @@ fn apply_schema_scripts(
                 "postgres",
                 "-d",
                 "archive",
+                "-v",
+                "ON_ERROR_STOP=1",
                 "-f",
                 utf8(docker_file_path)?,
             ],
         )?;
+        check(out, &format!("applying schema {file_name}"))?;
     }
     Ok(())
 }

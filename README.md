@@ -10,7 +10,6 @@ MiniMina is a command line tool for spinning up Mina networks locally on a user'
 ## Building
 
 ```bash
-cd src/app/minimina
 cargo build --release
 cp target/release/minimina ~/.local/bin
 ```
@@ -20,18 +19,29 @@ Assuming `~/.local/bin` is on your `$PATH`, `minimina` will be available from th
 ### Installing from Deb Package
 
 ```bash
-echo "deb [trusted=yes] http://packages.o1test.net ubuntu stable" | sudo tee /etc/apt/sources.list.d/mina.list
+# codename: bullseye, bookworm, focal, jammy or noble
+echo "deb [trusted=yes] http://packages.o1test.net $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+  | sudo tee /etc/apt/sources.list.d/minimina.list
 sudo apt-get update
 sudo apt-get install -y minimina
 ```
 
-> The `stable` repository contains the release version, while `unstable` mirrors the current state of the main branch.
+Releases are published from `v*` tags. The package has no runtime dependency besides libc (TLS is rustls), so the same binary is built once on the oldest supported glibc and published for every codename.
+
+To build the package locally: `scripts/deb-changelog.sh && cargo deb`.
 
 ## Testing
 
 ```bash
-cargo test
+cargo test                 # unit + CLI tests; no docker or mina needed
+cargo llvm-cov --summary-only
+
+# end-to-end: real daemons must produce a block (minutes; CI runs both)
+cargo test --test e2e -- --ignored native_small_network_produces_blocks   # needs a generic mina build
+cargo test --test e2e -- --ignored docker_small_network_produces_blocks   # needs docker
 ```
+
+Use a generic mina build (`mina-devnet-generic`, `*-generic` images) for local networks: network packages install `config_<commit>.json`, which the daemon merges into every config, so the public network's peer list and fork point leak into the local one.
 
 ## Usage
 
@@ -77,7 +87,6 @@ The default network is stored at `~/.minimina/default/` (override with `$MINIMIN
 ├── services.json
 ├── genesis_ledger.json
 ├── create_schema.sql
-├── zkapp_tables.sql
 ├── libp2p-keypairs/    (12 files)
 └── network-keypairs/   (12 files)
 ```
