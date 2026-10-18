@@ -171,14 +171,14 @@ pub fn set_slot_since_genesis(network_path: &Path, slot_since_genesis: u64) -> s
 
 #[cfg(test)]
 mod tests {
-    use tempdir::TempDir;
-
     use super::*;
     use std::collections::HashMap;
 
     #[test]
     fn test_generate_default_ledger() {
-        let tempdir = TempDir::new("test_generate_default_ledger")
+        let tempdir = tempfile::Builder::new()
+            .prefix("test_generate_default_ledger")
+            .tempdir()
             .expect("Cannot create temporary directory");
         let network_path = tempdir.path();
         let mut bp_keys_map: HashMap<String, NodeKey> = HashMap::new();
@@ -202,7 +202,9 @@ mod tests {
 
     #[test]
     fn test_generate_replayer_input() {
-        let tempdir = TempDir::new("test_generate_replayer_input")
+        let tempdir = tempfile::Builder::new()
+            .prefix("test_generate_replayer_input")
+            .tempdir()
             .expect("Cannot create temporary directory");
         let network_path = tempdir.path();
         let mut bp_keys_map: HashMap<String, NodeKey> = HashMap::new();
@@ -344,8 +346,10 @@ mod tests {
 
     #[test]
     fn test_set_slot_since_genesis() {
-        let tempdir =
-            TempDir::new("test_set_slot_since_genesis").expect("Cannot create temporary directory");
+        let tempdir = tempfile::Builder::new()
+            .prefix("test_set_slot_since_genesis")
+            .tempdir()
+            .expect("Cannot create temporary directory");
         let network_path = tempdir.path();
         let mut bp_keys_map: HashMap<String, NodeKey> = HashMap::new();
         let service_key = NodeKey {
