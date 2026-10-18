@@ -1,11 +1,14 @@
 //! `minimina network ...` handlers.
 
-use super::{setup, Context};
+use super::{setup, shutdown_timeout, Context};
 use crate::{
-    cli::{CommandWithNetworkId, ExecutionMode, NetworkCommand},
+    cli::{CommandWithNetworkId, ExecutionMode, NetworkCommand, ShutdownTimeout},
     docker::manager::{ContainerState, DockerManager},
     genesis_ledger::default,
+    native::{manager::NativeManager, mina_locator},
+    network_meta::NetworkMeta,
     output::{self, network},
+    runner::check,
     service::ServiceConfig,
     utils::{fetch_schema, TIMEOUT_IN_SECS},
 };
@@ -31,6 +34,9 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             }
 
             check_setup_network(ctx, &docker, &network_id)?;
+            ctx.meta()
+                .save(&ctx.dirs.network_path(&network_id))
+                .context("Failed to record network mode")?;
 
             // consume the genesis ledger (and generate keys for the default network)
             let keys = setup::handle_genesis_ledger(ctx, &cmd, &network_id)?;
@@ -75,8 +81,16 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             let network_id = cmd.network_id;
             ctx.ensure_network_exists(&network_id)?;
             let network_path = ctx.dirs.network_path(&network_id);
-            let docker = ctx.docker(&network_id);
+            let mut status = network::Status::new(&network_id);
+            status.network_dir = network_path.to_string_lossy().into_owned();
 
+            if ctx.mode == ExecutionMode::Native {
+                status.update_from_processes(&ctx.native(&network_id)?.status()?);
+                println!("{status}");
+                return Ok(());
+            }
+
+            let docker = ctx.docker(&network_id);
             let ls_out = docker.compose_ls().with_context(|| {
                 format!("Failed to get status from docker compose ls for network '{network_id}'")
             })?;
@@ -85,10 +99,8 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             })?;
 
             let compose_file_path = docker.compose_path.to_string_lossy();
-            let mut status = network::Status::new(&network_id);
             status.update_from_compose_ls(ls_out, &compose_file_path);
             status.update_from_compose_ps(ps_out);
-            status.network_dir = network_path.to_string_lossy().into_owned();
 
             println!("{status}");
             Ok(())
@@ -102,12 +114,12 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             match ctx.mode {
                 ExecutionMode::Docker => {
                     ctx.docker(&network_id)
-                        .compose_down(None, true, true)
+                        .compose_down(None, true)
                         .with_context(|| format!("Failed to delete network '{network_id}'"))?;
                 }
                 ExecutionMode::Native => {
                     ctx.native(&network_id)?
-                        .destroy()
+                        .destroy(shutdown_timeout(&ShutdownTimeout::default()))
                         .with_context(|| format!("Failed to delete network '{network_id}'"))?;
                 }
             }
@@ -156,7 +168,11 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
                 ExecutionMode::Native => {
                     let services = ctx.dirs.get_services_info(&network_id)?;
                     ctx.native(&network_id)?
-                        .start_all(&services, &network_id)
+                        .start_all(
+                            &services,
+                            &network_id,
+                            std::time::Duration::from_secs(cmd.seed_timeout),
+                        )
                         .with_context(|| format!("Failed to start network '{network_id}'"))?;
                 }
             }
@@ -165,18 +181,20 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
         }
 
         NetworkCommand::Stop(cmd) => {
-            let network_id = cmd.network_id;
+            let network_id = cmd.network_id.network_id;
             ctx.ensure_network_exists(&network_id)?;
 
             match ctx.mode {
                 ExecutionMode::Docker => {
-                    ctx.docker(&network_id)
-                        .compose_stop_all()
+                    let out = ctx
+                        .docker(&network_id)
+                        .compose_stop_all(cmd.timeout.secs)
                         .with_context(|| format!("Failed to stop network '{network_id}'"))?;
+                    check(out, &format!("stopping network '{network_id}'"))?;
                 }
                 ExecutionMode::Native => {
                     ctx.native(&network_id)?
-                        .stop_all()
+                        .stop_all(shutdown_timeout(&cmd.timeout))
                         .with_context(|| format!("Failed to stop network '{network_id}'"))?;
                 }
             }
@@ -192,7 +210,22 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
 fn check_setup_network(ctx: &Context, docker: &DockerManager, network_id: &str) -> Result<()> {
     if ctx.dirs.network_path_exists(network_id) {
         warn!("Network '{network_id}' already exists. Overwriting!");
-        docker.compose_down(None, false, false)?;
+        let network_path = ctx.dirs.network_path(network_id);
+        // tear down with the mode the old network ran in, not the new one
+        match NetworkMeta::load(&network_path)? {
+            Some(old) if old.mode == ExecutionMode::Native => {
+                NativeManager::new(
+                    &network_path,
+                    old.bin_path.as_deref().unwrap_or(Path::new("")),
+                    old.postgres_uri.as_deref().unwrap_or_default(),
+                )
+                .stop_all(shutdown_timeout(&ShutdownTimeout::default()))?;
+            }
+            _ => {
+                // volumes hold the old chain and archive data
+                check(docker.compose_down(None, true)?, "removing the old network")?;
+            }
+        }
         ctx.dirs.delete_network_directory(network_id)?;
     }
     // create directory structure for network
@@ -241,10 +274,14 @@ fn create_network(
         }
         info!("Successfully started postgres container in network '{network_id}'!");
 
-        // make sure postgres is running
+        // make sure postgres is running and accepting connections
         container_is_running(docker, &postgres_name)?;
+        postgres_is_ready(docker, &postgres_name)?;
         // create database
-        docker.exec(&postgres_name, &["createdb", "-U", "postgres", "archive"])?;
+        check(
+            docker.exec(&postgres_name, &["createdb", "-U", "postgres", "archive"])?,
+            "creating the archive database",
+        )?;
         // apply schema scripts
         let scripts = archive_node
             .archive_schema_files
@@ -252,7 +289,10 @@ fn create_network(
             .context("archive node has no schema files")?;
         apply_schema_scripts(docker, &postgres_name, scripts, &network_path)?;
         // stop postgres
-        docker.compose_stop(vec![&postgres_name])?;
+        check(
+            docker.compose_stop(vec![&postgres_name], None)?,
+            "stopping postgres",
+        )?;
     }
 
     save_network_files(ctx, network_id, services);
@@ -264,6 +304,15 @@ fn create_network_native(
     network_id: &str,
     services: &[ServiceConfig],
 ) -> Result<()> {
+    if let Some(config) =
+        mina_locator::installed_network_config(ctx.runner.as_ref(), ctx.bin_path()?)
+    {
+        warn!(
+            "{} is merged into every config this mina runs with: its fork point, peers and \
+             constants override the local network. Use a generic mina build for a clean network.",
+            config.display()
+        );
+    }
     info!("Successfully prepared native network '{network_id}'!");
 
     // Handle archive node setup with local postgres
@@ -271,35 +320,33 @@ fn create_network_native(
         let network_path = ctx.dirs.network_path(network_id);
         default::LedgerGenerator::generate_replayer_input(&network_path)?;
 
-        // Create database using local psql
-        info!("Creating archive database using local postgres...");
-        let createdb_out =
-            ctx.runner
-                .run("createdb".as_ref(), &["-U", "postgres", "archive"], &[])?;
-        if !createdb_out.status.success() {
-            warn!(
-                "createdb may have failed (database might already exist): {}",
-                String::from_utf8_lossy(&createdb_out.stderr)
-            );
+        // the database belongs to this network, so `create` starts it fresh
+        let native = ctx.native(network_id)?;
+        let db = native.archive_db_name();
+        info!("Creating archive database '{db}' on {}", ctx.postgres_uri);
+        let admin = native.maintenance_db_uri();
+        for sql in [
+            format!("DROP DATABASE IF EXISTS {db}"),
+            format!("CREATE DATABASE {db}"),
+        ] {
+            let out = ctx.runner.run(
+                "psql".as_ref(),
+                &[&admin, "-v", "ON_ERROR_STOP=1", "-c", &sql],
+                &[],
+            )?;
+            check(out, &sql)?;
         }
 
-        // Apply schema scripts directly via psql
-        if let Some(scripts) = &archive_node.archive_schema_files {
-            for script in scripts {
-                let file_path = fetch_schema(script, network_path.clone())?;
-                info!("Applying schema script: {}", file_path.display());
-                let psql_out = ctx.runner.run(
-                    "psql".as_ref(),
-                    &["-U", "postgres", "-d", "archive", "-f", utf8(&file_path)?],
-                    &[],
-                )?;
-                if !psql_out.status.success() {
-                    warn!(
-                        "psql schema application may have failed: {}",
-                        String::from_utf8_lossy(&psql_out.stderr)
-                    );
-                }
-            }
+        let db_uri = native.archive_db_uri();
+        for script in archive_node.archive_schema_files.iter().flatten() {
+            let file_path = fetch_schema(script, network_path.clone())?;
+            info!("Applying schema script: {}", file_path.display());
+            let out = ctx.runner.run(
+                "psql".as_ref(),
+                &[&db_uri, "-v", "ON_ERROR_STOP=1", "-f", utf8(&file_path)?],
+                &[],
+            )?;
+            check(out, &format!("applying {script}"))?;
         }
     }
 
@@ -331,6 +378,22 @@ fn container_is_running(docker: &DockerManager, container_name: &str) -> Result<
     bail!("Failed to start container '{container_name}' within {TIMEOUT_IN_SECS}s")
 }
 
+/// Waits until postgres accepts TCP connections. The image's init phase runs a
+/// temporary socket-only server, so a socket check can pass before the restart.
+fn postgres_is_ready(docker: &DockerManager, postgres_name: &str) -> Result<()> {
+    for _ in 0..TIMEOUT_IN_SECS {
+        let out = docker.exec(
+            postgres_name,
+            &["pg_isready", "-h", "127.0.0.1", "-U", "postgres"],
+        )?;
+        if out.status.success() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    bail!("postgres '{postgres_name}' not ready within {TIMEOUT_IN_SECS}s")
+}
+
 /// Applies provided schema `scripts` to the postgres db, `postgres_name`
 fn apply_schema_scripts(
     docker: &DockerManager,
@@ -347,13 +410,16 @@ fn apply_schema_scripts(
             .with_context(|| format!("schema '{script}' has no file name"))?;
         let docker_file_path = Path::new("/tmp").join(file_name);
         info!("Copying schema script: {}", file_name.to_string_lossy());
-        docker.cp(postgres_name, &file_path, &docker_file_path)?;
+        check(
+            docker.cp(postgres_name, &file_path, &docker_file_path)?,
+            &format!("copying schema {}", file_name.to_string_lossy()),
+        )?;
         in_container.push((file_name.to_string_lossy().into_owned(), docker_file_path));
     }
     // then apply scripts 1 by 1
     for (file_name, docker_file_path) in &in_container {
         info!("Applying schema script: {file_name}");
-        docker.exec(
+        let out = docker.exec(
             postgres_name,
             &[
                 "psql",
@@ -361,10 +427,13 @@ fn apply_schema_scripts(
                 "postgres",
                 "-d",
                 "archive",
+                "-v",
+                "ON_ERROR_STOP=1",
                 "-f",
                 utf8(docker_file_path)?,
             ],
         )?;
+        check(out, &format!("applying schema {file_name}"))?;
     }
     Ok(())
 }

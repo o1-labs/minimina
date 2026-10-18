@@ -119,11 +119,11 @@ impl DockerManager {
         self.docker(&["cp", utf8(src)?, destination.as_str()])
     }
 
+    /// Removes containers (and volumes); images are kept, since other networks share them.
     pub fn compose_down(
         &self,
         specific_service: Option<String>,
         remove_volumes: bool,
-        remove_images: bool,
     ) -> Result<Output> {
         let mut args = vec!["down"];
         let specific_service = specific_service.as_deref();
@@ -133,11 +133,6 @@ impl DockerManager {
 
         if remove_volumes {
             args.push("--volumes");
-        }
-
-        if remove_images {
-            args.push("--rmi");
-            args.push("all");
         }
 
         args.push("--remove-orphans");
@@ -160,8 +155,8 @@ impl DockerManager {
     }
 
     /// Stop all services in the network
-    pub fn compose_stop_all(&self) -> Result<Output> {
-        self.run_docker_compose(&["stop"])
+    pub fn compose_stop_all(&self, timeout_secs: Option<u64>) -> Result<Output> {
+        self.compose_stop(vec![], timeout_secs)
     }
 
     /// Start a subset of services in the network
@@ -172,8 +167,13 @@ impl DockerManager {
     }
 
     /// Stop a subset of services in the network
-    pub fn compose_stop(&self, services: Vec<&str>) -> Result<Output> {
+    /// Stop a subset of services (all when empty), waiting `timeout_secs` before killing
+    pub fn compose_stop(&self, services: Vec<&str>, timeout_secs: Option<u64>) -> Result<Output> {
+        let timeout = timeout_secs.map(|t| t.to_string());
         let mut cmd = vec!["stop"];
+        if let Some(t) = &timeout {
+            cmd.extend(["-t", t.as_str()]);
+        }
         cmd.extend(services);
         self.run_docker_compose(&cmd)
     }
@@ -379,15 +379,15 @@ mod tests {
     fn compose_commands_use_network_project() {
         let fake = Rc::new(FakeRunner::default());
         let docker = manager(&fake);
-        docker.compose_stop(vec!["a-net", "b-net"]).unwrap();
         docker
-            .compose_down(Some("a-net".into()), true, true)
+            .compose_stop(vec!["a-net", "b-net"], Some(30))
             .unwrap();
+        docker.compose_down(Some("a-net".into()), true).unwrap();
         assert_eq!(
             fake.lines(),
             vec![
-                "docker compose -f /home/u/.minimina/net/docker-compose.yaml -p net stop a-net b-net",
-                "docker compose -f /home/u/.minimina/net/docker-compose.yaml -p net down a-net --volumes --rmi all --remove-orphans",
+                "docker compose -f /home/u/.minimina/net/docker-compose.yaml -p net stop -t 30 a-net b-net",
+                "docker compose -f /home/u/.minimina/net/docker-compose.yaml -p net down a-net --volumes --remove-orphans",
             ]
         );
     }

@@ -113,6 +113,7 @@ pub fn handle_topology(
                 DEFAULT_DAEMON_DOCKER_IMAGE,
                 DEFAULT_ARCHIVE_DOCKER_IMAGE,
                 network_id,
+                ctx.mode,
             )
         }
     }
@@ -134,7 +135,7 @@ fn create_services(
     let dirs = &ctx.dirs;
     let services = topology.services(&dirs.peer_list_file(network_id));
     let peers: Vec<&ServiceConfig> = ServiceConfig::get_seeds(&services);
-    dirs.create_peer_list_file(network_id, &peers)?;
+    dirs.create_peer_list_file(network_id, &peers, ctx.mode)?;
     if let Some(uptime_service_backend) = ServiceConfig::get_uptime_service_backend(&services) {
         dirs.copy_uptime_service_config(network_id, uptime_service_backend)
             .context("Failed to copy uptime service config")?;
@@ -153,6 +154,7 @@ fn generate_default_topology(
     docker_image: &str,
     docker_image_archive: &str,
     network_id: &str,
+    mode: ExecutionMode,
 ) -> Result<Vec<ServiceConfig>> {
     let bp = |name: &str| {
         keys.bp
@@ -177,6 +179,7 @@ fn generate_default_topology(
         network_id,
         libp2p_peerid,
         3102, //external port on my mina_seed_1 will be 3102
+        mode,
     );
 
     let seed = ServiceConfig {
@@ -241,7 +244,6 @@ fn generate_default_topology(
         peers: Some(vec![peer]),
         archive_docker_image: Some(docker_image_archive.into()),
         archive_schema_files: Some(vec![
-            format!("https://raw.githubusercontent.com/MinaProtocol/mina/{IMAGE_COMMIT_HASH}/src/app/archive/zkapp_tables.sql"),
             format!("https://raw.githubusercontent.com/MinaProtocol/mina/{IMAGE_COMMIT_HASH}/src/app/archive/create_schema.sql"),
         ]),
         archive_port: Some(3086),
@@ -292,8 +294,14 @@ mod tests {
 
     #[test]
     fn default_topology_wires_seed_peer_into_every_daemon() {
-        let services =
-            generate_default_topology(&default_keys(), "daemon", "archive", "net").unwrap();
+        let services = generate_default_topology(
+            &default_keys(),
+            "daemon",
+            "archive",
+            "net",
+            ExecutionMode::Docker,
+        )
+        .unwrap();
         let names: Vec<_> = services.iter().map(|s| s.service_name.as_str()).collect();
         assert_eq!(
             names,
@@ -310,7 +318,13 @@ mod tests {
             services[0].libp2p_peerid.as_deref(),
             Some("peer-mina-seed-1")
         );
-        let peer = ServiceConfig::generate_peer("mina-seed-1", "net", "peer-mina-seed-1", 3102);
+        let peer = ServiceConfig::generate_peer(
+            "mina-seed-1",
+            "net",
+            "peer-mina-seed-1",
+            3102,
+            ExecutionMode::Docker,
+        );
         for s in [&services[1], &services[2], &services[3], &services[5]] {
             assert_eq!(s.peers.as_deref(), Some(std::slice::from_ref(&peer)));
         }
@@ -319,10 +333,22 @@ mod tests {
     }
 
     #[test]
+    fn native_default_topology_dials_the_seed_on_localhost() {
+        let services =
+            generate_default_topology(&default_keys(), "d", "a", "net", ExecutionMode::Native)
+                .unwrap();
+        assert_eq!(
+            services[1].peers.as_deref(),
+            Some(&["/ip4/127.0.0.1/tcp/3102/p2p/peer-mina-seed-1".to_string()][..])
+        );
+    }
+
+    #[test]
     fn default_topology_reports_missing_key() {
         let mut keys = default_keys();
         keys.bp.remove("mina-bp-2");
-        let err = generate_default_topology(&keys, "d", "a", "net").unwrap_err();
+        let err =
+            generate_default_topology(&keys, "d", "a", "net", ExecutionMode::Docker).unwrap_err();
         assert_eq!(
             err.to_string(),
             "no block producer key generated for 'mina-bp-2'"
@@ -333,7 +359,8 @@ mod tests {
     fn default_topology_rejects_malformed_seed_keypair() {
         let mut keys = default_keys();
         keys.libp2p.insert("mina-seed-1".into(), key("enc,pub,"));
-        let err = generate_default_topology(&keys, "d", "a", "net").unwrap_err();
+        let err =
+            generate_default_topology(&keys, "d", "a", "net", ExecutionMode::Docker).unwrap_err();
         assert!(err.to_string().contains("malformed libp2p keypair"));
     }
 }
