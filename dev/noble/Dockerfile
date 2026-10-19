@@ -22,7 +22,7 @@ RUN userdel -r ubuntu 2>/dev/null; groupadd -g ${GID} dev && useradd -m -u ${UID
 USER dev
 ENV PATH=/home/dev/.cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain ${RUST_TOOLCHAIN} \
-    && mkdir -p /home/dev/.cargo/registry /home/dev/.minimina
+    && mkdir -p /home/dev/.cargo/registry /home/dev/.minimina /tmp/coda_cache_dir
 
 USER root
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

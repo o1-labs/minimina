@@ -9,6 +9,8 @@
 #   repo           -> same path (so absolute paths in network dirs stay valid)
 #   ~/.minimina    -> /home/dev/.minimina (networks, installed mina versions)
 #   MINA_BINS_DIR  -> same path (manually unpacked mina versions, optional)
+#   volume         -> /tmp/coda_cache_dir (proving/verification keys mina
+#                     generates at first start, about 2 GB; packages ship none)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -21,7 +23,8 @@ docker build -q -t "$IMAGE" --build-arg UID="$(id -u)" --build-arg GID="$(id -g)
 
 if ! docker container inspect "$NAME" >/dev/null 2>&1; then
   mkdir -p "$HOME/.minimina" "$MINA_BINS_DIR"
-  docker run -d --name "$NAME" --network host \
+  # --init: mina daemons fork helpers; tini reaps them once minimina's start exits
+  docker run -d --init --name "$NAME" --network host \
     -e PGPORT="$PGPORT" \
     -e MINIMINA_POSTGRES_URI="postgres://postgres:postgres@localhost:$PGPORT" \
     -e CARGO_TARGET_DIR="$REPO/target/noble" \
@@ -29,6 +32,7 @@ if ! docker container inspect "$NAME" >/dev/null 2>&1; then
     -v "$HOME/.minimina:/home/dev/.minimina" \
     -v "$MINA_BINS_DIR:$MINA_BINS_DIR" \
     -v minimina-dev-cargo:/home/dev/.cargo/registry \
+    -v minimina-dev-keys:/tmp/coda_cache_dir \
     "$IMAGE" >/dev/null
 elif [[ "$(docker inspect -f '{{.State.Running}}' "$NAME")" != true ]]; then
   docker start "$NAME" >/dev/null
