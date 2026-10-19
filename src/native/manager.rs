@@ -447,12 +447,25 @@ impl NativeManager {
             }
             ServiceType::BlockProducer => {
                 self.add_peers_args(service, network_path, &mut args);
-                if service.private_key_path.is_some() {
-                    args.push("-block-producer-key".to_string());
-                    args.push(format!(
+                // topology keys are copied to <name>.json; generated keys of the
+                // default network stay where `mina advanced generate-keypair` put them
+                let key = if service.private_key_path.is_some() {
+                    Some(format!(
                         "{}/network-keypairs/{}.json",
                         network_path, service.service_name
-                    ));
+                    ))
+                } else {
+                    service.public_key_path.clone()
+                };
+                match key {
+                    Some(key) => {
+                        args.push("-block-producer-key".to_string());
+                        args.push(key);
+                    }
+                    None => warn!(
+                        "Block producer '{}' has no key: it will not produce blocks.",
+                        service.service_name
+                    ),
                 }
                 self.add_libp2p_args(service, network_path, &mut args);
             }
@@ -709,6 +722,22 @@ mod tests {
         );
         // the profile decides; lightnet and dev binaries reject `full`
         assert_eq!(value_of(&args, "-proof-level"), None);
+    }
+
+    #[test]
+    fn default_network_block_producer_uses_generated_key() {
+        let bp = ServiceConfig {
+            service_type: ServiceType::BlockProducer,
+            service_name: "mina-bp-1".into(),
+            client_port: Some(4000),
+            public_key_path: Some("/net/network-keypairs/mina-bp-1".into()),
+            ..Default::default()
+        };
+        let (_, args) = args_for(&bp);
+        assert_eq!(
+            value_of(&args, "-block-producer-key"),
+            Some("/net/network-keypairs/mina-bp-1")
+        );
     }
 
     #[test]
