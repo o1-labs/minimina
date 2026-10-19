@@ -125,8 +125,8 @@ impl ServiceConfig {
             "true".to_string(),
             "-log-precomputed-blocks".to_string(),
             "true".to_string(),
-            "-proof-level".to_string(),
-            "full".to_string(),
+            // no -proof-level: the profile's compiled level (or `proof.level` in the
+            // runtime config) applies; `full` is fatal for binaries compiled for less
         ]
     }
 
