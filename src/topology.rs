@@ -1,7 +1,7 @@
 use crate::service::{ServiceConfig, ServiceType};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
@@ -24,7 +24,7 @@ pub struct ArchiveTopologyInfo {
     pub docker_image: Option<String>,
     pub archive_image: Option<String>,
     pub git_build: Option<GitBuild>,
-    pub schema_files: Vec<PathBuf>,
+    pub schema_files: Vec<String>,
     pub libp2p_pass: String,
     pub libp2p_keyfile: PathBuf,
     pub libp2p_peerid: String,
@@ -86,7 +86,8 @@ pub enum TopologyInfo {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Topology {
     #[serde(flatten)]
-    pub topology: HashMap<String, TopologyInfo>,
+    /// Sorted by node name, so every `create` gives a node the same ports.
+    pub topology: BTreeMap<String, TopologyInfo>,
 }
 
 impl TopologyInfo {
@@ -121,13 +122,7 @@ impl TopologyInfo {
                 public_key: Some(archive_info.pk.clone()),
                 private_key: Some(archive_info.sk.clone()),
                 peer_list_file: Some(peer_list_file.to_path_buf()),
-                archive_schema_files: Some(
-                    archive_info
-                        .schema_files
-                        .iter()
-                        .map(|path| path.to_str().unwrap().to_string())
-                        .collect(),
-                ),
+                archive_schema_files: Some(archive_info.schema_files.clone()),
                 archive_port: Some(archive_port),
                 archive_docker_image: archive_info.archive_image.clone(),
                 libp2p_keypair_path: Some(archive_info.libp2p_keyfile.clone()),
@@ -169,9 +164,9 @@ impl TopologyInfo {
 }
 
 impl Topology {
-    pub fn new(path: &Path) -> serde_json::Result<Self> {
-        let contents = std::fs::read_to_string(path).unwrap();
-        serde_json::from_str(&contents)
+    pub fn new(path: &Path) -> std::io::Result<Self> {
+        let contents = std::fs::read_to_string(path)?;
+        serde_json::from_str(&contents).map_err(std::io::Error::from)
     }
 
     pub fn services(&self, peer_list_file: &Path) -> Vec<ServiceConfig> {
@@ -199,8 +194,8 @@ impl Topology {
             .collect();
 
         for coordinator in snark_coordinator_services {
-            services.extend(
-                (1..=coordinator.worker_nodes.unwrap()).map(|i| ServiceConfig {
+            services.extend((1..=coordinator.worker_nodes.unwrap_or_default()).map(|i| {
+                ServiceConfig {
                     service_type: ServiceType::SnarkWorker,
                     service_name: format!("{}-worker_{}", coordinator.service_name, i),
                     docker_image: coordinator.docker_image.clone(),
@@ -208,8 +203,8 @@ impl Topology {
                     snark_worker_proof_level: coordinator.snark_worker_proof_level.clone(),
                     snark_coordinator_host: Some(coordinator.service_name.clone()),
                     ..Default::default()
-                }),
-            );
+                }
+            }));
         }
 
         services
@@ -312,7 +307,7 @@ mod tests {
                 docker_image: None,
                 git_build: Some(GitBuild::Commit(commit)),
                 service_type: ServiceType::ArchiveNode,
-                schema_files: vec![schema_file.into(), zkapp_table.into()],
+                schema_files: vec![schema_file, zkapp_table],
                 archive_image: Some("archive-image".into()),
                 libp2p_pass: "naughty blue potato".into(),
                 libp2p_keyfile: "/path/to/keyfile".into(),
@@ -565,7 +560,7 @@ mod tests {
         .unwrap();
 
         let topology = Topology {
-            topology: HashMap::from([
+            topology: BTreeMap::from([
                 (bp_name, TopologyInfo::Node(bp_node)),
                 (seed_name, TopologyInfo::Node(seed_node)),
                 (snark_name, TopologyInfo::SnarkCoordinator(snark_node)),
@@ -627,5 +622,40 @@ mod tests {
         assert_eq!(num_seeds, 2);
         assert_eq!(num_scs, 1);
         assert_eq!(num_workers, 2);
+    }
+
+    #[test]
+    fn services_get_ports_in_name_order() {
+        let topology = Topology::new(Path::new("tests/data/large_network/topology.json")).unwrap();
+        let first = topology.services(Path::new("/p"));
+        for _ in 0..5 {
+            let again = Topology::new(Path::new("tests/data/large_network/topology.json"))
+                .unwrap()
+                .services(Path::new("/p"));
+            let names = |v: &[ServiceConfig]| -> Vec<(String, Option<u16>)> {
+                v.iter()
+                    .map(|s| (s.service_name.clone(), s.client_port))
+                    .collect()
+            };
+            assert_eq!(names(&again), names(&first));
+        }
+        let ports: Vec<(&str, Option<u16>)> = first
+            .iter()
+            .filter(|s| s.client_port.is_some())
+            .map(|s| (s.service_name.as_str(), s.client_port))
+            .collect();
+        assert_eq!(
+            ports,
+            vec![
+                ("archive-node", Some(7075)),
+                ("empty_node-1", Some(7080)),
+                ("empty_node-2", Some(7085)),
+                ("observer", Some(7090)),
+                ("receiver", Some(7095)),
+                ("seed-0", Some(7100)),
+                ("seed-1", Some(7105)),
+                ("snark-node", Some(7110)),
+            ]
+        );
     }
 }
