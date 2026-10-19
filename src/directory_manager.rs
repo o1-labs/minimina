@@ -10,6 +10,7 @@
 //! - `network.json`: Contains the network topology representation in JSON format.
 //! - `peer_list_file.txt`: Contains the list of libp2p peers for the network.
 
+use crate::cli::ExecutionMode;
 use crate::genesis_ledger::GENESIS_LEDGER_JSON;
 use crate::output;
 use crate::service::ServiceConfig;
@@ -19,7 +20,7 @@ use std::env;
 use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
-    io::Result,
+    io::{Error, ErrorKind, Result},
     path::{Path, PathBuf},
 };
 
@@ -34,21 +35,25 @@ pub struct DirectoryManager {
 }
 
 impl DirectoryManager {
-    pub fn new() -> Self {
-        let mut base_path = if let Ok(env_path) = env::var(MINIMINA_HOME) {
-            PathBuf::from(env_path)
-        } else {
-            home_dir().expect("Home directory not found")
+    pub fn new() -> Result<Self> {
+        let mut base_path = match env::var(MINIMINA_HOME) {
+            Ok(env_path) => PathBuf::from(env_path),
+            Err(_) => home_dir().ok_or_else(|| {
+                Error::new(
+                    ErrorKind::NotFound,
+                    format!("Home directory not found; set {MINIMINA_HOME}"),
+                )
+            })?,
         };
         base_path.push(".minimina");
-        DirectoryManager {
+        Ok(DirectoryManager {
             base_path,
             subdirectories: Self::subdirectories(),
-        }
+        })
     }
 
     // for testing purposes
-    pub fn _new_with_base_path(base_path: PathBuf) -> Self {
+    pub fn with_base_path(base_path: PathBuf) -> Self {
         DirectoryManager {
             base_path,
             subdirectories: Self::subdirectories(),
@@ -111,6 +116,9 @@ impl DirectoryManager {
 
     pub fn list_network_directories(&self) -> Result<Vec<String>> {
         let mut networks = vec![];
+        if !self.base_path.exists() {
+            return Ok(networks);
+        }
         for entry in fs::read_dir(&self.base_path)? {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
@@ -219,7 +227,7 @@ impl DirectoryManager {
             let dest_path = uptime_service_config_path.join(
                 uptime_service_backend_app_config
                     .file_name()
-                    .expect("Failed to extract filename from source path"),
+                    .ok_or_else(|| no_file_name(uptime_service_backend_app_config))?,
             );
             debug!(
                 "Copying uptime service backend from {:?} app config to {:?}",
@@ -232,7 +240,7 @@ impl DirectoryManager {
             let dest_path = uptime_service_config_path.join(
                 uptime_service_backend_minasheets
                     .file_name()
-                    .expect("Failed to extract filename from source path"),
+                    .ok_or_else(|| no_file_name(uptime_service_backend_minasheets))?,
             );
             debug!(
                 "Copying uptime service backend from {:?} app config to {:?}",
@@ -242,10 +250,8 @@ impl DirectoryManager {
         }
         if let Some(other_files) = &service.uptime_service_other_config_files {
             for file in other_files {
-                let dest_path = uptime_service_config_path.join(
-                    file.file_name()
-                        .expect("Failed to extract filename from source path"),
-                );
+                let dest_path = uptime_service_config_path
+                    .join(file.file_name().ok_or_else(|| no_file_name(file))?);
                 debug!(
                     "Copying uptime service backend from {:?} app config to {:?}",
                     file, dest_path
@@ -261,21 +267,35 @@ impl DirectoryManager {
         self.network_path(network_id).join("peer_list_file.txt")
     }
 
-    pub fn create_peer_list_file(&self, network_id: &str, peers: &[&ServiceConfig]) -> Result<()> {
+    pub fn create_peer_list_file(
+        &self,
+        network_id: &str,
+        peers: &[&ServiceConfig],
+        mode: ExecutionMode,
+    ) -> Result<()> {
         use std::io::Write;
 
         let peer_list_path = self.peer_list_file(network_id);
         let mut file = fs::File::create(peer_list_path)?;
 
         for peer in peers {
-            let peer_hostname = format!("{}-{}", peer.service_name, network_id);
-            let external_port = peer.client_port.unwrap() + 2;
-            let libp2p_key = peer.libp2p_peerid.clone().unwrap();
-            writeln!(
-                file,
-                "/dns4/{}/tcp/{}/p2p/{}",
-                peer_hostname, external_port, libp2p_key
-            )?;
+            let external_port = peer.client_port.ok_or_else(|| {
+                invalid(format!("seed '{}' has no client_port", peer.service_name))
+            })? + 2;
+            let libp2p_key = peer.libp2p_peerid.as_deref().ok_or_else(|| {
+                invalid(format!(
+                    "seed '{}' has no libp2p peer id",
+                    peer.service_name
+                ))
+            })?;
+            let address = ServiceConfig::generate_peer(
+                &peer.service_name,
+                network_id,
+                libp2p_key,
+                external_port,
+                mode,
+            );
+            writeln!(file, "{address}")?;
         }
 
         Ok(())
@@ -291,25 +311,28 @@ impl DirectoryManager {
         let json: serde_json::Value = serde_json::from_str(&contents)?;
         let genesis = json
             .get("genesis")
-            .expect("'genesis' field should be present in genesis ledger");
-        let genesis_timestamp = DateTime::parse_from_rfc3339(
-            genesis
-                .get("genesis_state_timestamp")
-                .expect("'genesis_state_timestamp' should be a field in 'genesis' object")
-                .as_str()
-                .unwrap(),
-        )
-        .unwrap();
+            .ok_or_else(|| invalid("'genesis' field missing in genesis ledger"))?;
+        let timestamp = genesis
+            .get("genesis_state_timestamp")
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| invalid("'genesis.genesis_state_timestamp' missing or not a string"))?;
+        let genesis_timestamp = DateTime::parse_from_rfc3339(timestamp).map_err(|e| {
+            invalid(format!(
+                "invalid genesis_state_timestamp '{timestamp}': {e}"
+            ))
+        })?;
 
         // use k genesis parameter to calculate cutoff time
         // in case k is not present, use default value of 20
         let k = match genesis.get("k") {
-            Some(k) => k.to_string().parse::<u32>().unwrap(),
-            None => 20_u32,
+            Some(k) => k
+                .as_u64()
+                .ok_or_else(|| invalid(format!("'genesis.k' is not an unsigned integer: {k}")))?,
+            None => 20,
         };
         let cutoff = Local::now()
             .checked_sub_signed(Duration::minutes((k / 2 * 3) as i64))
-            .unwrap();
+            .ok_or_else(|| invalid(format!("genesis cutoff out of range for k={k}")))?;
 
         // if we're outside of the first half of the first transition frontier,
         // we throw an error
@@ -339,10 +362,14 @@ impl DirectoryManager {
 
         let contents = read_to_string(genesis_ledger_path)?;
         let mut ledger: serde_json::Value = serde_json::from_str(&contents)?;
-        let genesis = ledger.get_mut("genesis").unwrap();
-        let timestamp = genesis.get_mut("genesis_state_timestamp").unwrap();
-
-        *timestamp = serde_json::Value::String(current_timestamp());
+        let genesis = ledger
+            .get_mut("genesis")
+            .and_then(|g| g.as_object_mut())
+            .ok_or_else(|| invalid("'genesis' object missing in genesis ledger"))?;
+        genesis.insert(
+            "genesis_state_timestamp".to_string(),
+            serde_json::Value::String(current_timestamp()),
+        );
 
         let contents = serde_json::to_string_pretty(&ledger)?;
         write(self.genesis_ledger_path(network_id), contents)
@@ -398,6 +425,14 @@ fn set_key_file_permissions(file: &Path) -> Result<()> {
     Ok(())
 }
 
+fn invalid(msg: impl Into<String>) -> Error {
+    Error::new(ErrorKind::InvalidData, msg.into())
+}
+
+fn no_file_name(path: &Path) -> Error {
+    invalid(format!("'{}' has no file name", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,7 +444,7 @@ mod tests {
             .tempdir()
             .expect("Cannot create temporary directory");
         let base_path = tempdir.path();
-        let dir_manager = DirectoryManager::_new_with_base_path(base_path.to_path_buf());
+        let dir_manager = DirectoryManager::with_base_path(base_path.to_path_buf());
         let network_id = "test_network";
 
         // Create the network directory
@@ -429,7 +464,7 @@ mod tests {
             .tempdir()
             .expect("Cannot create temporary directory");
         let base_path = tempdir.path();
-        let dir_manager = DirectoryManager::_new_with_base_path(base_path.to_path_buf());
+        let dir_manager = DirectoryManager::with_base_path(base_path.to_path_buf());
         let network_id = "test_network";
         let subdirectories = dir_manager.subdirectories;
 
@@ -455,7 +490,7 @@ mod tests {
             .tempdir()
             .expect("Cannot create temporary directory");
         let base_path = tempdir.path();
-        let dir_manager = DirectoryManager::_new_with_base_path(base_path.to_path_buf());
+        let dir_manager = DirectoryManager::with_base_path(base_path.to_path_buf());
 
         let network_ids = ["test_network1", "test_network2"];
 
@@ -483,7 +518,7 @@ mod tests {
             .tempdir()
             .expect("Cannot create temporary directory");
         let base_path = tempdir.path();
-        let dir_manager = DirectoryManager::_new_with_base_path(base_path.to_path_buf());
+        let dir_manager = DirectoryManager::with_base_path(base_path.to_path_buf());
         let network_id = "test_network";
         let subdirectories = dir_manager.subdirectories;
 
@@ -515,7 +550,7 @@ mod tests {
             .tempdir()
             .expect("Cannot create temporary directory");
         let base_path = tempdir.path();
-        let dir_manager = DirectoryManager::_new_with_base_path(base_path.to_path_buf());
+        let dir_manager = DirectoryManager::with_base_path(base_path.to_path_buf());
         let network_id = "test_network";
         let subdirectories = dir_manager.subdirectories;
         let paths = dir_manager.subdirectories_paths(network_id);
@@ -537,7 +572,7 @@ mod tests {
             .expect("Cannot create temporary directory");
         let base_path = tempdir.path();
         let network_id = "test_network";
-        let dir_manager = DirectoryManager::_new_with_base_path(base_path.into());
+        let dir_manager = DirectoryManager::with_base_path(base_path.into());
         let genesis_ledger_path = dir_manager
             .network_path(network_id)
             .join(GENESIS_LEDGER_JSON);
@@ -595,7 +630,7 @@ mod tests {
             .expect("Cannot create temporary directory");
         let base_path = tempdir.path();
         let network_id = "test_network";
-        let dir_manager = DirectoryManager::_new_with_base_path(base_path.into());
+        let dir_manager = DirectoryManager::with_base_path(base_path.into());
         let subdir = "test_subdir";
         let file1 = "test_file1";
         let file2 = "test_file2.peerid";
@@ -634,7 +669,7 @@ mod tests {
             .expect("Cannot create temporary directory");
         let base_path = tempdir.path();
         let network_id = "test_network";
-        let dir_manager = DirectoryManager::_new_with_base_path(base_path.into());
+        let dir_manager = DirectoryManager::with_base_path(base_path.into());
         let services = vec![
             ServiceConfig {
                 service_name: "test_service1".to_string(),
@@ -671,7 +706,7 @@ mod tests {
             .expect("Cannot create temporary directory");
         let base_path = tempdir.path();
         let network_id = "test_network";
-        let dir_manager = DirectoryManager::_new_with_base_path(base_path.into());
+        let dir_manager = DirectoryManager::with_base_path(base_path.into());
         let services = vec![
             ServiceConfig {
                 service_name: "test_service1".to_string(),
@@ -709,7 +744,7 @@ mod tests {
             .expect("Cannot create temporary directory");
         let base_path = tempdir.path();
         let network_id = "test_network";
-        let dir_manager = DirectoryManager::_new_with_base_path(base_path.into());
+        let dir_manager = DirectoryManager::with_base_path(base_path.into());
         let services = vec![ServiceConfig {
             service_name: "test_service1".to_string(),
             service_type: crate::service::ServiceType::UptimeServiceBackend,
