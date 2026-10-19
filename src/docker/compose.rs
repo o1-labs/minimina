@@ -3,6 +3,7 @@
 //! This module facilitates the generation contents of `docker-compose.yaml` for
 //! deploying various Mina services in a Docker environment.
 
+use crate::cli::Profile;
 use crate::service::{ServiceConfig, ServiceType};
 use log::debug;
 use serde::ser::{SerializeStruct, Serializer};
@@ -49,6 +50,7 @@ struct Environment {
     #[serde(skip_serializing_if = "Option::is_none")]
     uptime_privkey_pass: Option<String>,
     rayon_num_threads: u32,
+    mina_profile: Profile,
 }
 
 #[derive(Default, Serialize)]
@@ -80,7 +82,11 @@ const POSTGRES_IMAGE: &str = "postgres:17";
 const RAYON_NUM_THREADS: u32 = 2;
 
 impl DockerCompose {
-    pub fn generate(configs: &[ServiceConfig], network_path: &Path) -> io::Result<String> {
+    pub fn generate(
+        configs: &[ServiceConfig],
+        network_path: &Path,
+        profile: Profile,
+    ) -> io::Result<String> {
         let network_path_string = path_str(network_path)?;
         let network_name = network_path
             .file_name()
@@ -326,6 +332,7 @@ impl DockerCompose {
                     },
                     mina_client_trustlist: "0.0.0.0/0".to_string(),
                     rayon_num_threads: RAYON_NUM_THREADS,
+                    mina_profile: profile,
                 },
             },
             volumes,
@@ -350,6 +357,7 @@ impl DockerCompose {
         .replace("uptime_privkey_pass", "UPTIME_PRIVKEY_PASS")
         .replace("mina_client_trustlist", "MINA_CLIENT_TRUSTLIST")
         .replace("rayon_num_threads", "RAYON_NUM_THREADS")
+        .replace("mina_profile", "MINA_PROFILE")
         .replace("null", "")
     }
 
@@ -426,7 +434,8 @@ mod tests {
             },
         ];
         let network_path = Path::new("/not-a-real-path");
-        let docker_compose = DockerCompose::generate(&configs, network_path).unwrap();
+        let docker_compose =
+            DockerCompose::generate(&configs, network_path, Profile::Devnet).unwrap();
         println!("{:?}", docker_compose);
         assert!(docker_compose.contains("seed"));
         assert!(docker_compose.contains("block-producer"));
@@ -464,7 +473,8 @@ mod tests {
             },
         ];
         let network_path = Path::new("/not-a-real-path");
-        let docker_compose = DockerCompose::generate(&configs, network_path).unwrap();
+        let docker_compose =
+            DockerCompose::generate(&configs, network_path, Profile::Devnet).unwrap();
         println!("{}", docker_compose);
         assert!(docker_compose.contains("seed"));
         assert!(docker_compose.contains("block-producer"));
@@ -493,7 +503,8 @@ mod tests {
         let topology: Topology = serde_json::from_str(&contents)?;
         let peers_file = dir_manager.peer_list_file(network_id);
         let services = topology.services(&peers_file);
-        let compose_contents = DockerCompose::generate(&services, &network_path).unwrap();
+        let compose_contents =
+            DockerCompose::generate(&services, &network_path, Profile::Devnet).unwrap();
 
         assert!(compose_contents.contains("snark-node"));
         assert!(compose_contents.contains("archive-node"));
@@ -523,7 +534,8 @@ mod tests {
             ..Default::default()
         }];
         let network_path = Path::new("/not-a-real-path/network-id");
-        let docker_compose = DockerCompose::generate(&configs, network_path).unwrap();
+        let docker_compose =
+            DockerCompose::generate(&configs, network_path, Profile::Devnet).unwrap();
         println!("{}", docker_compose);
         assert!(docker_compose.contains("mina-archive777-network-id"));
         assert!(docker_compose.contains("mina-archive777-service-network-id"));

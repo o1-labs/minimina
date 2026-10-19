@@ -35,17 +35,23 @@ impl Runner for SystemRunner {
     }
 }
 
-/// Fails with the command's stderr unless it exited successfully.
+/// Fails with the command's stderr (stdout when stderr is empty) unless it
+/// exited successfully.
 pub fn check(output: Output, what: &str) -> io::Result<Output> {
     if output.status.success() {
-        Ok(output)
-    } else {
-        Err(io::Error::other(format!(
-            "{what} failed ({}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        )))
+        return Ok(output);
     }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = match (stderr.trim(), stdout.trim()) {
+        ("", "") => "no output",
+        ("", stdout) => stdout,
+        (stderr, _) => stderr,
+    };
+    Err(io::Error::other(format!(
+        "{what} failed ({}): {detail}",
+        output.status
+    )))
 }
 
 #[cfg(test)]
@@ -158,6 +164,11 @@ mod tests {
         assert!(check(output(0, "ok", ""), "x").is_ok());
         let err = check(output(3, "", " boom \n"), "createdb").unwrap_err();
         assert_eq!(err.to_string(), "createdb failed (exit status: 3): boom");
+        let err = check(output(1, "usage: x\n", ""), "mina").unwrap_err();
+        assert_eq!(err.to_string(), "mina failed (exit status: 1): usage: x");
+        // mina without its libp2p helper exits 20 and prints nothing
+        let err = check(output(20, "", ""), "mina").unwrap_err();
+        assert_eq!(err.to_string(), "mina failed (exit status: 20): no output");
     }
 
     #[test]

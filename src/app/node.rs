@@ -9,6 +9,7 @@ use crate::{
     docker::manager::ContainerState,
     genesis_ledger::{self, REPLAYER_INPUT_JSON},
     graphql::GraphQl,
+    native,
     output::{self, node},
     runner::check,
     service::ServiceConfig,
@@ -333,6 +334,7 @@ fn start_native(
         let mina = native.bin_path.join("mina");
         let keys_dir = ctx.dirs.network_path(network_id).join(NETWORK_KEYPAIRS);
         let config_dir = native.config_dir_for_service(node_id);
+        let mina_env = native::mina_env(&native.bin_path, ctx.profile);
         import_all_accounts(ctx, network_id, node_id, |file| {
             ctx.runner.run(
                 mina.as_os_str(),
@@ -344,7 +346,7 @@ fn start_native(
                     "--config-directory",
                     &config_dir.to_string_lossy(),
                 ],
-                &[("MINA_PRIVKEY_PASS", "naughty blue worm")],
+                &native::env_refs(&[("MINA_PRIVKEY_PASS", "naughty blue worm")], &mina_env),
             )
         })?;
     }
@@ -357,6 +359,7 @@ fn run_replayer_native(ctx: &Context, network_id: &str) -> std::io::Result<Outpu
         .native(network_id)
         .map_err(|e| std::io::Error::other(format!("{e:#}")))?;
     let input = ctx.dirs.network_path(network_id).join(REPLAYER_INPUT_JSON);
+    let mina_env = native::mina_env(&native.bin_path, ctx.profile);
     ctx.runner.run(
         native.bin_path.join("mina-replayer").as_os_str(),
         &[
@@ -368,7 +371,7 @@ fn run_replayer_native(ctx: &Context, network_id: &str) -> std::io::Result<Outpu
             "--output-file",
             "/dev/null",
         ],
-        &[],
+        &native::env_refs(&[], &mina_env),
     )
 }
 

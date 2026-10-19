@@ -9,7 +9,7 @@ mod node;
 mod setup;
 
 use crate::{
-    cli::{Cli, Command, ExecutionMode, NetworkCommand, ShutdownTimeout},
+    cli::{Cli, Command, ExecutionMode, NetworkCommand, Profile, ShutdownTimeout},
     directory_manager::DirectoryManager,
     docker::manager::DockerManager,
     native::manager::{NativeManager, DEFAULT_POSTGRES_URI, DEFAULT_SHUTDOWN_TIMEOUT},
@@ -44,6 +44,8 @@ pub struct Context {
     bin_path: Option<PathBuf>,
     /// Postgres server URI (no database) for native archive nodes.
     pub postgres_uri: String,
+    /// Build profile exported as `MINA_PROFILE` to every mina process.
+    pub profile: Profile,
     pub runner: Rc<dyn Runner>,
 }
 
@@ -55,11 +57,13 @@ impl Context {
                 mode: self.mode,
                 bin_path: None,
                 postgres_uri: None,
+                profile: self.profile,
             },
             ExecutionMode::Native => NetworkMeta {
                 mode: self.mode,
                 bin_path: self.bin_path.clone(),
                 postgres_uri: Some(self.postgres_uri.clone()),
+                profile: self.profile,
             },
         }
     }
@@ -72,7 +76,11 @@ impl Context {
     }
 
     pub fn docker(&self, network_id: &str) -> DockerManager {
-        DockerManager::new(&self.dirs.network_path(network_id), self.runner.clone())
+        DockerManager::new(
+            &self.dirs.network_path(network_id),
+            self.profile,
+            self.runner.clone(),
+        )
     }
 
     pub fn native(&self, network_id: &str) -> Result<NativeManager> {
@@ -80,6 +88,7 @@ impl Context {
             &self.dirs.network_path(network_id),
             self.bin_path()?,
             &self.postgres_uri,
+            self.profile,
         ))
     }
 
@@ -101,7 +110,11 @@ pub fn run(cli: Cli) -> Result<()> {
 }
 
 pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Result<()> {
-    let is_create = matches!(cli.command, Command::Network(NetworkCommand::Create(_)));
+    let created_profile = match &cli.command {
+        Command::Network(NetworkCommand::Create(args)) => Some(args.profile),
+        _ => None,
+    };
+    let is_create = created_profile.is_some();
     let stored = match cli.command.network_id() {
         // `create` replaces whatever was there
         Some(id) if !is_create => NetworkMeta::load(&dirs.network_path(id))?,
@@ -121,6 +134,9 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
     };
     let stored_bin = stored.as_ref().and_then(|m| m.bin_path.clone());
     let bin_path = env::resolve_bin_path(&mode, cli.bin_path.or(stored_bin))?;
+    let profile = created_profile
+        .or(stored.as_ref().map(|m| m.profile))
+        .unwrap_or_default();
     let postgres_uri = stored
         .and_then(|m| m.postgres_uri)
         .or_else(|| std::env::var(POSTGRES_URI_ENV).ok())
@@ -140,6 +156,7 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
         mode,
         bin_path,
         postgres_uri,
+        profile,
         runner,
     };
 

@@ -218,6 +218,7 @@ fn check_setup_network(ctx: &Context, docker: &DockerManager, network_id: &str) 
                     &network_path,
                     old.bin_path.as_deref().unwrap_or(Path::new("")),
                     old.postgres_uri.as_deref().unwrap_or_default(),
+                    old.profile,
                 )
                 .stop_all(shutdown_timeout(&ShutdownTimeout::default()))?;
             }
@@ -305,7 +306,7 @@ fn create_network_native(
     services: &[ServiceConfig],
 ) -> Result<()> {
     if let Some(config) =
-        mina_locator::installed_network_config(ctx.runner.as_ref(), ctx.bin_path()?)
+        mina_locator::installed_network_config(ctx.runner.as_ref(), ctx.bin_path()?, ctx.profile)
     {
         warn!(
             "{} is merged into every config this mina runs with: its fork point, peers and \

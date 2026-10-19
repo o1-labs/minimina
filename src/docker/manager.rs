@@ -10,8 +10,8 @@
 use crate::directory_manager::NETWORK_KEYPAIRS;
 use crate::genesis_ledger::REPLAYER_INPUT_JSON;
 use crate::{
-    docker::compose::DockerCompose, docker::compose::CONFIG_DIRECTORY, runner::Runner,
-    service::ServiceConfig,
+    cli::Profile, docker::compose::DockerCompose, docker::compose::CONFIG_DIRECTORY,
+    runner::Runner, service::ServiceConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -84,15 +84,17 @@ pub struct ComposeInfo {
 pub struct DockerManager {
     pub network_path: PathBuf,
     pub compose_path: PathBuf,
+    profile: Profile,
     runner: Rc<dyn Runner>,
 }
 
 impl DockerManager {
-    pub fn new(network_path: &Path, runner: Rc<dyn Runner>) -> Self {
+    pub fn new(network_path: &Path, profile: Profile, runner: Rc<dyn Runner>) -> Self {
         let compose_path = network_path.join("docker-compose.yaml");
         DockerManager {
             network_path: network_path.to_path_buf(),
             compose_path,
+            profile,
             runner,
         }
     }
@@ -103,7 +105,7 @@ impl DockerManager {
 
     pub fn compose_generate_file(&self, configs: &[ServiceConfig]) -> Result<()> {
         let mut file = File::create(&self.compose_path)?;
-        let contents = DockerCompose::generate(configs, &self.network_path)?;
+        let contents = DockerCompose::generate(configs, &self.network_path, self.profile)?;
         file.write_all(contents.as_bytes())?;
         Ok(())
     }
@@ -372,7 +374,11 @@ mod tests {
     }
 
     fn manager(fake: &Rc<FakeRunner>) -> DockerManager {
-        DockerManager::new(Path::new("/home/u/.minimina/net"), fake.clone())
+        DockerManager::new(
+            Path::new("/home/u/.minimina/net"),
+            Profile::Devnet,
+            fake.clone(),
+        )
     }
 
     #[test]

@@ -1,7 +1,12 @@
 //! Handler tests: real filesystem under a temp `MINIMINA_HOME`, fake `docker`/`mina`.
 
 use super::run_with;
-use crate::{cli::Cli, directory_manager::DirectoryManager, runner::fake::FakeRunner};
+use crate::{
+    cli::{Cli, Profile},
+    directory_manager::DirectoryManager,
+    network_meta::NetworkMeta,
+    runner::fake::FakeRunner,
+};
 use clap::Parser;
 use std::{path::Path, rc::Rc};
 
@@ -327,9 +332,15 @@ fn native_default_network_generates_keys_with_mina() {
         "create",
         "-n",
         "def",
+        "--profile",
+        "lightnet",
     ])
     .unwrap_err();
 
+    let meta = NetworkMeta::load(&h.dirs.network_path("def"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.profile, Profile::Lightnet);
     let calls = h.fake.calls.borrow();
     assert_eq!(calls.len(), 14);
     assert!(calls[0]
@@ -337,10 +348,18 @@ fn native_default_network_generates_keys_with_mina() {
         .contains("advanced generate-keypair -privkey-path"));
     assert_eq!(
         calls[0].envs,
-        vec![("MINA_PRIVKEY_PASS".into(), "naughty blue worm".into())]
+        vec![
+            ("MINA_PRIVKEY_PASS".into(), "naughty blue worm".into()),
+            ("MINA_PROFILE".into(), "lightnet".into())
+        ]
     );
     assert!(calls[6].line().contains("libp2p generate-keypair"));
     assert!(calls[12].line().ends_with("/mina version"));
+    // generic 4.x binaries refuse even `version` without a profile
+    assert_eq!(
+        calls[12].envs,
+        vec![("MINA_PROFILE".into(), "lightnet".into())]
+    );
     assert_eq!(
         calls[13].line(),
         "psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c DROP DATABASE IF EXISTS minimina_def"

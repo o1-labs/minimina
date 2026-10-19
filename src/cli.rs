@@ -20,6 +20,41 @@ impl std::fmt::Display for ExecutionMode {
     }
 }
 
+/// Build profile of the mina binaries (`Node_config` constants and signature kind).
+///
+/// Since 4.0 the daemon, archive and rosetta binaries are generic: they read the
+/// profile at runtime from `MINA_PROFILE`, else from `/etc/coda/build_config/PROFILE`,
+/// which only the `mina-<net>-profile` package installs. Older binaries ignore it.
+#[derive(Debug, Clone, Copy, Default, ValueEnum, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Profile {
+    Dev,
+    #[default]
+    Devnet,
+    Lightnet,
+    Mainnet,
+}
+
+impl Profile {
+    /// Environment variable the mina binaries read the profile from.
+    pub const ENV: &'static str = "MINA_PROFILE";
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Profile::Dev => "dev",
+            Profile::Devnet => "devnet",
+            Profile::Lightnet => "lightnet",
+            Profile::Mainnet => "mainnet",
+        }
+    }
+}
+
+impl std::fmt::Display for Profile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Parser)]
 #[command(
     author,
@@ -113,6 +148,11 @@ pub struct CreateNetworkArgs {
     /// Specify log level
     #[clap(short = 'l', long, default_value = "warn")]
     pub log_level: String,
+
+    /// Build profile the mina processes run with (exported as MINA_PROFILE).
+    /// Recorded at create; later commands use the recorded profile
+    #[clap(long, value_enum, default_value_t = Profile::default())]
+    pub profile: Profile,
 }
 
 #[derive(Args, Clone)]

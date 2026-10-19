@@ -62,6 +62,7 @@ fn generate_default_genesis_ledger(ctx: &Context, network_path: &Path) -> Result
             let keys = KeysManager::new(
                 network_path,
                 DEFAULT_DAEMON_DOCKER_IMAGE,
+                ctx.profile,
                 ctx.runner.clone(),
             );
             (
@@ -70,7 +71,12 @@ fn generate_default_genesis_ledger(ctx: &Context, network_path: &Path) -> Result
             )
         }
         ExecutionMode::Native => {
-            let keys = NativeKeysManager::new(network_path, ctx.bin_path()?, ctx.runner.clone());
+            let keys = NativeKeysManager::new(
+                network_path,
+                ctx.bin_path()?,
+                ctx.profile,
+                ctx.runner.clone(),
+            );
             (
                 keys.generate_bp_key_pairs(&all_services),
                 keys.generate_libp2p_key_pairs(&all_services),

@@ -4,6 +4,7 @@
 //! children (libp2p_helper) and a Ctrl-C in the shell that ran
 //! `minimina network start` does not stop the network.
 
+use crate::cli::Profile;
 use crate::docker::compose::CONFIG_DIRECTORY;
 use crate::native::port_manager;
 use crate::native::process_tracker::{proc_stat, ProcessRecord, ProcessTracker, Records};
@@ -31,6 +32,8 @@ pub struct NativeManager {
     pub network_path: PathBuf,
     pub bin_path: PathBuf,
     pub postgres_uri: String,
+    /// Exported as `MINA_PROFILE` to every process this manager starts.
+    pub profile: Profile,
 }
 
 /// A tracked process and whether it is still running.
@@ -42,11 +45,12 @@ pub struct ProcessStatus {
 }
 
 impl NativeManager {
-    pub fn new(network_path: &Path, bin_path: &Path, postgres_uri: &str) -> Self {
+    pub fn new(network_path: &Path, bin_path: &Path, postgres_uri: &str, profile: Profile) -> Self {
         NativeManager {
             network_path: network_path.to_path_buf(),
             bin_path: bin_path.to_path_buf(),
             postgres_uri: postgres_uri.trim_end_matches('/').to_string(),
+            profile,
         }
     }
 
@@ -311,6 +315,7 @@ impl NativeManager {
             .env("MINA_LIBP2P_PASS", "naughty blue worm")
             .env("MINA_CLIENT_TRUSTLIST", "0.0.0.0/0")
             .env("RAYON_NUM_THREADS", "2")
+            .envs(super::mina_env(&self.bin_path, self.profile))
             .stdin(Stdio::null())
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_file_err))
@@ -655,6 +660,7 @@ mod tests {
             Path::new("/net"),
             Path::new("/opt/mina"),
             DEFAULT_POSTGRES_URI,
+            Profile::Devnet,
         )
     }
 
@@ -790,6 +796,7 @@ mod tests {
             Path::new("/home/u/.minimina/My-Net.1"),
             Path::new("/b"),
             "postgres://u:p@db:5432/",
+            Profile::Devnet,
         );
         assert_eq!(native.archive_db_name(), "minimina_my_net_1");
         assert_eq!(
@@ -833,7 +840,12 @@ mod tests {
         }
 
         fn manager(&self) -> NativeManager {
-            NativeManager::new(self.net.path(), self.bin.path(), DEFAULT_POSTGRES_URI)
+            NativeManager::new(
+                self.net.path(),
+                self.bin.path(),
+                DEFAULT_POSTGRES_URI,
+                Profile::Lightnet,
+            )
         }
     }
 
@@ -945,6 +957,15 @@ exec sleep 300"#
         // a restart appends to the log instead of truncating it
         native.start_service(&a, "net").unwrap();
         wait_for_log(&native, "a", "started", 2);
+        native.stop_all(Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn processes_get_the_network_profile() {
+        let sandbox = Sandbox::new("echo \"profile=$MINA_PROFILE\"; exec sleep 300");
+        let native = sandbox.manager();
+        native.start_service(&seed("a"), "net").unwrap();
+        wait_for_log(&native, "a", "profile=lightnet", 1);
         native.stop_all(Duration::from_secs(5)).unwrap();
     }
 
