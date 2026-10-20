@@ -44,7 +44,8 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             let keys = setup::handle_genesis_ledger(ctx, &cmd, &network_id)?;
 
             // build services from topology file
-            let services = setup::handle_topology(ctx, &cmd, &network_id, keys)?;
+            let mut services = setup::handle_topology(ctx, &cmd, &network_id, keys)?;
+            setup::prepare_archive_node_api(ctx, &mut services)?;
 
             // copy libp2p + network keys
             ctx.dirs

@@ -30,6 +30,9 @@ pub enum ServiceType {
     /// `mina-rosetta`: the Rosetta API on top of a daemon and the archive database.
     #[serde(rename = "Rosetta")]
     Rosetta,
+    /// Archive Node API: GraphQL over the archive database (events, actions).
+    #[serde(rename = "Archive_node_api")]
+    ArchiveNodeApi,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -72,6 +75,11 @@ pub struct ServiceConfig {
     pub rosetta_graphql_node: Option<String>,
     /// GraphQL (REST) port of that daemon.
     pub rosetta_graphql_port: Option<u16>,
+
+    //archive node api specific: PORT is client_port
+    pub archive_node_api_version: Option<String>,
+    /// Native mode: the server's executable, resolved (and installed) at create.
+    pub archive_node_api_bin: Option<PathBuf>,
 
     //uptime service backend specific
     pub uptime_service_backend_app_config: Option<PathBuf>,

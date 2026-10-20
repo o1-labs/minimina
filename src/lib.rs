@@ -1,6 +1,7 @@
 //! MiniMina: spin up local Mina networks with docker compose or native processes.
 
 pub mod app;
+pub mod archive_node_api;
 pub mod cli;
 pub mod daemon_args;
 pub mod directory_manager;

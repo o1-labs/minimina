@@ -26,6 +26,11 @@ role = "archive"              # + mina-archive and a postgres database
 role = "rosetta"              # mina-rosetta: reads the archive database and
 # node = "node-1"             # the GraphQL API of this daemon (default: the archive node)
 
+[[nodes]]
+role = "archive-node-api"     # GraphQL over the archive database (events, actions)
+# version = "2.0.0"           # npm package / docker image version
+# bin = "/path/to/server"     # native mode: own executable instead of the npm install
+
 # [[nodes]]
 # role = "snark-coordinator"
 # workers = 1
@@ -42,6 +47,7 @@ balance = "1000"
 # daemon_image = "minaprotocol/mina-daemon:..."
 # archive_image = "minaprotocol/mina-archive:..."
 # rosetta_image = "minaprotocol/mina-rosetta:..."
+# archive_node_api_image = "ghcr.io/o1-labs/archive-node-api:..."
 
 # Merged into the generated genesis runtime config.
 # [runtime_config.genesis]

@@ -1,29 +1,11 @@
 //! Host checks done before any command runs.
 
-use crate::{cli::ExecutionMode, native::mina_locator, runner::Runner};
+use crate::{cli::ExecutionMode, native::mina_locator, runner::Runner, utils::parse_version};
 use anyhow::{bail, Context as _, Result};
 use std::path::PathBuf;
 
 // The least supported version of docker compose
 const LEAST_COMPOSE_VERSION: (u32, u32, u32) = (2, 21, 0);
-
-/// Parses `MAJOR.MINOR[.PATCH]` with an optional `v` prefix and `-`/`+` suffix
-/// (`2.29.1`, `v2.29.1-desktop.1`).
-fn parse_version(version: &str) -> Option<(u32, u32, u32)> {
-    let core = version
-        .trim()
-        .trim_start_matches('v')
-        .split(['-', '+'])
-        .next()?;
-    let mut parts = core.split('.').map(str::parse::<u32>);
-    let major = parts.next()?.ok()?;
-    let minor = parts.next()?.ok()?;
-    let patch = parts.next().unwrap_or(Ok(0)).ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((major, minor, patch))
-}
 
 /// Docker mode needs `docker` and the compose v2 plugin; native mode needs nothing here.
 pub fn check_execution_environment(mode: &ExecutionMode, runner: &dyn Runner) -> Result<()> {

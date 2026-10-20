@@ -223,7 +223,10 @@ impl Layout<'_> {
                     ),
                 }
             }
-            ServiceType::SnarkWorker | ServiceType::UptimeServiceBackend | ServiceType::Rosetta => {
+            ServiceType::SnarkWorker
+            | ServiceType::UptimeServiceBackend
+            | ServiceType::Rosetta
+            | ServiceType::ArchiveNodeApi => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("'{}' is not a daemon", service.service_name),

@@ -5,6 +5,7 @@ use super::{
     DEFAULT_ROSETTA_DOCKER_IMAGE, IMAGE_COMMIT_HASH,
 };
 use crate::{
+    archive_node_api,
     cli::{CreateNetworkArgs, ExecutionMode},
     genesis_ledger::default,
     keys::{KeysManager, NodeKey},
@@ -175,6 +176,33 @@ pub fn handle_topology(
     }
 }
 
+/// Native mode: the archive node api runs the npm package; checks Node.js and
+/// installs the package (once per version) into `~/.minimina/.tools`, and
+/// records the executable in the service.
+pub fn prepare_archive_node_api(ctx: &Context, services: &mut [ServiceConfig]) -> Result<()> {
+    if ctx.mode != ExecutionMode::Native {
+        return Ok(());
+    }
+    for service in services
+        .iter_mut()
+        .filter(|s| s.service_type == ServiceType::ArchiveNodeApi)
+    {
+        let version = service
+            .archive_node_api_version
+            .clone()
+            .unwrap_or_else(|| archive_node_api::DEFAULT_VERSION.to_string());
+        let bin = archive_node_api::ensure_native(
+            ctx.runner.as_ref(),
+            &ctx.dirs.tool_path(archive_node_api::TOOL, &version),
+            &version,
+            service.archive_node_api_bin.as_deref(),
+        )
+        .with_context(|| format!("preparing '{}'", service.service_name))?;
+        service.archive_node_api_bin = Some(bin);
+    }
+    Ok(())
+}
+
 /// Creates the list of docker service configs from the topology file at `topology_path`
 /// using the seed nodes as the list of network peers (at least 1 seed node must be declared)
 fn create_services(
@@ -293,6 +321,27 @@ fn spec_services(
                 archive_port: node.archive_port,
                 ..daemon(ServiceType::ArchiveNode)?
             },
+            Role::ArchiveNodeApi => {
+                let version = node
+                    .version
+                    .clone()
+                    .unwrap_or_else(|| archive_node_api::DEFAULT_VERSION.to_string());
+                let image = net
+                    .spec
+                    .docker
+                    .archive_node_api_image
+                    .clone()
+                    .unwrap_or_else(|| archive_node_api::docker_image(&version));
+                ServiceConfig {
+                    service_type: ServiceType::ArchiveNodeApi,
+                    service_name: node.name.clone(),
+                    docker_image: Some(image),
+                    client_port: Some(node.client_port),
+                    archive_node_api_version: Some(version),
+                    archive_node_api_bin: node.bin.clone(),
+                    ..Default::default()
+                }
+            }
             Role::Rosetta => {
                 let (graphql_node, client_port) = node
                     .graphql_node
@@ -446,6 +495,24 @@ mod tests {
         );
         assert_eq!(rosetta.libp2p_keypair, None);
         assert_eq!(rosetta.peers, None);
+    }
+
+    #[test]
+    fn archive_node_api_service_carries_version_and_image() {
+        let spec: NetworkSpec = toml::from_str(
+            "[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"archive\"\n[[nodes]]\nrole = \"archive-node-api\"",
+        )
+        .unwrap();
+        let services = spec_services(&generated(spec), "net", ExecutionMode::Docker).unwrap();
+        let api = &services[2];
+        assert_eq!(api.service_type, ServiceType::ArchiveNodeApi);
+        assert_eq!(api.client_port, Some(3120));
+        assert_eq!(api.archive_node_api_version.as_deref(), Some("2.0.0"));
+        assert_eq!(
+            api.docker_image.as_deref(),
+            Some("ghcr.io/o1-labs/archive-node-api:2.0.0")
+        );
+        assert_eq!(api.libp2p_keypair, None);
     }
 
     #[test]

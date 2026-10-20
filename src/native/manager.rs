@@ -4,6 +4,7 @@
 //! children (libp2p_helper) and a Ctrl-C in the shell that ran
 //! `minimina network start` does not stop the network.
 
+use crate::archive_node_api;
 use crate::cli::{ExecutionMode, Profile};
 use crate::daemon_args::{
     mina_args, rosetta_args, sort_precomputed_block_files, DaemonFeatures, Layout,
@@ -177,10 +178,15 @@ impl NativeManager {
             })
             .partition(|s| s.service_type == ServiceType::Seed);
 
-        // rosetta talks to a daemon and the archive database, so it comes last
-        let (apis, others): (Vec<&ServiceConfig>, Vec<&ServiceConfig>) = others
-            .into_iter()
-            .partition(|s| s.service_type == ServiceType::Rosetta);
+        // rosetta and the archive node api read a daemon and the archive
+        // database, so they come last
+        let (apis, others): (Vec<&ServiceConfig>, Vec<&ServiceConfig>) =
+            others.into_iter().partition(|s| {
+                matches!(
+                    s.service_type,
+                    ServiceType::Rosetta | ServiceType::ArchiveNodeApi
+                )
+            });
 
         let result = seeds
             .iter()
@@ -271,6 +277,26 @@ impl NativeManager {
     }
 
     fn spawn_service(&self, service: &ServiceConfig, network_id: &str) -> Result<()> {
+        if service.service_type == ServiceType::ArchiveNodeApi {
+            let bin = service.archive_node_api_bin.as_deref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "'{}' has no archive_node_api_bin; create the network again",
+                        service.service_name
+                    ),
+                )
+            })?;
+            let port = service.client_port.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("'{}' has no client_port", service.service_name),
+                )
+            })?;
+            let env = archive_node_api::env(&self.archive_db_uri(), port);
+            let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            return self.spawn_with_env(&service.service_name, bin, &[], &env);
+        }
         if service.service_type == ServiceType::Rosetta {
             let layout = Layout {
                 mode: ExecutionMode::Native,
@@ -900,6 +926,32 @@ exec sleep 300"#
         let native = sandbox.manager();
         native.start_service(&seed("a"), "net").unwrap();
         wait_for_log(&native, "a", "profile=lightnet", 1);
+        native.stop_all(Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn archive_node_api_gets_the_archive_database_and_port() {
+        use std::os::unix::fs::PermissionsExt;
+        let sandbox = Sandbox::new("exec sleep 300");
+        let bin = sandbox.bin.path().join("ana");
+        fs::write(
+            &bin,
+            "#!/bin/sh\necho \"PG_CONN=$PG_CONN PORT=$PORT\"\nexec sleep 300\n",
+        )
+        .unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let native = sandbox.manager();
+        let port = free_port();
+        let api = ServiceConfig {
+            service_type: ServiceType::ArchiveNodeApi,
+            service_name: "ana".into(),
+            client_port: Some(port),
+            archive_node_api_bin: Some(bin),
+            ..Default::default()
+        };
+        native.start_service(&api, "net").unwrap();
+        let db = native.archive_db_uri();
+        wait_for_log(&native, "ana", &format!("PG_CONN={db} PORT={port}"), 1);
         native.stop_all(Duration::from_secs(5)).unwrap();
     }
 
