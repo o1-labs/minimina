@@ -10,7 +10,14 @@
 use crate::directory_manager::NETWORK_KEYPAIRS;
 use crate::genesis_ledger::REPLAYER_INPUT_JSON;
 use crate::{
-    docker::compose::DockerCompose, docker::compose::CONFIG_DIRECTORY, runner::Runner,
+    cli::Profile,
+    daemon_args::{
+        sort_precomputed_block_files, DaemonFeatures, PRECOMPUTED_BLOCKS_DIR,
+        PRECOMPUTED_BLOCKS_FILE,
+    },
+    docker::compose::DockerCompose,
+    docker::compose::CONFIG_DIRECTORY,
+    runner::Runner,
     service::ServiceConfig,
 };
 use serde::{Deserialize, Serialize};
@@ -84,15 +91,17 @@ pub struct ComposeInfo {
 pub struct DockerManager {
     pub network_path: PathBuf,
     pub compose_path: PathBuf,
+    profile: Profile,
     runner: Rc<dyn Runner>,
 }
 
 impl DockerManager {
-    pub fn new(network_path: &Path, runner: Rc<dyn Runner>) -> Self {
+    pub fn new(network_path: &Path, profile: Profile, runner: Rc<dyn Runner>) -> Self {
         let compose_path = network_path.join("docker-compose.yaml");
         DockerManager {
             network_path: network_path.to_path_buf(),
             compose_path,
+            profile,
             runner,
         }
     }
@@ -101,9 +110,14 @@ impl DockerManager {
         self.runner.run("docker".as_ref(), args, &[])
     }
 
-    pub fn compose_generate_file(&self, configs: &[ServiceConfig]) -> Result<()> {
+    pub fn compose_generate_file(
+        &self,
+        configs: &[ServiceConfig],
+        features: DaemonFeatures,
+    ) -> Result<()> {
         let mut file = File::create(&self.compose_path)?;
-        let contents = DockerCompose::generate(configs, &self.network_path)?;
+        let contents =
+            DockerCompose::generate(configs, &self.network_path, self.profile, features)?;
         file.write_all(contents.as_bytes())?;
         Ok(())
     }
@@ -214,20 +228,37 @@ impl DockerManager {
         Ok(containers)
     }
 
-    /// Execute a command in a compose service
+    /// Precomputed blocks of a daemon, one JSON per line, oldest first: from
+    /// its blocks directory, or from the single file of older daemons.
     pub fn compose_dump_precomputed_blocks(
         &self,
         node_id: &str,
         network_id: &str,
     ) -> Result<Output> {
         let service = format!("{node_id}-{network_id}");
-        let cmd = &[
+        let dir = format!("/{CONFIG_DIRECTORY}/{PRECOMPUTED_BLOCKS_DIR}");
+        let listing = self.run_docker_compose(&["exec", &service, "ls", "-1", &dir])?;
+        if !listing.status.success() {
+            let file = format!("/{CONFIG_DIRECTORY}/{PRECOMPUTED_BLOCKS_FILE}");
+            return self.run_docker_compose(&["exec", &service, "cat", &file]);
+        }
+        let mut names: Vec<String> = String::from_utf8_lossy(&listing.stdout)
+            .lines()
+            .filter(|n| n.ends_with(".json"))
+            .map(str::to_string)
+            .collect();
+        sort_precomputed_block_files(&mut names);
+        let paths: Vec<String> = names.iter().map(|n| format!("{dir}/{n}")).collect();
+        let mut cmd = vec![
             "exec",
             &service,
-            "cat",
-            &format!("/{CONFIG_DIRECTORY}/precomputed_blocks.log"),
+            "sh",
+            "-c",
+            r#"for f in "$@"; do cat "$f"; echo; done"#,
+            "sh",
         ];
-        self.run_docker_compose(cmd)
+        cmd.extend(paths.iter().map(String::as_str));
+        self.run_docker_compose(&cmd)
     }
 
     /// Execute `pg_dump` on the postgres db
@@ -372,7 +403,11 @@ mod tests {
     }
 
     fn manager(fake: &Rc<FakeRunner>) -> DockerManager {
-        DockerManager::new(Path::new("/home/u/.minimina/net"), fake.clone())
+        DockerManager::new(
+            Path::new("/home/u/.minimina/net"),
+            Profile::Devnet,
+            fake.clone(),
+        )
     }
 
     #[test]

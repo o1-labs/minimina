@@ -22,6 +22,7 @@ use std::{
 
 use log::{debug, info};
 
+use crate::cli::Profile;
 use crate::runner::{check, Runner};
 use crate::utils::get_current_user_uid_gid;
 
@@ -54,14 +55,21 @@ pub struct NodeKey {
 pub struct KeysManager {
     pub network_path: PathBuf,
     pub docker_image: String,
+    profile_env: String,
     runner: Rc<dyn Runner>,
 }
 
 impl KeysManager {
-    pub fn new(network_path: &Path, docker_image: &str, runner: Rc<dyn Runner>) -> Self {
+    pub fn new(
+        network_path: &Path,
+        docker_image: &str,
+        profile: Profile,
+        runner: Rc<dyn Runner>,
+    ) -> Self {
         KeysManager {
             network_path: network_path.to_path_buf(),
             docker_image: docker_image.to_string(),
+            profile_env: format!("{}={profile}", Profile::ENV),
             runner,
         }
     }
@@ -100,6 +108,8 @@ impl KeysManager {
             uid_gid.as_str(),
             "--env",
             "MINA_PRIVKEY_PASS=naughty blue worm",
+            "--env",
+            &self.profile_env,
             "--entrypoint",
             "mina",
             "-v",
@@ -160,6 +170,8 @@ impl KeysManager {
             // "1000:1000",
             "--env",
             "MINA_LIBP2P_PASS=naughty blue worm",
+            "--env",
+            &self.profile_env,
             "--entrypoint",
             "mina",
             "-v",
@@ -240,7 +252,7 @@ mod tests {
         let fake = Rc::new(FakeRunner::default());
         fake.reply(0, "Public key: B62qbp\n", "")
             .reply(0, "libp2p keypair:\na,b,peer\n", "");
-        let keys = KeysManager::new(Path::new("/net"), "img:1", fake.clone());
+        let keys = KeysManager::new(Path::new("/net"), "img:1", Profile::Devnet, fake.clone());
 
         let bp = keys.generate_bp_key_pair("bp-1").unwrap();
         assert_eq!(bp.key_string, "B62qbp");
@@ -262,7 +274,7 @@ mod tests {
     fn docker_key_generation_failure_is_reported() {
         let fake = Rc::new(FakeRunner::default());
         fake.reply(125, "", "pull access denied");
-        let keys = KeysManager::new(Path::new("/net"), "img:1", fake);
+        let keys = KeysManager::new(Path::new("/net"), "img:1", Profile::Devnet, fake);
         let err = keys.generate_bp_key_pairs(&["bp-1"]).unwrap_err();
         assert!(err.to_string().contains("pull access denied"));
     }

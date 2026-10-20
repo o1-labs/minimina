@@ -16,6 +16,7 @@ const SMALL_TOPOLOGY: &str = "tests/data/small_network/topology.json";
 
 const FAKE_MINA: &str = r#"#!/bin/sh
 [ "$1" = version ] && { echo 'Commit 0000000000'; exit 0; }
+[ "$1 $2" = "daemon -help" ] && { echo '  [--precomputed-blocks-dir DIR]'; exit 0; }
 echo "mina $*"
 port=""; prev=""
 for a in "$@"; do [ "$prev" = "-external-port" ] && port=$a; prev=$a; done
@@ -37,7 +38,8 @@ impl Env {
             bin: tempfile::tempdir().unwrap(),
         };
         let mina = env.bin.path().join("mina");
-        // `mina version` must return (native create probes it for an installed config),
+        // `mina version` and `mina daemon -help` must return (native create probes
+        // them for an installed config and for daemon flags),
         // and the daemon listens on -external-port like a seed's libp2p, which
         // `network start` waits for before starting the other nodes
         fs::write(&mina, FAKE_MINA).unwrap();
@@ -194,6 +196,13 @@ fn native_network_lifecycle() {
     let logs = String::from_utf8_lossy(&out.stdout);
     assert!(logs.contains("mina daemon -client-port 7080"), "{logs}");
     assert!(logs.contains("-seed"), "{logs}");
+    assert!(logs.contains("-external-ip 127.0.0.1"), "{logs}");
+    // the fake mina has -precomputed-blocks-dir, and the daemon needs it to exist
+    assert!(logs.contains("-precomputed-blocks-dir"), "{logs}");
+    assert!(env
+        .network_dir("life")
+        .join("config-directory/seed-0/precomputed_blocks")
+        .is_dir());
 
     let v = env.json(
         &[

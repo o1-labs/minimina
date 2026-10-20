@@ -1,0 +1,38 @@
+# minimina network spec: `minimina network create --spec network.toml`
+#
+# minimina generates the keys, ports, peers and genesis ledger. Node names
+# default to <role>-<n> (seed-1, bp-1, node-1, ...); client ports are
+# assigned from 3100 in steps of 10 unless a node sets `client_port`.
+
+# Build profile of the mina binaries: dev, devnet, lightnet, mainnet.
+# --profile overrides it. Default: devnet.
+profile = "devnet"
+
+[[nodes]]
+role = "seed"
+
+[[nodes]]
+role = "block-producer"
+count = 2
+balance = "11550000"          # default for block producers
+
+[[nodes]]
+role = "plain"                # follows the chain, produces no blocks
+
+[[nodes]]
+role = "archive"              # + mina-archive and a postgres database
+
+# [[nodes]]
+# role = "snark-coordinator"
+# workers = 1
+# fee = "0.001"
+
+# Funded accounts for transactions in tests: account-1 .. account-N.
+# Keys are in <network dir>/network-keypairs.
+[ledger]
+accounts = 3
+balance = "1000"
+
+# Merged into the generated genesis runtime config.
+# [runtime_config.genesis]
+# slots_per_epoch = 480

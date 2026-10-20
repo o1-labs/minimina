@@ -7,7 +7,7 @@ use log::debug;
 use std::{
     fs::File,
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 use url::Url;
 
@@ -24,6 +24,35 @@ pub fn get_current_user_uid_gid() -> Option<String> {
     let current_group = uzers::get_current_gid();
 
     Some(format!("{current_user}:{current_group}"))
+}
+
+/// Directory, under the root a package is installed or unpacked in, where the
+/// archive package puts its schema scripts (`create_schema.sql`, `upgrade.sql`, ...).
+pub const PACKAGED_SCHEMA_DIR: &str = "etc/mina/archive";
+
+/// Root a mina package is installed or unpacked under, from the directory of its
+/// binaries: `/` for `/usr/local/bin`, `<dir>` for `<dir>/usr/local/bin`.
+pub fn package_root(bin_path: &Path) -> Option<&Path> {
+    ["usr/local/bin", "usr/bin"].iter().find_map(|suffix| {
+        bin_path.ends_with(suffix).then(|| {
+            bin_path
+                .ancestors()
+                .nth(Path::new(suffix).components().count())
+        })?
+    })
+}
+
+/// The schema script `file_name` of the archive package next to `bin_path`, if any.
+pub fn packaged_schema(bin_path: &Path, file_name: &str) -> Option<PathBuf> {
+    let path = package_root(bin_path)?
+        .join(PACKAGED_SCHEMA_DIR)
+        .join(file_name);
+    path.is_file().then_some(path)
+}
+
+/// Whether a schema source is downloaded (`http(s)://`) rather than a local file.
+pub fn is_remote_schema(source: &str) -> bool {
+    Url::parse(source).is_ok_and(|u| matches!(u.scheme(), "http" | "https"))
 }
 
 /// Copies an archive schema into `network_path` and returns the copy's path.
@@ -86,6 +115,39 @@ pub fn fetch_schema(source: &str, network_path: PathBuf) -> io::Result<PathBuf> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_root_strips_the_binary_directory() {
+        assert_eq!(
+            package_root(Path::new("/usr/local/bin")),
+            Some(Path::new("/"))
+        );
+        assert_eq!(package_root(Path::new("/usr/bin")), Some(Path::new("/")));
+        assert_eq!(
+            package_root(Path::new("/opt/mina/4.0.2/usr/local/bin")),
+            Some(Path::new("/opt/mina/4.0.2"))
+        );
+        assert_eq!(package_root(Path::new("/home/u/mina/_build/default")), None);
+    }
+
+    #[test]
+    fn packaged_schema_is_found_under_the_package_root() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("usr/local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        assert_eq!(packaged_schema(&bin, "create_schema.sql"), None);
+
+        let dir = root.path().join(PACKAGED_SCHEMA_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("create_schema.sql"), "").unwrap();
+        assert_eq!(
+            packaged_schema(&bin, "create_schema.sql"),
+            Some(dir.join("create_schema.sql"))
+        );
+        assert!(is_remote_schema("https://x/create_schema.sql"));
+        assert!(!is_remote_schema("/tmp/create_schema.sql"));
+        assert!(!is_remote_schema("file:///tmp/create_schema.sql"));
+    }
 
     #[test]
     fn test_get_current_user_uid_gid() {

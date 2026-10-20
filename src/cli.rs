@@ -20,6 +20,41 @@ impl std::fmt::Display for ExecutionMode {
     }
 }
 
+/// Build profile of the mina binaries (`Node_config` constants and signature kind).
+///
+/// Since 4.0 the daemon, archive and rosetta binaries are generic: they read the
+/// profile at runtime from `MINA_PROFILE`, else from `/etc/coda/build_config/PROFILE`,
+/// which only the `mina-<net>-profile` package installs. Older binaries ignore it.
+#[derive(Debug, Clone, Copy, Default, ValueEnum, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Profile {
+    Dev,
+    #[default]
+    Devnet,
+    Lightnet,
+    Mainnet,
+}
+
+impl Profile {
+    /// Environment variable the mina binaries read the profile from.
+    pub const ENV: &'static str = "MINA_PROFILE";
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Profile::Dev => "dev",
+            Profile::Devnet => "devnet",
+            Profile::Lightnet => "lightnet",
+            Profile::Mainnet => "mainnet",
+        }
+    }
+}
+
+impl std::fmt::Display for Profile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Parser)]
 #[command(
     author,
@@ -98,6 +133,11 @@ pub struct StopNetworkArgs {
 
 #[derive(Args, Clone)]
 pub struct CreateNetworkArgs {
+    /// Path to a (TOML) network spec: roles and counts of the nodes; minimina
+    /// generates keys, ports, peers and the genesis ledger
+    #[clap(short = 's', long, conflicts_with_all = ["topology", "genesis_ledger"])]
+    pub spec: Option<std::path::PathBuf>,
+
     /// Path to the (JSON) topology file
     #[clap(short = 't', long)]
     pub topology: Option<std::path::PathBuf>,
@@ -113,6 +153,12 @@ pub struct CreateNetworkArgs {
     /// Specify log level
     #[clap(short = 'l', long, default_value = "warn")]
     pub log_level: String,
+
+    /// Build profile the mina processes run with (exported as MINA_PROFILE)
+    /// [default: the spec's profile, else devnet]. Recorded at create; later
+    /// commands use the recorded profile
+    #[clap(long, value_enum)]
+    pub profile: Option<Profile>,
 }
 
 #[derive(Args, Clone)]
@@ -321,6 +367,24 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spec_excludes_topology_and_ledger() {
+        for other in [["-t", "t.json"], ["-g", "g.json"]] {
+            let mut args = vec!["minimina", "network", "create", "--spec", "n.toml"];
+            args.extend(other);
+            let err = Cli::try_parse_from(args).err().unwrap();
+            assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+        let cli = Cli::try_parse_from(["minimina", "network", "create", "-s", "n.toml"]).unwrap();
+        match cli.command {
+            Command::Network(NetworkCommand::Create(args)) => {
+                assert_eq!(args.spec.as_deref(), Some(std::path::Path::new("n.toml")));
+                assert_eq!(args.profile, None);
+            }
+            _ => panic!("not a create"),
+        }
+    }
 
     #[test]
     fn test_network_create_command() {

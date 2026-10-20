@@ -6,6 +6,7 @@
 //!   2. `/usr/bin`       (debian package installs)
 //!   3. first `mina` on `PATH` (via `which mina`)
 
+use crate::cli::Profile;
 use crate::runner::Runner;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -71,9 +72,19 @@ fn config_search_dirs() -> Vec<PathBuf> {
 /// Network-specific mina packages install `config_<commit>.json`, which the
 /// daemon merges into every config it runs with: its fork point, peer list
 /// and constants leak into a local network and cannot be unset from there.
-pub fn installed_network_config(runner: &dyn Runner, bin_path: &Path) -> Option<PathBuf> {
+pub fn installed_network_config(
+    runner: &dyn Runner,
+    bin_path: &Path,
+    profile: Profile,
+) -> Option<PathBuf> {
+    // generic 4.x binaries refuse to run, even `version`, without a profile
+    let mina_env = super::mina_env(bin_path, profile);
     let out = runner
-        .run(bin_path.join("mina").as_os_str(), &["version"], &[])
+        .run(
+            bin_path.join("mina").as_os_str(),
+            &["version"],
+            &super::env_refs(&[], &mina_env),
+        )
         .ok()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let commit = stdout
@@ -110,17 +121,20 @@ mod tests {
             "",
         );
         assert_eq!(
-            installed_network_config(&fake, Path::new("/opt")),
+            installed_network_config(&fake, Path::new("/opt"), Profile::Devnet),
             Some(keys.path().join("config_68503010.json"))
         );
         assert_eq!(fake.lines(), vec!["/opt/mina version"]);
 
         fake.reply(0, "Commit 1e9d1419466c54dd2cee38dce85945b7346e98a4\n", "");
-        let other = installed_network_config(&fake, Path::new("/opt"));
+        let other = installed_network_config(&fake, Path::new("/opt"), Profile::Devnet);
         assert!(other.is_none_or(|p| !p.starts_with(keys.path())));
 
         fake.reply(1, "", "boom");
-        assert_eq!(installed_network_config(&fake, Path::new("/opt")), None);
+        assert_eq!(
+            installed_network_config(&fake, Path::new("/opt"), Profile::Devnet),
+            None
+        );
         std::env::remove_var("MINA_KEYS_PATH");
     }
 }

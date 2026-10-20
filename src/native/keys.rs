@@ -1,5 +1,6 @@
+use crate::cli::Profile;
 use crate::keys::{parse_libp2p_keypair, parse_public_key, NodeKey};
-use crate::runner::Runner;
+use crate::runner::{check, Runner};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,7 @@ fn mina_command_error(mina_bin: &Path, service_name: &str, e: io::Error) -> io::
 pub struct NativeKeysManager {
     pub network_path: PathBuf,
     pub bin_path: PathBuf,
+    profile: Profile,
     runner: Rc<dyn Runner>,
 }
 
@@ -35,10 +37,16 @@ fn utf8(path: &Path) -> io::Result<&str> {
 }
 
 impl NativeKeysManager {
-    pub fn new(network_path: &Path, bin_path: &Path, runner: Rc<dyn Runner>) -> Self {
+    pub fn new(
+        network_path: &Path,
+        bin_path: &Path,
+        profile: Profile,
+        runner: Rc<dyn Runner>,
+    ) -> Self {
         NativeKeysManager {
             network_path: network_path.to_path_buf(),
             bin_path: bin_path.to_path_buf(),
+            profile,
             runner,
         }
     }
@@ -49,6 +57,7 @@ impl NativeKeysManager {
 
         let privkey_path = keypair_dir.join(service_name);
         let mina_bin = self.bin_path.join("mina");
+        let mina_env = super::mina_env(&self.bin_path, self.profile);
         let output = self
             .runner
             .run(
@@ -59,17 +68,11 @@ impl NativeKeysManager {
                     "-privkey-path",
                     utf8(&privkey_path)?,
                 ],
-                &[("MINA_PRIVKEY_PASS", "naughty blue worm")],
+                &super::env_refs(&[("MINA_PRIVKEY_PASS", "naughty blue worm")], &mina_env),
             )
             .map_err(|e| mina_command_error(&mina_bin, service_name, e))?;
 
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "Failed to generate bp keypair for {}: {}",
-                service_name,
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
+        let output = check(output, &format!("Generating bp keypair for {service_name}"))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let public_key = parse_public_key(&stdout).ok_or_else(|| {
@@ -107,6 +110,7 @@ impl NativeKeysManager {
 
         let privkey_path = keypair_dir.join(service_name);
         let mina_bin = self.bin_path.join("mina");
+        let mina_env = super::mina_env(&self.bin_path, self.profile);
         let output = self
             .runner
             .run(
@@ -117,17 +121,14 @@ impl NativeKeysManager {
                     "-privkey-path",
                     utf8(&privkey_path)?,
                 ],
-                &[("MINA_LIBP2P_PASS", "naughty blue worm")],
+                &super::env_refs(&[("MINA_LIBP2P_PASS", "naughty blue worm")], &mina_env),
             )
             .map_err(|e| mina_command_error(&mina_bin, service_name, e))?;
 
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "Failed to generate libp2p keypair for {}: {}",
-                service_name,
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
+        let output = check(
+            output,
+            &format!("Generating libp2p keypair for {service_name}"),
+        )?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let keypair = parse_libp2p_keypair(&stdout).ok_or_else(|| {
@@ -171,7 +172,12 @@ mod tests {
         let fake = Rc::new(FakeRunner::default());
         fake.reply(0, "Public key: B62qn\n", "")
             .reply(0, "libp2p keypair:\nx,y,peer\n", "");
-        let keys = NativeKeysManager::new(net.path(), Path::new("/opt/mina/bin"), fake.clone());
+        let keys = NativeKeysManager::new(
+            net.path(),
+            Path::new("/opt/mina/bin"),
+            Profile::Devnet,
+            fake.clone(),
+        );
 
         let bp = keys.generate_bp_key_pairs(&["bp"]).unwrap();
         assert_eq!(bp["bp"].key_string, "B62qn");
@@ -183,7 +189,10 @@ mod tests {
         assert_eq!(calls[0].program, "/opt/mina/bin/mina");
         assert_eq!(
             calls[1].envs,
-            vec![("MINA_LIBP2P_PASS".into(), "naughty blue worm".into())]
+            vec![
+                ("MINA_LIBP2P_PASS".into(), "naughty blue worm".into()),
+                ("MINA_PROFILE".into(), "devnet".into())
+            ]
         );
     }
 
@@ -192,7 +201,7 @@ mod tests {
         let net = tempfile::tempdir().unwrap();
         let fake = Rc::new(FakeRunner::default());
         fake.reply_err(io::ErrorKind::NotFound);
-        let keys = NativeKeysManager::new(net.path(), Path::new("/nope"), fake);
+        let keys = NativeKeysManager::new(net.path(), Path::new("/nope"), Profile::Devnet, fake);
         let err = keys.generate_bp_key_pair("bp").unwrap_err();
         assert!(err.to_string().contains("--bin-path"));
     }
@@ -202,7 +211,7 @@ mod tests {
         let net = tempfile::tempdir().unwrap();
         let fake = Rc::new(FakeRunner::default());
         fake.reply(1, "", "bad password");
-        let keys = NativeKeysManager::new(net.path(), Path::new("/m"), fake);
+        let keys = NativeKeysManager::new(net.path(), Path::new("/m"), Profile::Devnet, fake);
         let err = keys.generate_libp2p_key_pair("bp").unwrap_err();
         assert!(err.to_string().contains("bad password"));
     }

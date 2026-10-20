@@ -3,6 +3,8 @@
 //! This module facilitates the generation contents of `docker-compose.yaml` for
 //! deploying various Mina services in a Docker environment.
 
+use crate::cli::{ExecutionMode, Profile};
+use crate::daemon_args::{mina_args, DaemonFeatures, Layout, PRECOMPUTED_BLOCKS_DIR};
 use crate::service::{ServiceConfig, ServiceType};
 use log::debug;
 use serde::ser::{SerializeStruct, Serializer};
@@ -49,6 +51,7 @@ struct Environment {
     #[serde(skip_serializing_if = "Option::is_none")]
     uptime_privkey_pass: Option<String>,
     rayon_num_threads: u32,
+    mina_profile: Profile,
 }
 
 #[derive(Default, Serialize)]
@@ -80,7 +83,12 @@ const POSTGRES_IMAGE: &str = "postgres:17";
 const RAYON_NUM_THREADS: u32 = 2;
 
 impl DockerCompose {
-    pub fn generate(configs: &[ServiceConfig], network_path: &Path) -> io::Result<String> {
+    pub fn generate(
+        configs: &[ServiceConfig],
+        network_path: &Path,
+        profile: Profile,
+        features: DaemonFeatures,
+    ) -> io::Result<String> {
         let network_path_string = path_str(network_path)?;
         let network_name = network_path
             .file_name()
@@ -92,9 +100,44 @@ impl DockerCompose {
                 ))
             })?;
 
+        // the daemon refuses a missing -precomputed-blocks-dir, and a fresh config
+        // volume has none: a volume of its own makes docker create the mount point
+        let blocks_volume = |service_name: &str| {
+            features
+                .precomputed_blocks_dir
+                .then(|| format!("{service_name}-blocks"))
+        };
+        let daemon_volumes = |service_name: &str| {
+            let mut volumes = vec![
+                format!("{network_path_string}:/local-network"),
+                format!("{service_name}:/{CONFIG_DIRECTORY}"),
+            ];
+            if let Some(volume) = blocks_volume(service_name) {
+                volumes.push(format!(
+                    "{volume}:/{CONFIG_DIRECTORY}/{PRECOMPUTED_BLOCKS_DIR}"
+                ));
+            }
+            volumes
+        };
+        let config_dir = format!("/{CONFIG_DIRECTORY}");
+        let command = |config: &ServiceConfig, uptime_service: Option<&str>| {
+            let layout = Layout {
+                mode: ExecutionMode::Docker,
+                network: network_name,
+                network_dir: "/local-network",
+                config_dir: &config_dir,
+                uptime_service,
+                features,
+            };
+            mina_args(config, &layout).map(|args| args.join(" "))
+        };
+
         //insert volumes for each service
         let mut volumes = configs.iter().fold(HashMap::new(), |mut acc, config| {
             let service_name = format!("{}-{network_name}", config.service_name.clone());
+            if let Some(volume) = blocks_volume(&service_name) {
+                acc.insert(volume, None);
+            }
             acc.insert(service_name, None);
             acc
         });
@@ -128,28 +171,17 @@ impl DockerCompose {
                             merge: Some("*default-attributes"),
                             container_name: service_name.clone(),
                             entrypoint: Some(vec!["mina".to_string()]),
-                            volumes: Some(vec![
-                                format!("{network_path_string}:/local-network"),
-                                format!("{service_name}:/{CONFIG_DIRECTORY}"),
-                            ]),
+                            volumes: Some(daemon_volumes(&service_name)),
                             image: match required(&config.docker_image, "docker_image", config) {
                                 Ok(image) => image,
                                 Err(e) => return Some(Err(e)),
                             },
-                            command: Some(match config.service_type {
-                                ServiceType::Seed => config.generate_seed_command(),
-                                ServiceType::BlockProducer => config
-                                    .generate_block_producer_command(
-                                        uptime_service_hostname.clone(),
-                                    ),
-                                ServiceType::SnarkCoordinator => {
-                                    config.generate_snark_coordinator_command()
-                                }
-                                ServiceType::SnarkWorker => {
-                                    config.generate_snark_worker_command(network_name.to_string())
-                                }
-                                _ => String::new(),
-                            }),
+                            command: Some(
+                                match command(config, uptime_service_hostname.as_deref()) {
+                                    Ok(command) => command,
+                                    Err(e) => return Some(Err(e)),
+                                },
+                            ),
                             ports: match config.client_port {
                                 Some(port) => {
                                     let gql_port = port + 1;
@@ -226,18 +258,14 @@ impl DockerCompose {
             );
 
             // Add archive node
-            let archive_command =
-                archive_config.generate_archive_command(archive_service_name.clone());
+            let archive_command = command(archive_config, None)?;
             services.insert(
                 archive_node_name.clone(),
                 Service {
                     merge: Some("*default-attributes"),
                     container_name: archive_node_name.clone(),
                     entrypoint: Some(vec!["mina".to_string()]),
-                    volumes: Some(vec![
-                        format!("{network_path_string}:/local-network"),
-                        format!("{archive_node_name}:/{CONFIG_DIRECTORY}"),
-                    ]),
+                    volumes: Some(daemon_volumes(&archive_node_name)),
                     image: required(&archive_config.docker_image, "docker_image", archive_config)?,
                     command: Some(archive_command),
                     ports: match archive_config.client_port {
@@ -326,6 +354,7 @@ impl DockerCompose {
                     },
                     mina_client_trustlist: "0.0.0.0/0".to_string(),
                     rayon_num_threads: RAYON_NUM_THREADS,
+                    mina_profile: profile,
                 },
             },
             volumes,
@@ -350,6 +379,7 @@ impl DockerCompose {
         .replace("uptime_privkey_pass", "UPTIME_PRIVKEY_PASS")
         .replace("mina_client_trustlist", "MINA_CLIENT_TRUSTLIST")
         .replace("rayon_num_threads", "RAYON_NUM_THREADS")
+        .replace("mina_profile", "MINA_PROFILE")
         .replace("null", "")
     }
 
@@ -426,7 +456,13 @@ mod tests {
             },
         ];
         let network_path = Path::new("/not-a-real-path");
-        let docker_compose = DockerCompose::generate(&configs, network_path).unwrap();
+        let docker_compose = DockerCompose::generate(
+            &configs,
+            network_path,
+            Profile::Devnet,
+            DaemonFeatures::default(),
+        )
+        .unwrap();
         println!("{:?}", docker_compose);
         assert!(docker_compose.contains("seed"));
         assert!(docker_compose.contains("block-producer"));
@@ -464,7 +500,13 @@ mod tests {
             },
         ];
         let network_path = Path::new("/not-a-real-path");
-        let docker_compose = DockerCompose::generate(&configs, network_path).unwrap();
+        let docker_compose = DockerCompose::generate(
+            &configs,
+            network_path,
+            Profile::Devnet,
+            DaemonFeatures::default(),
+        )
+        .unwrap();
         println!("{}", docker_compose);
         assert!(docker_compose.contains("seed"));
         assert!(docker_compose.contains("block-producer"));
@@ -493,7 +535,13 @@ mod tests {
         let topology: Topology = serde_json::from_str(&contents)?;
         let peers_file = dir_manager.peer_list_file(network_id);
         let services = topology.services(&peers_file);
-        let compose_contents = DockerCompose::generate(&services, &network_path).unwrap();
+        let compose_contents = DockerCompose::generate(
+            &services,
+            &network_path,
+            Profile::Devnet,
+            DaemonFeatures::default(),
+        )
+        .unwrap();
 
         assert!(compose_contents.contains("snark-node"));
         assert!(compose_contents.contains("archive-node"));
@@ -523,7 +571,13 @@ mod tests {
             ..Default::default()
         }];
         let network_path = Path::new("/not-a-real-path/network-id");
-        let docker_compose = DockerCompose::generate(&configs, network_path).unwrap();
+        let docker_compose = DockerCompose::generate(
+            &configs,
+            network_path,
+            Profile::Devnet,
+            DaemonFeatures::default(),
+        )
+        .unwrap();
         println!("{}", docker_compose);
         assert!(docker_compose.contains("mina-archive777-network-id"));
         assert!(docker_compose.contains("mina-archive777-service-network-id"));

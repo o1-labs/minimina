@@ -1,6 +1,7 @@
 //! `minimina.json`: how a network was created, so later commands use the same mode.
 
-use crate::cli::ExecutionMode;
+use crate::cli::{ExecutionMode, Profile};
+use crate::daemon_args::DaemonFeatures;
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
@@ -18,6 +19,13 @@ pub struct NetworkMeta {
     /// Postgres server URI without database (native archive nodes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub postgres_uri: Option<String>,
+    /// Build profile of the mina processes; networks created before it was
+    /// recorded use the default.
+    #[serde(default)]
+    pub profile: Profile,
+    /// Version-dependent daemon flags, probed at create.
+    #[serde(default)]
+    pub features: DaemonFeatures,
 }
 
 impl NetworkMeta {
@@ -55,12 +63,25 @@ mod tests {
             mode: ExecutionMode::Native,
             bin_path: Some("/usr/bin".into()),
             postgres_uri: None,
+            profile: Profile::Lightnet,
+            features: DaemonFeatures {
+                precomputed_blocks_dir: true,
+            },
         };
         meta.save(dir.path()).unwrap();
         assert_eq!(NetworkMeta::load(dir.path()).unwrap(), Some(meta));
         let raw = fs::read_to_string(dir.path().join(FILE)).unwrap();
         assert!(raw.contains("\"mode\": \"native\""));
         assert!(!raw.contains("postgres_uri"));
+        assert!(raw.contains("\"profile\": \"lightnet\""));
+    }
+
+    #[test]
+    fn missing_profile_defaults_to_devnet() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(FILE), "{\"mode\":\"native\"}").unwrap();
+        let meta = NetworkMeta::load(dir.path()).unwrap().unwrap();
+        assert_eq!(meta.profile, Profile::Devnet);
     }
 
     #[test]

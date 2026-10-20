@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod cli;
+pub mod daemon_args;
 pub mod directory_manager;
 pub mod docker;
 pub mod genesis_ledger;
@@ -12,5 +13,6 @@ pub mod network_meta;
 pub mod output;
 pub mod runner;
 pub mod service;
+pub mod spec;
 pub mod topology;
 pub mod utils;

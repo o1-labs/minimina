@@ -128,6 +128,50 @@ minimina node run-replayer -n <node-name>
 
 ---
 
+## Network Spec
+
+To choose the nodes of a network, write a short TOML spec. minimina generates
+the keys, ports, peers and genesis ledger:
+
+```toml
+# net.toml
+[[nodes]]
+role = "seed"
+
+[[nodes]]
+role = "block-producer"
+count = 2
+
+[[nodes]]
+role = "plain"          # follows the chain, produces no blocks
+
+[[nodes]]
+role = "archive"
+```
+
+```bash
+minimina network create -n mynet --spec net.toml
+minimina network start -n mynet
+```
+
+Roles: `seed`, `block-producer`, `plain`, `archive`, `snark-coordinator`.
+Names default to `<role>-<n>` (`seed-1`, `bp-1`, `node-1`); client ports start at
+3100 in steps of 10. Only block producers hold stake unless a node sets `balance`.
+[docs/examples/network.toml](docs/examples/network.toml) shows every option:
+balances, funded test accounts, runtime config overrides, docker images and the
+profile. The default network is a built-in spec.
+
+### Profile
+
+Since 4.0 the mina binaries are generic and select their build profile at
+runtime. `network create --profile dev|devnet|lightnet|mainnet` (or `profile` in
+the spec; default `devnet`) is recorded in the network and exported as
+`MINA_PROFILE` to every mina process. `lightnet` runs without proofs and is the
+fastest for local tests; `devnet` and `mainnet` compile full proofs, so each
+daemon spends 2-3 minutes on start.
+
+---
+
 ## Custom Networks (Lucy-Generated Genesis & Topology)
 
 Pre-configured test networks are available in `./tests/data/`:
@@ -198,6 +242,8 @@ minimina network stop -n local
 - `network start` starts the seeds first and starts the other nodes only when every seed accepts connections on its libp2p port (`--seed-timeout`, default 900 s): a non-seed daemon exits if it finds no peer during its initialization. Seeds are dialled on `127.0.0.1`.
 - Each node is a process group (the daemon and its `libp2p_helper`). `stop` sends SIGTERM to all groups at once and SIGKILL after `--timeout` seconds (default 60). A second `start` of a running node or network is refused.
 - Logs are appended to `<network>/logs/<node>.log`; `node logs`, `node dump-precomputed-blocks`, `node dump-archive-data` and `node run-replayer` work in both modes.
+- Daemons advertise `127.0.0.1` (`-external-ip`). Daemons that have `-precomputed-blocks-dir` (4.0.2+) write one file per block to `config-directory/<node>/precomputed_blocks`; older ones append to `precomputed_blocks.log`.
+- The archive schema comes from the archive package next to `mina` (`<root>/etc/mina/archive/create_schema.sql` for `<root>/usr/local/bin`); minimina downloads it from GitHub only when the package has none.
 - Archive nodes run `mina-archive` (from the same directory as `mina`) against a database `minimina_<network_id>`, recreated on every `network create`. The postgres server is `postgres://postgres:postgres@localhost:5432` unless `MINIMINA_POSTGRES_URI` is set at create time; `psql`, `pg_dump` and `mina-replayer` must be installed.
 
 ### Integration with Lucy
