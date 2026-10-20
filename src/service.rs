@@ -16,6 +16,9 @@ pub enum ServiceType {
     #[default]
     #[serde(rename = "Block_producer")]
     BlockProducer,
+    /// A daemon that follows the chain without producing blocks.
+    #[serde(rename = "Plain_node")]
+    PlainNode,
     #[serde(rename = "Snark_worker")]
     SnarkWorker,
     #[serde(rename = "Snark_coordinator")]

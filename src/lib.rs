@@ -13,5 +13,6 @@ pub mod network_meta;
 pub mod output;
 pub mod runner;
 pub mod service;
+pub mod spec;
 pub mod topology;
 pub mod utils;

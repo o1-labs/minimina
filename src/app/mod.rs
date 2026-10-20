@@ -116,8 +116,12 @@ pub fn run(cli: Cli) -> Result<()> {
 }
 
 pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Result<()> {
+    // `create` takes the profile from --profile, else from the spec
     let created_profile = match &cli.command {
-        Command::Network(NetworkCommand::Create(args)) => Some(args.profile),
+        Command::Network(NetworkCommand::Create(args)) => Some(match args.profile {
+            Some(profile) => Some(profile),
+            None => setup::create_spec(args)?.profile,
+        }),
         _ => None,
     };
     let is_create = created_profile.is_some();
@@ -142,6 +146,7 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
     let bin_path = env::resolve_bin_path(&mode, cli.bin_path.or(stored_bin))?;
     let features = stored.as_ref().map(|m| m.features).unwrap_or_default();
     let profile = created_profile
+        .flatten()
         .or(stored.as_ref().map(|m| m.profile))
         .unwrap_or_default();
     let postgres_uri = stored

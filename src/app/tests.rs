@@ -326,10 +326,10 @@ fn native_archive_uses_the_schema_of_its_package() {
     let schema_dir = root.path().join("etc/mina/archive");
     std::fs::create_dir_all(&schema_dir).unwrap();
     std::fs::write(schema_dir.join("create_schema.sql"), "-- packaged").unwrap();
-    for _ in 0..6 {
+    for _ in 0..3 {
         h.fake.reply(0, "Public key: B62qtest\n", "");
     }
-    for i in 0..6 {
+    for i in 0..5 {
         h.fake
             .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");
     }
@@ -361,10 +361,10 @@ fn native_archive_uses_the_schema_of_its_package() {
 fn native_default_network_generates_keys_with_mina() {
     let h = Harness::new();
     let bin = fake_mina_dir();
-    for _ in 0..6 {
+    for _ in 0..3 {
         h.fake.reply(0, "Public key: B62qtest\n", "");
     }
-    for i in 0..6 {
+    for i in 0..5 {
         h.fake
             .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");
     }
@@ -392,7 +392,7 @@ fn native_default_network_generates_keys_with_mina() {
     assert_eq!(meta.profile, Profile::Lightnet);
     assert!(meta.features.precomputed_blocks_dir);
     let calls = h.fake.calls.borrow();
-    assert_eq!(calls.len(), 15);
+    assert_eq!(calls.len(), 11);
     assert!(calls[0]
         .line()
         .contains("advanced generate-keypair -privkey-path"));
@@ -403,16 +403,16 @@ fn native_default_network_generates_keys_with_mina() {
             ("MINA_PROFILE".into(), "lightnet".into())
         ]
     );
-    assert!(calls[6].line().contains("libp2p generate-keypair"));
-    assert!(calls[12].line().ends_with("/mina daemon -help"));
-    assert!(calls[13].line().ends_with("/mina version"));
+    assert!(calls[3].line().contains("libp2p generate-keypair"));
+    assert!(calls[8].line().ends_with("/mina daemon -help"));
+    assert!(calls[9].line().ends_with("/mina version"));
     // generic 4.x binaries refuse even `version` without a profile
     assert_eq!(
-        calls[13].envs,
+        calls[9].envs,
         vec![("MINA_PROFILE".into(), "lightnet".into())]
     );
     assert_eq!(
-        calls[14].line(),
+        calls[10].line(),
         "psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c DROP DATABASE IF EXISTS minimina_def"
     );
     drop(calls);
@@ -420,6 +420,89 @@ fn native_default_network_generates_keys_with_mina() {
     let net = h.dirs.network_path("def");
     let ledger = std::fs::read_to_string(net.join("genesis_ledger.json")).unwrap();
     assert!(ledger.contains("B62qtest"));
+    // only the two block producers hold stake
+    assert_eq!(ledger.matches("\"pk\"").count(), 2, "{ledger}");
+}
+
+#[test]
+fn native_spec_network() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let spec = dir.path().join("net.toml");
+    std::fs::write(
+        &spec,
+        r#"
+        profile = "lightnet"
+        [[nodes]]
+        role = "seed"
+        [[nodes]]
+        role = "block-producer"
+        count = 2
+        balance = "500"
+        [[nodes]]
+        role = "plain"
+        [ledger]
+        accounts = 2
+        [runtime_config.proof]
+        block_window_duration_ms = 30000
+        "#,
+    )
+    .unwrap();
+    // keys: bp-1, bp-2, account-1, account-2; libp2p: seed-1, bp-1, bp-2, node-1
+    for i in 0..4 {
+        h.fake.reply(0, &format!("Public key: B62q{i}\n"), "");
+    }
+    for i in 0..4 {
+        h.fake
+            .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");
+    }
+    h.run(&[
+        "--mode",
+        "native",
+        "--bin-path",
+        path_arg(bin.path()),
+        "network",
+        "create",
+        "-n",
+        "spec",
+        "--spec",
+        path_arg(&spec),
+    ])
+    .unwrap();
+
+    let net = h.dirs.network_path("spec");
+    let meta = NetworkMeta::load(&net).unwrap().unwrap();
+    assert_eq!(meta.profile, Profile::Lightnet);
+    assert!(net.join("network.toml").exists());
+    assert!(h.fake.calls.borrow()[0]
+        .envs
+        .contains(&("MINA_PROFILE".into(), "lightnet".into())));
+
+    let ledger: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(net.join("genesis_ledger.json")).unwrap())
+            .unwrap();
+    let balances: Vec<_> = ledger["ledger"]["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| (a["pk"].as_str().unwrap(), a["balance"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        balances,
+        [
+            ("B62q0", "500"),
+            ("B62q1", "500"),
+            ("B62q2", "1000"),
+            ("B62q3", "1000")
+        ]
+    );
+    assert_eq!(ledger["proof"]["block_window_duration_ms"], 30000);
+    assert!(ledger["genesis"]["genesis_state_timestamp"].is_string());
+
+    let services = std::fs::read_to_string(net.join("services.json")).unwrap();
+    assert!(services.contains("\"Plain_node\""), "{services}");
+    assert!(services.contains("\"node-1\""), "{services}");
 }
 
 #[test]

@@ -133,6 +133,11 @@ pub struct StopNetworkArgs {
 
 #[derive(Args, Clone)]
 pub struct CreateNetworkArgs {
+    /// Path to a (TOML) network spec: roles and counts of the nodes; minimina
+    /// generates keys, ports, peers and the genesis ledger
+    #[clap(short = 's', long, conflicts_with_all = ["topology", "genesis_ledger"])]
+    pub spec: Option<std::path::PathBuf>,
+
     /// Path to the (JSON) topology file
     #[clap(short = 't', long)]
     pub topology: Option<std::path::PathBuf>,
@@ -149,10 +154,11 @@ pub struct CreateNetworkArgs {
     #[clap(short = 'l', long, default_value = "warn")]
     pub log_level: String,
 
-    /// Build profile the mina processes run with (exported as MINA_PROFILE).
-    /// Recorded at create; later commands use the recorded profile
-    #[clap(long, value_enum, default_value_t = Profile::default())]
-    pub profile: Profile,
+    /// Build profile the mina processes run with (exported as MINA_PROFILE)
+    /// [default: the spec's profile, else devnet]. Recorded at create; later
+    /// commands use the recorded profile
+    #[clap(long, value_enum)]
+    pub profile: Option<Profile>,
 }
 
 #[derive(Args, Clone)]
@@ -361,6 +367,24 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spec_excludes_topology_and_ledger() {
+        for other in [["-t", "t.json"], ["-g", "g.json"]] {
+            let mut args = vec!["minimina", "network", "create", "--spec", "n.toml"];
+            args.extend(other);
+            let err = Cli::try_parse_from(args).err().unwrap();
+            assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+        let cli = Cli::try_parse_from(["minimina", "network", "create", "-s", "n.toml"]).unwrap();
+        match cli.command {
+            Command::Network(NetworkCommand::Create(args)) => {
+                assert_eq!(args.spec.as_deref(), Some(std::path::Path::new("n.toml")));
+                assert_eq!(args.profile, None);
+            }
+            _ => panic!("not a create"),
+        }
+    }
 
     #[test]
     fn test_network_create_command() {

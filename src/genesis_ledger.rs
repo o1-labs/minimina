@@ -9,12 +9,9 @@ use chrono::prelude::*;
 
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
-
-use crate::keys::NodeKey;
 
 pub(crate) const GENESIS_LEDGER_JSON: &str = "genesis_ledger.json";
 pub(crate) const REPLAYER_INPUT_JSON: &str = "replayer_input.json";
@@ -78,18 +75,20 @@ pub mod default {
     pub struct LedgerGenerator;
 
     impl LedgerGenerator {
-        /// Generate default genesis ledger
+        /// Writes the genesis runtime config: `accounts` (public key, balance) in
+        /// the ledger, a genesis timestamp of now, and `runtime_config` merged on top.
         pub fn generate(
             network_path: &Path,
-            bp_keys: &HashMap<String, NodeKey>,
+            accounts: &[(String, String)],
+            runtime_config: Option<&serde_json::Value>,
         ) -> std::io::Result<()> {
-            info!("Generating default genesis ledger.");
-            let accounts: Vec<Account> = bp_keys
-                .values()
-                .map(|key_info| Account {
-                    pk: key_info.key_string.clone(),
+            info!("Generating genesis ledger.");
+            let accounts: Vec<Account> = accounts
+                .iter()
+                .map(|(pk, balance)| Account {
+                    pk: pk.clone(),
                     sk: None,
-                    balance: "11550000.000000000".into(),
+                    balance: balance.clone(),
                     delegate: None,
                     timing: None,
                 })
@@ -104,7 +103,10 @@ pub mod default {
                 genesis_state_timestamp: current_timestamp(),
             };
 
-            let genesis_ledger = GenesisLedger { genesis, ledger };
+            let mut genesis_ledger = serde_json::to_value(GenesisLedger { genesis, ledger })?;
+            if let Some(overrides) = runtime_config {
+                merge_json(&mut genesis_ledger, overrides);
+            }
 
             let content = serde_json::to_string_pretty(&genesis_ledger)?;
             debug!("Generated genesis ledger: {}", content);
@@ -148,6 +150,21 @@ pub mod default {
     }
 }
 
+/// Merges `overrides` into `base`: objects key by key, anything else replaced.
+fn merge_json(base: &mut serde_json::Value, overrides: &serde_json::Value) {
+    match (base, overrides) {
+        (serde_json::Value::Object(base), serde_json::Value::Object(overrides)) => {
+            for (key, value) in overrides {
+                merge_json(
+                    base.entry(key.clone()).or_insert(serde_json::Value::Null),
+                    value,
+                );
+            }
+        }
+        (base, overrides) => *base = overrides.clone(),
+    }
+}
+
 pub fn current_timestamp() -> String {
     let datetime = Local::now();
     datetime.format("%Y-%m-%dT%H:%M:%S%.6f%Z").to_string()
@@ -172,7 +189,6 @@ pub fn set_slot_since_genesis(network_path: &Path, slot_since_genesis: u64) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
     fn test_generate_default_ledger() {
@@ -181,13 +197,8 @@ mod tests {
             .tempdir()
             .expect("Cannot create temporary directory");
         let network_path = tempdir.path();
-        let mut bp_keys_map: HashMap<String, NodeKey> = HashMap::new();
-        let service_key = NodeKey {
-            key_string: "test_key".to_string(),
-            key_path: "test_key_path".to_string(),
-        };
-        bp_keys_map.insert("node0".to_string(), service_key);
-        let result = default::LedgerGenerator::generate(network_path, &bp_keys_map);
+        let accounts = [("test_key".to_string(), "10".to_string())];
+        let result = default::LedgerGenerator::generate(network_path, &accounts, None);
         println!("{:?}", result);
         assert!(result.is_ok());
 
@@ -207,13 +218,8 @@ mod tests {
             .tempdir()
             .expect("Cannot create temporary directory");
         let network_path = tempdir.path();
-        let mut bp_keys_map: HashMap<String, NodeKey> = HashMap::new();
-        let service_key = NodeKey {
-            key_string: "test_key".to_string(),
-            key_path: "test_key_path".to_string(),
-        };
-        bp_keys_map.insert("node0".to_string(), service_key);
-        let result = default::LedgerGenerator::generate(network_path, &bp_keys_map);
+        let accounts = [("test_key".to_string(), "10".to_string())];
+        let result = default::LedgerGenerator::generate(network_path, &accounts, None);
         println!("{:?}", result);
         assert!(result.is_ok());
 
@@ -351,13 +357,8 @@ mod tests {
             .tempdir()
             .expect("Cannot create temporary directory");
         let network_path = tempdir.path();
-        let mut bp_keys_map: HashMap<String, NodeKey> = HashMap::new();
-        let service_key = NodeKey {
-            key_string: "test_key".to_string(),
-            key_path: "test_key_path".to_string(),
-        };
-        bp_keys_map.insert("node0".to_string(), service_key);
-        let result = default::LedgerGenerator::generate(network_path, &bp_keys_map);
+        let accounts = [("test_key".to_string(), "10".to_string())];
+        let result = default::LedgerGenerator::generate(network_path, &accounts, None);
         println!("{:?}", result);
         assert!(result.is_ok());
 

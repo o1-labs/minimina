@@ -187,6 +187,7 @@ impl Layout<'_> {
                     ),
                 }
             }
+            ServiceType::PlainNode => self.add_peers(service, &mut args),
             ServiceType::SnarkCoordinator => {
                 arg(&mut args, "-work-selection", "seq");
                 self.add_peers(service, &mut args);

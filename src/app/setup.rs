@@ -9,26 +9,41 @@ use crate::{
     keys::{KeysManager, NodeKey},
     native::keys::NativeKeysManager,
     service::{ServiceConfig, ServiceType},
+    spec::{NetworkSpec, PlannedNode, Role},
     topology::Topology,
 };
 use anyhow::{bail, Context as _, Result};
 use log::info;
 use std::{collections::HashMap, path::Path};
 
-/// Keys generated for the default network; `None` when a topology brings its own.
-pub struct DefaultKeys {
+/// Balance of the funded test accounts of a spec that sets none.
+const DEFAULT_ACCOUNT_BALANCE: &str = "1000";
+
+/// A network generated from a spec: its nodes and the keys made for them.
+pub struct SpecNetwork {
+    pub spec: NetworkSpec,
+    pub nodes: Vec<PlannedNode>,
+    /// Block producer key pairs, by node or account name.
     pub bp: HashMap<String, NodeKey>,
+    /// libp2p key pairs, by node name.
     pub libp2p: HashMap<String, NodeKey>,
 }
 
-/// Handles `network_id`'s genesis ledger
-///
-/// If no genesis ledger is provided, a default ledger will be generated
+/// The spec of `network create`: `--spec`, else the default network.
+pub fn create_spec(cmd: &CreateNetworkArgs) -> Result<NetworkSpec> {
+    cmd.spec
+        .as_deref()
+        .map(NetworkSpec::load)
+        .unwrap_or_else(|| Ok(NetworkSpec::default_network()))
+}
+
+/// Handles `network_id`'s genesis ledger: copies the given one, or generates
+/// keys and a ledger from the spec. `None` when a topology brings its own keys.
 pub fn handle_genesis_ledger(
     ctx: &Context,
     cmd: &CreateNetworkArgs,
     network_id: &str,
-) -> Result<Option<DefaultKeys>> {
+) -> Result<Option<SpecNetwork>> {
     let dirs = &ctx.dirs;
     match &cmd.genesis_ledger {
         Some(genesis_ledger_path) => {
@@ -40,34 +55,49 @@ pub fn handle_genesis_ledger(
             dirs.overwrite_genesis_timestamp(network_id, genesis_ledger_path)?;
             Ok(None)
         }
-        None => generate_default_genesis_ledger(ctx, &dirs.network_path(network_id)).map(Some),
+        None => {
+            let network_path = dirs.network_path(network_id);
+            if let Some(spec_path) = &cmd.spec {
+                std::fs::copy(spec_path, network_path.join("network.toml"))
+                    .with_context(|| format!("copying {}", spec_path.display()))?;
+            }
+            generate_from_spec(ctx, &network_path, create_spec(cmd)?).map(Some)
+        }
     }
 }
 
-/// Generates a genesis ledger for the default network:
-/// 1 seed, 2 bps, and a snark coordinator with one woker
-fn generate_default_genesis_ledger(ctx: &Context, network_path: &Path) -> Result<DefaultKeys> {
-    info!("Genesis ledger not provided. Generating default genesis ledger.");
-    let all_services = [
-        "mina-seed-1",
-        "mina-bp-1",
-        "mina-bp-2",
-        "mina-snark-coordinator",
-        "mina-snark-worker-1",
-        "mina-archive",
-    ];
+/// Generates the keys of every node and the genesis ledger of a spec network.
+fn generate_from_spec(
+    ctx: &Context,
+    network_path: &Path,
+    spec: NetworkSpec,
+) -> Result<SpecNetwork> {
+    let nodes = spec.plan()?;
+    let daemons: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+    let accounts = spec.ledger_accounts();
+    let with_keys: Vec<&str> = nodes
+        .iter()
+        .filter(|n| n.needs_key())
+        .map(|n| n.name.as_str())
+        .chain(accounts.iter().map(String::as_str))
+        .collect();
+    info!(
+        "Generating keys for {} nodes and {} accounts.",
+        daemons.len(),
+        accounts.len()
+    );
 
     let (bp, libp2p) = match ctx.mode {
         ExecutionMode::Docker => {
-            let keys = KeysManager::new(
-                network_path,
-                DEFAULT_DAEMON_DOCKER_IMAGE,
-                ctx.profile,
-                ctx.runner.clone(),
-            );
+            let image = spec
+                .docker
+                .daemon_image
+                .as_deref()
+                .unwrap_or(DEFAULT_DAEMON_DOCKER_IMAGE);
+            let keys = KeysManager::new(network_path, image, ctx.profile, ctx.runner.clone());
             (
-                keys.generate_bp_key_pairs(&all_services),
-                keys.generate_libp2p_key_pairs(&all_services),
+                keys.generate_bp_key_pairs(&with_keys),
+                keys.generate_libp2p_key_pairs(&daemons),
             )
         }
         ExecutionMode::Native => {
@@ -78,19 +108,42 @@ fn generate_default_genesis_ledger(ctx: &Context, network_path: &Path) -> Result
                 ctx.runner.clone(),
             );
             (
-                keys.generate_bp_key_pairs(&all_services),
-                keys.generate_libp2p_key_pairs(&all_services),
+                keys.generate_bp_key_pairs(&with_keys),
+                keys.generate_libp2p_key_pairs(&daemons),
             )
         }
     };
-    let keys = DefaultKeys {
-        bp: bp.context("Failed to generate key pairs for mina services")?,
-        libp2p: libp2p.context("Failed to generate libp2p key pairs for mina services")?,
-    };
+    let bp = bp.context("Failed to generate key pairs for mina services")?;
+    let libp2p = libp2p.context("Failed to generate libp2p key pairs for mina services")?;
 
-    default::LedgerGenerator::generate(network_path, &keys.bp)
-        .context("Error generating default ledger")?;
-    Ok(keys)
+    let pk = |name: &str| {
+        bp.get(name)
+            .map(|k| k.key_string.clone())
+            .with_context(|| format!("no key generated for '{name}'"))
+    };
+    let account_balance = spec
+        .ledger
+        .balance
+        .as_deref()
+        .unwrap_or(DEFAULT_ACCOUNT_BALANCE);
+    let mut ledger = Vec::new();
+    for node in &nodes {
+        if let Some(balance) = &node.balance {
+            ledger.push((pk(&node.name)?, balance.clone()));
+        }
+    }
+    for account in &accounts {
+        ledger.push((pk(account)?, account_balance.to_string()));
+    }
+    default::LedgerGenerator::generate(network_path, &ledger, spec.runtime_config_json()?.as_ref())
+        .context("Error generating genesis ledger")?;
+
+    Ok(SpecNetwork {
+        spec,
+        nodes,
+        bp,
+        libp2p,
+    })
 }
 
 /// Creates service configs for the nodes specified in the topology file of the given `cmd`
@@ -98,12 +151,12 @@ pub fn handle_topology(
     ctx: &Context,
     cmd: &CreateNetworkArgs,
     network_id: &str,
-    keys: Option<DefaultKeys>,
+    generated: Option<SpecNetwork>,
 ) -> Result<Vec<ServiceConfig>> {
     match &cmd.topology {
         Some(topology_path) => {
             info!(
-                "Generating docker-compose based on provided topology '{}'.",
+                "Generating services from the topology '{}'.",
                 topology_path.display()
             );
 
@@ -111,16 +164,8 @@ pub fn handle_topology(
             create_services(ctx, topology_path, network_id)
         }
         None => {
-            info!("Topology not provided. Generating docker-compose based on default topology.");
-            let keys =
-                keys.context("Failed to generate docker-compose.yaml. Keys not generated.")?;
-            generate_default_topology(
-                &keys,
-                DEFAULT_DAEMON_DOCKER_IMAGE,
-                DEFAULT_ARCHIVE_DOCKER_IMAGE,
-                network_id,
-                ctx.mode,
-            )
+            let generated = generated.context("Keys of the network spec were not generated.")?;
+            spec_services(&generated, network_id, ctx.mode)
         }
     }
 }
@@ -153,117 +198,105 @@ fn create_services(
     Ok(services)
 }
 
-/// Generates a topology file for the default network:
-/// 1 seed, 2 bps, and a snark coordinator with one woker
-fn generate_default_topology(
-    keys: &DefaultKeys,
-    docker_image: &str,
-    docker_image_archive: &str,
+/// Service configs of a spec network; every non-seed daemon dials every seed.
+fn spec_services(
+    net: &SpecNetwork,
     network_id: &str,
     mode: ExecutionMode,
 ) -> Result<Vec<ServiceConfig>> {
-    let bp = |name: &str| {
-        keys.bp
-            .get(name)
-            .with_context(|| format!("no block producer key generated for '{name}'"))
-    };
+    let docker_image = net
+        .spec
+        .docker
+        .daemon_image
+        .as_deref()
+        .unwrap_or(DEFAULT_DAEMON_DOCKER_IMAGE);
+    let archive_image = net
+        .spec
+        .docker
+        .archive_image
+        .as_deref()
+        .unwrap_or(DEFAULT_ARCHIVE_DOCKER_IMAGE);
     let libp2p = |name: &str| {
-        keys.libp2p
+        net.libp2p
             .get(name)
             .with_context(|| format!("no libp2p key generated for '{name}'"))
     };
-
-    let seed_name = "mina-seed-1";
-    let seed_keypair = &libp2p(seed_name)?.key_string;
-    let libp2p_peerid = seed_keypair
-        .split(',')
-        .next_back()
-        .filter(|id| !id.is_empty())
-        .with_context(|| format!("malformed libp2p keypair for '{seed_name}'"))?;
-    let peer = ServiceConfig::generate_peer(
-        seed_name,
-        network_id,
-        libp2p_peerid,
-        3102, //external port on my mina_seed_1 will be 3102
-        mode,
-    );
-
-    let seed = ServiceConfig {
-        service_type: ServiceType::Seed,
-        service_name: seed_name.to_string(),
-        docker_image: Some(docker_image.into()),
-        client_port: Some(3100),
-        libp2p_keypair: Some(seed_keypair.clone()),
-        libp2p_peerid: Some(libp2p_peerid.to_string()),
-        ..Default::default()
+    let peer_id = |name: &str| -> Result<String> {
+        libp2p(name)?
+            .key_string
+            .split(',')
+            .next_back()
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .with_context(|| format!("malformed libp2p keypair for '{name}'"))
     };
 
-    let block_producer = |name: &str, client_port: u16| -> Result<ServiceConfig> {
-        Ok(ServiceConfig {
-            service_type: ServiceType::BlockProducer,
-            service_name: name.to_string(),
+    let mut peers = Vec::new();
+    for seed in net.nodes.iter().filter(|n| n.role == Role::Seed) {
+        peers.push(ServiceConfig::generate_peer(
+            &seed.name,
+            network_id,
+            &peer_id(&seed.name)?,
+            seed.client_port + 2, // external port
+            mode,
+        ));
+    }
+
+    let mut services = Vec::new();
+    for node in &net.nodes {
+        let key = net.bp.get(&node.name);
+        let mut service = ServiceConfig {
+            service_name: node.name.clone(),
             docker_image: Some(docker_image.into()),
-            client_port: Some(client_port),
-            public_key: Some(bp(name)?.key_string.clone()),
-            public_key_path: Some(bp(name)?.key_path.clone()),
-            libp2p_keypair: Some(libp2p(name)?.key_string.clone()),
-            peers: Some(vec![peer.clone()]),
+            client_port: Some(node.client_port),
+            public_key: key.map(|k| k.key_string.clone()),
+            libp2p_keypair: Some(libp2p(&node.name)?.key_string.clone()),
             ..Default::default()
-        })
-    };
-    let bp_1 = block_producer("mina-bp-1", 4000)?;
-    let bp_2 = block_producer("mina-bp-2", 4005)?;
-
-    let snark_coordinator_name = "mina-snark-coordinator";
-    let snark_coordinator = ServiceConfig {
-        service_type: ServiceType::SnarkCoordinator,
-        service_name: snark_coordinator_name.to_string(),
-        docker_image: Some(docker_image.into()),
-        client_port: Some(7000),
-        public_key: Some(bp(snark_coordinator_name)?.key_string.clone()),
-        libp2p_keypair: Some(libp2p(snark_coordinator_name)?.key_string.clone()),
-        peers: Some(vec![peer.clone()]),
-        snark_coordinator_fees: Some("0.001".into()),
-        worker_nodes: Some(1),
-        ..Default::default()
-    };
-
-    let snark_worker_1 = ServiceConfig {
-        service_type: ServiceType::SnarkWorker,
-        service_name: "mina-snark-worker-1".to_string(),
-        docker_image: Some(docker_image.into()),
-        snark_coordinator_port: Some(7000),
-        snark_worker_proof_level: Some("full".into()),
-        snark_coordinator_host: Some(snark_coordinator.service_name.clone()),
-        ..Default::default()
-    };
-
-    let archive_node_name = "mina-archive";
-    let archive_node = ServiceConfig {
-        service_type: ServiceType::ArchiveNode,
-        service_name: archive_node_name.to_string(),
-        docker_image: Some(docker_image.into()),
-        client_port: Some(5005),
-        public_key: Some(bp(archive_node_name)?.key_string.clone()),
-        public_key_path: Some(bp(archive_node_name)?.key_path.clone()),
-        libp2p_keypair: Some(libp2p(archive_node_name)?.key_string.clone()),
-        peers: Some(vec![peer]),
-        archive_docker_image: Some(docker_image_archive.into()),
-        archive_schema_files: Some(vec![
-            format!("https://raw.githubusercontent.com/MinaProtocol/mina/{IMAGE_COMMIT_HASH}/src/app/archive/create_schema.sql"),
-        ]),
-        archive_port: Some(3086),
-        ..Default::default()
-    };
-
-    Ok(vec![
-        seed,
-        bp_1,
-        bp_2,
-        snark_coordinator,
-        snark_worker_1,
-        archive_node,
-    ])
+        };
+        match node.role {
+            Role::Seed => {
+                service.service_type = ServiceType::Seed;
+                service.libp2p_peerid = Some(peer_id(&node.name)?);
+            }
+            Role::BlockProducer => {
+                service.service_type = ServiceType::BlockProducer;
+                service.public_key_path = key.map(|k| k.key_path.clone());
+                service.peers = Some(peers.clone());
+            }
+            Role::Plain => {
+                service.service_type = ServiceType::PlainNode;
+                service.peers = Some(peers.clone());
+            }
+            Role::SnarkCoordinator => {
+                service.service_type = ServiceType::SnarkCoordinator;
+                service.peers = Some(peers.clone());
+                service.snark_coordinator_fees = node.fee.clone().or(Some("0.001".into()));
+                service.worker_nodes = Some(node.workers.len() as u16);
+            }
+            Role::Archive => {
+                service.service_type = ServiceType::ArchiveNode;
+                service.peers = Some(peers.clone());
+                service.archive_docker_image = Some(archive_image.into());
+                // replaced by the archive package's own copy when it has one
+                service.archive_schema_files = Some(vec![format!(
+                    "https://raw.githubusercontent.com/MinaProtocol/mina/{IMAGE_COMMIT_HASH}/src/app/archive/create_schema.sql"
+                )]);
+                service.archive_port = node.archive_port;
+            }
+        }
+        services.push(service);
+        for worker in &node.workers {
+            services.push(ServiceConfig {
+                service_type: ServiceType::SnarkWorker,
+                service_name: worker.clone(),
+                docker_image: Some(docker_image.into()),
+                snark_coordinator_host: Some(node.name.clone()),
+                snark_coordinator_port: Some(node.client_port),
+                ..Default::default()
+            });
+        }
+    }
+    Ok(services)
 }
 
 #[cfg(test)]
@@ -277,33 +310,28 @@ mod tests {
         }
     }
 
-    fn default_keys() -> DefaultKeys {
-        let names = [
-            "mina-seed-1",
-            "mina-bp-1",
-            "mina-bp-2",
-            "mina-snark-coordinator",
-            "mina-snark-worker-1",
-            "mina-archive",
-        ];
-        DefaultKeys {
-            bp: names
+    fn generated(spec: NetworkSpec) -> SpecNetwork {
+        let nodes = spec.plan().unwrap();
+        let names: Vec<String> = nodes.iter().map(|n| n.name.clone()).collect();
+        SpecNetwork {
+            bp: nodes
                 .iter()
-                .map(|n| (n.to_string(), key(&format!("B62{n}"))))
+                .filter(|n| n.needs_key())
+                .map(|n| (n.name.clone(), key(&format!("B62{}", n.name))))
                 .collect(),
             libp2p: names
                 .iter()
-                .map(|n| (n.to_string(), key(&format!("enc,pub,peer-{n}"))))
+                .map(|n| (n.clone(), key(&format!("enc,pub,peer-{n}"))))
                 .collect(),
+            spec,
+            nodes,
         }
     }
 
     #[test]
-    fn default_topology_wires_seed_peer_into_every_daemon() {
-        let services = generate_default_topology(
-            &default_keys(),
-            "daemon",
-            "archive",
+    fn default_network_wires_seed_peer_into_every_daemon() {
+        let services = spec_services(
+            &generated(NetworkSpec::default_network()),
             "net",
             ExecutionMode::Docker,
         )
@@ -335,38 +363,45 @@ mod tests {
             assert_eq!(s.peers.as_deref(), Some(std::slice::from_ref(&peer)));
         }
         assert_eq!(services[1].public_key.as_deref(), Some("B62mina-bp-1"));
-        assert_eq!(services[5].archive_docker_image.as_deref(), Some("archive"));
+        assert_eq!(
+            services[1].public_key_path.as_deref(),
+            Some("/keys/B62mina-bp-1")
+        );
+        assert_eq!(
+            services[4].snark_coordinator_host.as_deref(),
+            Some("mina-snark-coordinator")
+        );
+        assert_eq!(services[4].snark_coordinator_port, Some(7000));
+        // the worker uses the profile's compiled proof level
+        assert_eq!(services[4].snark_worker_proof_level, None);
+        assert_eq!(
+            services[5].archive_docker_image.as_deref(),
+            Some(DEFAULT_ARCHIVE_DOCKER_IMAGE)
+        );
+        assert_eq!(services[5].archive_port, Some(3086));
     }
 
     #[test]
-    fn native_default_topology_dials_the_seed_on_localhost() {
-        let services =
-            generate_default_topology(&default_keys(), "d", "a", "net", ExecutionMode::Native)
-                .unwrap();
+    fn native_spec_network_dials_the_seed_on_localhost() {
+        let spec: NetworkSpec = toml::from_str(
+            "[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"plain\"\n[docker]\ndaemon_image = \"img\"",
+        )
+        .unwrap();
+        let services = spec_services(&generated(spec), "net", ExecutionMode::Native).unwrap();
+        assert_eq!(services[1].service_type, ServiceType::PlainNode);
         assert_eq!(
             services[1].peers.as_deref(),
-            Some(&["/ip4/127.0.0.1/tcp/3102/p2p/peer-mina-seed-1".to_string()][..])
+            Some(&["/ip4/127.0.0.1/tcp/3102/p2p/peer-seed-1".to_string()][..])
         );
+        assert_eq!(services[1].public_key, None);
+        assert_eq!(services[1].docker_image.as_deref(), Some("img"));
     }
 
     #[test]
-    fn default_topology_reports_missing_key() {
-        let mut keys = default_keys();
-        keys.bp.remove("mina-bp-2");
-        let err =
-            generate_default_topology(&keys, "d", "a", "net", ExecutionMode::Docker).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "no block producer key generated for 'mina-bp-2'"
-        );
-    }
-
-    #[test]
-    fn default_topology_rejects_malformed_seed_keypair() {
-        let mut keys = default_keys();
-        keys.libp2p.insert("mina-seed-1".into(), key("enc,pub,"));
-        let err =
-            generate_default_topology(&keys, "d", "a", "net", ExecutionMode::Docker).unwrap_err();
+    fn spec_network_reports_malformed_seed_keypair() {
+        let mut net = generated(NetworkSpec::default_network());
+        net.libp2p.insert("mina-seed-1".into(), key("enc,pub,"));
+        let err = spec_services(&net, "net", ExecutionMode::Docker).unwrap_err();
         assert!(err.to_string().contains("malformed libp2p keypair"));
     }
 }
