@@ -2,14 +2,15 @@
 
 use super::{setup, shutdown_timeout, Context};
 use crate::{
-    cli::{CommandWithNetworkId, ExecutionMode, NetworkCommand, ShutdownTimeout},
+    cli::{CommandWithNetworkId, ExecutionMode, NetworkCommand, Profile, ShutdownTimeout},
+    daemon_args::DaemonFeatures,
     docker::manager::{ContainerState, DockerManager},
     genesis_ledger::default,
-    native::{manager::NativeManager, mina_locator},
+    native::{self, manager::NativeManager, mina_locator},
     network_meta::NetworkMeta,
     output::{self, network},
     runner::check,
-    service::ServiceConfig,
+    service::{ServiceConfig, ServiceType},
     utils::{fetch_schema, TIMEOUT_IN_SECS},
 };
 use anyhow::{bail, Context as _, Result};
@@ -49,10 +50,16 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
                 .copy_all_network_keys(&network_id, &services)
                 .context("Failed to copy keys")?;
 
+            let features = probe_daemon_features(ctx, &services);
+            let mut meta = ctx.meta();
+            meta.features = features;
+            meta.save(&ctx.dirs.network_path(&network_id))
+                .context("Failed to record daemon features")?;
+
             match ctx.mode {
                 ExecutionMode::Docker => {
                     docker
-                        .compose_generate_file(&services)
+                        .compose_generate_file(&services, features)
                         .context("Failed to generate docker-compose.yaml")?;
                     create_network(ctx, &docker, &network_id, &services)
                 }
@@ -298,6 +305,58 @@ fn create_network(
 
     save_network_files(ctx, network_id, services);
     Ok(())
+}
+
+/// Version-dependent flags of the network's daemons, from `mina daemon -help`.
+/// When the probe fails, the flags every supported version has are used.
+fn probe_daemon_features(ctx: &Context, services: &[ServiceConfig]) -> DaemonFeatures {
+    let output = match ctx.mode {
+        ExecutionMode::Native => ctx.bin_path().map_err(|e| e.to_string()).and_then(|bin| {
+            let mina_env = native::mina_env(bin, ctx.profile);
+            ctx.runner
+                .run(
+                    bin.join("mina").as_os_str(),
+                    &["daemon", "-help"],
+                    &native::env_refs(&[], &mina_env),
+                )
+                .map_err(|e| e.to_string())
+        }),
+        ExecutionMode::Docker => services
+            .iter()
+            .filter(|s| s.service_type != ServiceType::UptimeServiceBackend)
+            .find_map(|s| s.docker_image.as_deref())
+            .ok_or_else(|| "no daemon image".to_string())
+            .and_then(|image| {
+                let profile = format!("{}={}", Profile::ENV, ctx.profile);
+                ctx.runner
+                    .run(
+                        "docker".as_ref(),
+                        &[
+                            "run",
+                            "--rm",
+                            "--env",
+                            &profile,
+                            "--entrypoint",
+                            "mina",
+                            image,
+                            "daemon",
+                            "-help",
+                        ],
+                        &[],
+                    )
+                    .map_err(|e| e.to_string())
+            }),
+    };
+    match output {
+        Ok(out) => {
+            let help = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+            DaemonFeatures::from_daemon_help(&help)
+        }
+        Err(e) => {
+            warn!("Could not read `mina daemon -help` ({e}); using flags of older daemons.");
+            DaemonFeatures::default()
+        }
+    }
 }
 
 fn create_network_native(

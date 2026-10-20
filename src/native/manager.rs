@@ -4,7 +4,11 @@
 //! children (libp2p_helper) and a Ctrl-C in the shell that ran
 //! `minimina network start` does not stop the network.
 
-use crate::cli::Profile;
+use crate::cli::{ExecutionMode, Profile};
+use crate::daemon_args::{
+    mina_args, sort_precomputed_block_files, DaemonFeatures, Layout, PRECOMPUTED_BLOCKS_DIR,
+    PRECOMPUTED_BLOCKS_FILE,
+};
 use crate::docker::compose::CONFIG_DIRECTORY;
 use crate::native::port_manager;
 use crate::native::process_tracker::{proc_stat, ProcessRecord, ProcessTracker, Records};
@@ -34,6 +38,8 @@ pub struct NativeManager {
     pub postgres_uri: String,
     /// Exported as `MINA_PROFILE` to every process this manager starts.
     pub profile: Profile,
+    /// Version-dependent daemon flags, probed at `network create`.
+    pub features: DaemonFeatures,
 }
 
 /// A tracked process and whether it is still running.
@@ -51,7 +57,13 @@ impl NativeManager {
             bin_path: bin_path.to_path_buf(),
             postgres_uri: postgres_uri.trim_end_matches('/').to_string(),
             profile,
+            features: DaemonFeatures::default(),
         }
+    }
+
+    pub fn with_features(mut self, features: DaemonFeatures) -> Self {
+        self.features = features;
+        self
     }
 
     /// Archive database of this network: `minimina_<network_id>`, one per network
@@ -262,6 +274,10 @@ impl NativeManager {
 
         let config_dir = self.config_dir_for_service(&service.service_name);
         fs::create_dir_all(&config_dir)?;
+        if self.features.precomputed_blocks_dir {
+            // the daemon refuses a -precomputed-blocks-dir that does not exist
+            fs::create_dir_all(config_dir.join(PRECOMPUTED_BLOCKS_DIR))?;
+        }
         let (binary, args) = self.build_command(
             service,
             network_id,
@@ -348,178 +364,15 @@ impl NativeManager {
         network_path: &str,
         config_dir: &str,
     ) -> Result<(PathBuf, Vec<String>)> {
-        let mina_bin = self.bin_path.join("mina");
-
-        match service.service_type {
-            ServiceType::SnarkWorker => {
-                let mut args = vec![
-                    "internal".to_string(),
-                    "snark-worker".to_string(),
-                    "-shutdown-on-disconnect".to_string(),
-                    "false".to_string(),
-                    "-config-directory".to_string(),
-                    config_dir.to_string(),
-                ];
-
-                if let (Some(_host), Some(port)) = (
-                    &service.snark_coordinator_host,
-                    service.snark_coordinator_port,
-                ) {
-                    args.push("-daemon-address".to_string());
-                    // In native mode, all services are on localhost
-                    args.push(format!("127.0.0.1:{}", port));
-                }
-
-                if let Some(proof_level) = &service.snark_worker_proof_level {
-                    args.push("-proof-level".to_string());
-                    args.push(proof_level.clone());
-                }
-
-                Ok((mina_bin, args))
-            }
-            _ => Ok((
-                mina_bin,
-                self.build_daemon_args(service, network_id, network_path, config_dir)?,
-            )),
-        }
-    }
-
-    fn build_daemon_args(
-        &self,
-        service: &ServiceConfig,
-        _network_id: &str,
-        network_path: &str,
-        config_dir: &str,
-    ) -> Result<Vec<String>> {
-        let client_port = service.client_port.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("daemon '{}' has no client_port", service.service_name),
-            )
-        })?;
-        let rest_port = client_port + 1;
-        let external_port = rest_port + 1;
-        let metrics_port = external_port + 1;
-        let libp2p_metrics_port = metrics_port + 1;
-
-        let genesis_path = format!("{}/genesis_ledger.json", network_path);
-        let precomputed_path = format!("{}/precomputed_blocks.log", config_dir);
-
-        let mut args = vec![
-            "daemon".to_string(),
-            "-client-port".to_string(),
-            client_port.to_string(),
-            "-rest-port".to_string(),
-            rest_port.to_string(),
-            "-insecure-rest-server".to_string(),
-            "-external-port".to_string(),
-            external_port.to_string(),
-            "-metrics-port".to_string(),
-            metrics_port.to_string(),
-            "-libp2p-metrics-port".to_string(),
-            libp2p_metrics_port.to_string(),
-            "-config-file".to_string(),
-            genesis_path,
-            "-log-json".to_string(),
-            "-log-level".to_string(),
-            "Trace".to_string(),
-            "-file-log-level".to_string(),
-            "Trace".to_string(),
-            "-config-directory".to_string(),
-            config_dir.to_string(),
-            "-precomputed-blocks-file".to_string(),
-            precomputed_path,
-            "-log-txn-pool-gossip".to_string(),
-            "true".to_string(),
-            "-log-snark-work-gossip".to_string(),
-            "true".to_string(),
-            "-log-precomputed-blocks".to_string(),
-            "true".to_string(),
-            // no -proof-level: the profile's compiled level (or `proof.level` in the
-            // runtime config) applies; `full` is fatal for binaries compiled for less
-        ];
-
-        // Service-type-specific args
-        match service.service_type {
-            ServiceType::Seed => {
-                args.push("-seed".to_string());
-                self.add_libp2p_args(service, network_path, &mut args);
-            }
-            ServiceType::BlockProducer => {
-                self.add_peers_args(service, network_path, &mut args);
-                // topology keys are copied to <name>.json; generated keys of the
-                // default network stay where `mina advanced generate-keypair` put them
-                let key = if service.private_key_path.is_some() {
-                    Some(format!(
-                        "{}/network-keypairs/{}.json",
-                        network_path, service.service_name
-                    ))
-                } else {
-                    service.public_key_path.clone()
-                };
-                match key {
-                    Some(key) => {
-                        args.push("-block-producer-key".to_string());
-                        args.push(key);
-                    }
-                    None => warn!(
-                        "Block producer '{}' has no key: it will not produce blocks.",
-                        service.service_name
-                    ),
-                }
-                self.add_libp2p_args(service, network_path, &mut args);
-            }
-            ServiceType::SnarkCoordinator => {
-                args.push("-work-selection".to_string());
-                args.push("seq".to_string());
-                self.add_peers_args(service, network_path, &mut args);
-                if let Some(fees) = &service.snark_coordinator_fees {
-                    args.push("-snark-worker-fee".to_string());
-                    args.push(fees.clone());
-                }
-                if let Some(pk) = &service.public_key {
-                    args.push("-run-snark-coordinator".to_string());
-                    args.push(pk.clone());
-                }
-                self.add_libp2p_args(service, network_path, &mut args);
-            }
-            ServiceType::ArchiveNode => {
-                self.add_peers_args(service, network_path, &mut args);
-                if let Some(archive_port) = service.archive_port {
-                    args.push("-archive-address".to_string());
-                    args.push(format!("127.0.0.1:{}", archive_port));
-                }
-                self.add_libp2p_args(service, network_path, &mut args);
-            }
-            _ => {}
-        }
-
-        Ok(args)
-    }
-
-    fn add_peers_args(&self, service: &ServiceConfig, network_path: &str, args: &mut Vec<String>) {
-        if service.peer_list_file.is_some() {
-            args.push("-peer-list-file".to_string());
-            args.push(format!("{}/peer_list_file.txt", network_path));
-        } else if let Some(peers) = &service.peers {
-            for peer in peers {
-                args.push("-peer".to_string());
-                args.push(peer.clone());
-            }
-        }
-    }
-
-    fn add_libp2p_args(&self, service: &ServiceConfig, network_path: &str, args: &mut Vec<String>) {
-        if service.libp2p_keypair_path.is_some() {
-            args.push("-libp2p-keypair".to_string());
-            args.push(format!(
-                "{}/libp2p-keypairs/{}.json",
-                network_path, service.service_name
-            ));
-        } else if let Some(keypair) = &service.libp2p_keypair {
-            args.push("-libp2p-keypair".to_string());
-            args.push(keypair.clone());
-        }
+        let layout = Layout {
+            mode: ExecutionMode::Native,
+            network: network_id,
+            network_dir: network_path,
+            config_dir,
+            uptime_service: None,
+            features: self.features,
+        };
+        Ok((self.bin_path.join("mina"), mina_args(service, &layout)?))
     }
 
     /// Stops every tracked process: SIGTERM to all groups, then SIGKILL after `timeout`.
@@ -568,10 +421,25 @@ impl NativeManager {
         })
     }
 
+    /// Precomputed blocks of a daemon, one JSON per line, oldest first.
     pub fn precomputed_blocks(&self, service_name: &str) -> Result<String> {
-        let file = self
-            .config_dir_for_service(service_name)
-            .join("precomputed_blocks.log");
+        let config_dir = self.config_dir_for_service(service_name);
+        let dir = config_dir.join(PRECOMPUTED_BLOCKS_DIR);
+        if dir.is_dir() {
+            let mut names: Vec<String> = fs::read_dir(&dir)?
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| n.ends_with(".json"))
+                .collect();
+            sort_precomputed_block_files(&mut names);
+            let mut blocks = String::new();
+            for name in names {
+                blocks.push_str(fs::read_to_string(dir.join(name))?.trim_end());
+                blocks.push('\n');
+            }
+            return Ok(blocks);
+        }
+        let file = config_dir.join(PRECOMPUTED_BLOCKS_FILE);
         fs::read_to_string(&file).map_err(|e| {
             io::Error::new(
                 e.kind(),

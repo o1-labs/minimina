@@ -25,7 +25,7 @@ use std::{
 };
 
 pub const NETWORK_KEYPAIRS: &str = "network-keypairs";
-const LIBP2P_KEYPAIRS: &str = "libp2p-keypairs";
+pub const LIBP2P_KEYPAIRS: &str = "libp2p-keypairs";
 const MINIMINA_HOME: &str = "MINIMINA_HOME";
 
 #[derive(Clone)]

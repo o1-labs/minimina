@@ -72,7 +72,7 @@ impl Harness {
 fn non_probe_calls(fake: &FakeRunner) -> Vec<String> {
     fake.lines()
         .into_iter()
-        .filter(|l| !l.ends_with("/mina version"))
+        .filter(|l| !l.ends_with("/mina version") && !l.ends_with("mina daemon -help"))
         .collect()
 }
 
@@ -128,7 +128,11 @@ fn docker_create_from_topology_writes_network_files() {
     ] {
         assert!(net.join(file).exists(), "missing {file}");
     }
-    assert_eq!(h.fake.lines()[2..], [h.compose("small", "create")]);
+    assert!(h.fake.lines()[2].ends_with("--entrypoint mina gcr.io/o1labs-192920/mina-daemon:2.0.0berkeley-rc1-1551e2f-bullseye-berkeley daemon -help"));
+    assert_eq!(h.fake.lines()[3..], [h.compose("small", "create")]);
+    // the berkeley image has no -precomputed-blocks-dir
+    let compose = std::fs::read_to_string(net.join("docker-compose.yaml")).unwrap();
+    assert!(compose.contains("-precomputed-blocks-file /config-directory/precomputed_blocks.log"));
     let peers = std::fs::read_to_string(net.join("peer_list_file.txt")).unwrap();
     assert!(peers.starts_with("/dns4/seed-0-small/tcp/"), "{peers}");
     assert!(h.dirs.get_network_info("small").unwrap().contains("seed-0"));
@@ -137,7 +141,9 @@ fn docker_create_from_topology_writes_network_files() {
 #[test]
 fn docker_create_reports_compose_failure() {
     let h = Harness::new();
-    h.docker_ok().reply(1, "", "no such image");
+    h.docker_ok()
+        .reply(0, "", "") // mina daemon -help
+        .reply(1, "", "no such image");
     let err = h.create_small("small").unwrap_err();
     assert!(err.to_string().contains("docker compose create"));
     assert!(err.to_string().contains("no such image"));
@@ -320,6 +326,7 @@ fn native_default_network_generates_keys_with_mina() {
         h.fake
             .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");
     }
+    h.fake.reply(0, "  [--precomputed-blocks-dir DIR]", ""); // mina daemon -help
     h.fake.reply(1, "", ""); // mina version: no installed config
                              // stop at the archive database step so the test never fetches schemas over HTTP
     h.fake.reply_err(std::io::ErrorKind::NotFound);
@@ -341,8 +348,9 @@ fn native_default_network_generates_keys_with_mina() {
         .unwrap()
         .unwrap();
     assert_eq!(meta.profile, Profile::Lightnet);
+    assert!(meta.features.precomputed_blocks_dir);
     let calls = h.fake.calls.borrow();
-    assert_eq!(calls.len(), 14);
+    assert_eq!(calls.len(), 15);
     assert!(calls[0]
         .line()
         .contains("advanced generate-keypair -privkey-path"));
@@ -354,14 +362,15 @@ fn native_default_network_generates_keys_with_mina() {
         ]
     );
     assert!(calls[6].line().contains("libp2p generate-keypair"));
-    assert!(calls[12].line().ends_with("/mina version"));
+    assert!(calls[12].line().ends_with("/mina daemon -help"));
+    assert!(calls[13].line().ends_with("/mina version"));
     // generic 4.x binaries refuse even `version` without a profile
     assert_eq!(
-        calls[12].envs,
+        calls[13].envs,
         vec![("MINA_PROFILE".into(), "lightnet".into())]
     );
     assert_eq!(
-        calls[13].line(),
+        calls[14].line(),
         "psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c DROP DATABASE IF EXISTS minimina_def"
     );
     drop(calls);
@@ -540,6 +549,7 @@ fn queue_archive_create(h: &Harness, network_id: &str) {
         r#"{{"ID":"1","Name":"{postgres}","Image":"postgres:17","Command":"","CreatedAt":"","State":"running","Status":"Up","Health":"","ExitCode":0,"Labels":"","Service":"{postgres}"}}"#
     );
     h.docker_ok()
+        .reply(0, "", "") // mina daemon -help
         .reply(0, "", "") // compose create
         .reply(0, "", "") // compose start postgres
         .reply(0, &ps, "") // compose ps
@@ -624,6 +634,7 @@ fn docker_archive_create_fails_when_createdb_fails() {
         r#"{{"ID":"1","Name":"{postgres}","Image":"postgres:17","Command":"","CreatedAt":"","State":"running","Status":"Up","Health":"","ExitCode":0,"Labels":"","Service":"{postgres}"}}"#
     );
     h.docker_ok()
+        .reply(0, "", "") // mina daemon -help
         .reply(0, "", "")
         .reply(0, "", "")
         .reply(0, &ps, "")

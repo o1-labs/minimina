@@ -10,6 +10,7 @@ mod setup;
 
 use crate::{
     cli::{Cli, Command, ExecutionMode, NetworkCommand, Profile, ShutdownTimeout},
+    daemon_args::DaemonFeatures,
     directory_manager::DirectoryManager,
     docker::manager::DockerManager,
     native::manager::{NativeManager, DEFAULT_POSTGRES_URI, DEFAULT_SHUTDOWN_TIMEOUT},
@@ -46,6 +47,8 @@ pub struct Context {
     pub postgres_uri: String,
     /// Build profile exported as `MINA_PROFILE` to every mina process.
     pub profile: Profile,
+    /// Version-dependent daemon flags recorded at create (probed again by create).
+    pub features: DaemonFeatures,
     pub runner: Rc<dyn Runner>,
 }
 
@@ -58,12 +61,14 @@ impl Context {
                 bin_path: None,
                 postgres_uri: None,
                 profile: self.profile,
+                features: self.features,
             },
             ExecutionMode::Native => NetworkMeta {
                 mode: self.mode,
                 bin_path: self.bin_path.clone(),
                 postgres_uri: Some(self.postgres_uri.clone()),
                 profile: self.profile,
+                features: self.features,
             },
         }
     }
@@ -89,7 +94,8 @@ impl Context {
             self.bin_path()?,
             &self.postgres_uri,
             self.profile,
-        ))
+        )
+        .with_features(self.features))
     }
 
     pub fn ensure_network_exists(&self, network_id: &str) -> Result<()> {
@@ -134,6 +140,7 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
     };
     let stored_bin = stored.as_ref().and_then(|m| m.bin_path.clone());
     let bin_path = env::resolve_bin_path(&mode, cli.bin_path.or(stored_bin))?;
+    let features = stored.as_ref().map(|m| m.features).unwrap_or_default();
     let profile = created_profile
         .or(stored.as_ref().map(|m| m.profile))
         .unwrap_or_default();
@@ -157,6 +164,7 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
         bin_path,
         postgres_uri,
         profile,
+        features,
         runner,
     };
 

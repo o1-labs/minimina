@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod cli;
+pub mod daemon_args;
 pub mod directory_manager;
 pub mod docker;
 pub mod genesis_ledger;

@@ -1,6 +1,7 @@
 //! `minimina.json`: how a network was created, so later commands use the same mode.
 
 use crate::cli::{ExecutionMode, Profile};
+use crate::daemon_args::DaemonFeatures;
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
@@ -22,6 +23,9 @@ pub struct NetworkMeta {
     /// recorded use the default.
     #[serde(default)]
     pub profile: Profile,
+    /// Version-dependent daemon flags, probed at create.
+    #[serde(default)]
+    pub features: DaemonFeatures,
 }
 
 impl NetworkMeta {
@@ -60,6 +64,9 @@ mod tests {
             bin_path: Some("/usr/bin".into()),
             postgres_uri: None,
             profile: Profile::Lightnet,
+            features: DaemonFeatures {
+                precomputed_blocks_dir: true,
+            },
         };
         meta.save(dir.path()).unwrap();
         assert_eq!(NetworkMeta::load(dir.path()).unwrap(), Some(meta));
