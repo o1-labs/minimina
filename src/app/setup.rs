@@ -1,7 +1,8 @@
 //! Genesis ledger, keys and service configs for `network create`.
 
 use super::{
-    Context, DEFAULT_ARCHIVE_DOCKER_IMAGE, DEFAULT_DAEMON_DOCKER_IMAGE, IMAGE_COMMIT_HASH,
+    Context, DEFAULT_ARCHIVE_DOCKER_IMAGE, DEFAULT_DAEMON_DOCKER_IMAGE,
+    DEFAULT_ROSETTA_DOCKER_IMAGE, IMAGE_COMMIT_HASH,
 };
 use crate::{
     cli::{CreateNetworkArgs, ExecutionMode},
@@ -73,7 +74,11 @@ fn generate_from_spec(
     spec: NetworkSpec,
 ) -> Result<SpecNetwork> {
     let nodes = spec.plan()?;
-    let daemons: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+    let daemons: Vec<&str> = nodes
+        .iter()
+        .filter(|n| n.is_daemon())
+        .map(|n| n.name.as_str())
+        .collect();
     let accounts = spec.ledger_accounts();
     let with_keys: Vec<&str> = nodes
         .iter()
@@ -242,48 +247,68 @@ fn spec_services(
         ));
     }
 
+    let rosetta_image = net
+        .spec
+        .docker
+        .rosetta_image
+        .as_deref()
+        .unwrap_or(DEFAULT_ROSETTA_DOCKER_IMAGE);
+
     let mut services = Vec::new();
     for node in &net.nodes {
         let key = net.bp.get(&node.name);
-        let mut service = ServiceConfig {
-            service_name: node.name.clone(),
-            docker_image: Some(docker_image.into()),
-            client_port: Some(node.client_port),
-            public_key: key.map(|k| k.key_string.clone()),
-            libp2p_keypair: Some(libp2p(&node.name)?.key_string.clone()),
-            ..Default::default()
+        let daemon = |service_type| -> Result<ServiceConfig> {
+            Ok(ServiceConfig {
+                service_type,
+                service_name: node.name.clone(),
+                docker_image: Some(docker_image.into()),
+                client_port: Some(node.client_port),
+                public_key: key.map(|k| k.key_string.clone()),
+                libp2p_keypair: Some(libp2p(&node.name)?.key_string.clone()),
+                peers: (service_type != ServiceType::Seed).then(|| peers.clone()),
+                ..Default::default()
+            })
         };
-        match node.role {
-            Role::Seed => {
-                service.service_type = ServiceType::Seed;
-                service.libp2p_peerid = Some(peer_id(&node.name)?);
-            }
-            Role::BlockProducer => {
-                service.service_type = ServiceType::BlockProducer;
-                service.public_key_path = key.map(|k| k.key_path.clone());
-                service.peers = Some(peers.clone());
-            }
-            Role::Plain => {
-                service.service_type = ServiceType::PlainNode;
-                service.peers = Some(peers.clone());
-            }
-            Role::SnarkCoordinator => {
-                service.service_type = ServiceType::SnarkCoordinator;
-                service.peers = Some(peers.clone());
-                service.snark_coordinator_fees = node.fee.clone().or(Some("0.001".into()));
-                service.worker_nodes = Some(node.workers.len() as u16);
-            }
-            Role::Archive => {
-                service.service_type = ServiceType::ArchiveNode;
-                service.peers = Some(peers.clone());
-                service.archive_docker_image = Some(archive_image.into());
+        let service = match node.role {
+            Role::Seed => ServiceConfig {
+                libp2p_peerid: Some(peer_id(&node.name)?),
+                ..daemon(ServiceType::Seed)?
+            },
+            Role::BlockProducer => ServiceConfig {
+                public_key_path: key.map(|k| k.key_path.clone()),
+                ..daemon(ServiceType::BlockProducer)?
+            },
+            Role::Plain => daemon(ServiceType::PlainNode)?,
+            Role::SnarkCoordinator => ServiceConfig {
+                snark_coordinator_fees: node.fee.clone().or(Some("0.001".into())),
+                worker_nodes: Some(node.workers.len() as u16),
+                ..daemon(ServiceType::SnarkCoordinator)?
+            },
+            Role::Archive => ServiceConfig {
+                archive_docker_image: Some(archive_image.into()),
                 // replaced by the archive package's own copy when it has one
-                service.archive_schema_files = Some(vec![format!(
+                archive_schema_files: Some(vec![format!(
                     "https://raw.githubusercontent.com/MinaProtocol/mina/{IMAGE_COMMIT_HASH}/src/app/archive/create_schema.sql"
-                )]);
-                service.archive_port = node.archive_port;
+                )]),
+                archive_port: node.archive_port,
+                ..daemon(ServiceType::ArchiveNode)?
+            },
+            Role::Rosetta => {
+                let (graphql_node, client_port) = node
+                    .graphql_node
+                    .clone()
+                    .with_context(|| format!("rosetta '{}' has no daemon to read", node.name))?;
+                ServiceConfig {
+                    service_type: ServiceType::Rosetta,
+                    service_name: node.name.clone(),
+                    docker_image: Some(rosetta_image.into()),
+                    client_port: Some(node.client_port),
+                    rosetta_graphql_node: Some(graphql_node),
+                    rosetta_graphql_port: Some(client_port + 1),
+                    ..Default::default()
+                }
             }
-        }
+        };
         services.push(service);
         for worker in &node.workers {
             services.push(ServiceConfig {
@@ -312,7 +337,11 @@ mod tests {
 
     fn generated(spec: NetworkSpec) -> SpecNetwork {
         let nodes = spec.plan().unwrap();
-        let names: Vec<String> = nodes.iter().map(|n| n.name.clone()).collect();
+        let names: Vec<String> = nodes
+            .iter()
+            .filter(|n| n.is_daemon())
+            .map(|n| n.name.clone())
+            .collect();
         SpecNetwork {
             bp: nodes
                 .iter()
@@ -395,6 +424,28 @@ mod tests {
         );
         assert_eq!(services[1].public_key, None);
         assert_eq!(services[1].docker_image.as_deref(), Some("img"));
+    }
+
+    #[test]
+    fn rosetta_service_points_at_the_daemon_graphql_port() {
+        let spec: NetworkSpec = toml::from_str(
+            "[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"archive\"\n[[nodes]]\nrole = \"rosetta\"",
+        )
+        .unwrap();
+        let net = generated(spec);
+        assert!(!net.libp2p.contains_key("rosetta-1"));
+        let services = spec_services(&net, "net", ExecutionMode::Native).unwrap();
+        let rosetta = &services[2];
+        assert_eq!(rosetta.service_type, ServiceType::Rosetta);
+        assert_eq!(rosetta.client_port, Some(3120));
+        assert_eq!(rosetta.rosetta_graphql_node.as_deref(), Some("archive"));
+        assert_eq!(rosetta.rosetta_graphql_port, Some(3111));
+        assert_eq!(
+            rosetta.docker_image.as_deref(),
+            Some(DEFAULT_ROSETTA_DOCKER_IMAGE)
+        );
+        assert_eq!(rosetta.libp2p_keypair, None);
+        assert_eq!(rosetta.peers, None);
     }
 
     #[test]

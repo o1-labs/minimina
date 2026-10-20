@@ -130,7 +130,7 @@ impl TopologyInfo {
                 ..Default::default()
             },
             TopologyInfo::Node(node_info) => ServiceConfig {
-                service_type: node_info.service_type.clone(),
+                service_type: node_info.service_type,
                 service_name,
                 docker_image: node_info.docker_image.clone(),
                 git_build: node_info.git_build.clone(),
@@ -144,7 +144,7 @@ impl TopologyInfo {
                 ..Default::default()
             },
             TopologyInfo::SnarkCoordinator(snark_info) => ServiceConfig {
-                service_type: snark_info.service_type.clone(),
+                service_type: snark_info.service_type,
                 service_name,
                 docker_image: snark_info.docker_image.clone(),
                 git_build: snark_info.git_build.clone(),

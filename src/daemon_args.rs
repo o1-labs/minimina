@@ -223,7 +223,7 @@ impl Layout<'_> {
                     ),
                 }
             }
-            ServiceType::SnarkWorker | ServiceType::UptimeServiceBackend => {
+            ServiceType::SnarkWorker | ServiceType::UptimeServiceBackend | ServiceType::Rosetta => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("'{}' is not a daemon", service.service_name),
@@ -257,6 +257,45 @@ impl Layout<'_> {
         }
         args
     }
+}
+
+/// Environment `mina-rosetta` needs: it refuses to start without a database
+/// pool size, and has no default for it. A local postgres allows 100
+/// connections, shared with the archive.
+pub const ROSETTA_ENV: &[(&str, &str)] = &[("MINA_ROSETTA_MAX_DB_POOL_SIZE", "16")];
+
+/// Arguments of `mina-rosetta`: the API on `client_port`, data from the archive
+/// database `archive_uri` and from the GraphQL API of `rosetta_graphql_node`.
+pub fn rosetta_args(
+    service: &ServiceConfig,
+    layout: &Layout,
+    archive_uri: &str,
+) -> io::Result<Vec<String>> {
+    let missing = |what: &str| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("rosetta '{}' has no {what}", service.service_name),
+        )
+    };
+    let port = service.client_port.ok_or_else(|| missing("client_port"))?;
+    let node = service
+        .rosetta_graphql_node
+        .as_deref()
+        .ok_or_else(|| missing("rosetta_graphql_node"))?;
+    let graphql_port = service
+        .rosetta_graphql_port
+        .ok_or_else(|| missing("rosetta_graphql_port"))?;
+    let mut args = Vec::new();
+    arg(&mut args, "--port", port.to_string());
+    arg(&mut args, "--archive-uri", archive_uri);
+    arg(
+        &mut args,
+        "--graphql-uri",
+        format!("http://{}:{graphql_port}/graphql", layout.host(node)),
+    );
+    args.push("--log-json".to_string());
+    arg(&mut args, "--log-level", "Info");
+    Ok(args)
 }
 
 /// Arguments of `mina` for a daemon service or snark worker.
@@ -415,6 +454,38 @@ mod tests {
         assert_eq!(value_of(&docker, "-proof-level"), Some("none"));
         let native = mina_args(&worker, &layout(ExecutionMode::Native)).unwrap();
         assert_eq!(value_of(&native, "-daemon-address"), Some("127.0.0.1:7000"));
+    }
+
+    #[test]
+    fn rosetta_reads_the_archive_and_a_daemon() {
+        let rosetta = ServiceConfig {
+            service_type: ServiceType::Rosetta,
+            service_name: "rosetta".into(),
+            client_port: Some(3087),
+            rosetta_graphql_node: Some("archive".into()),
+            rosetta_graphql_port: Some(3141),
+            ..Default::default()
+        };
+        let native =
+            rosetta_args(&rosetta, &layout(ExecutionMode::Native), "postgres://db/a").unwrap();
+        assert_eq!(value_of(&native, "--port"), Some("3087"));
+        assert_eq!(value_of(&native, "--archive-uri"), Some("postgres://db/a"));
+        assert_eq!(
+            value_of(&native, "--graphql-uri"),
+            Some("http://127.0.0.1:3141/graphql")
+        );
+        let docker = rosetta_args(&rosetta, &layout(ExecutionMode::Docker), "pg").unwrap();
+        assert_eq!(
+            value_of(&docker, "--graphql-uri"),
+            Some("http://archive-net:3141/graphql")
+        );
+        // not a daemon
+        assert!(mina_args(&rosetta, &layout(ExecutionMode::Native)).is_err());
+
+        let mut lost = rosetta.clone();
+        lost.rosetta_graphql_node = None;
+        let err = rosetta_args(&lost, &layout(ExecutionMode::Native), "pg").unwrap_err();
+        assert!(err.to_string().contains("no rosetta_graphql_node"));
     }
 
     #[test]

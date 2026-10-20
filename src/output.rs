@@ -174,6 +174,9 @@ pub mod node {
         pub graphql_uri: Option<String>,
         pub private_key: Option<String>,
         pub node_type: ServiceType,
+        /// Rosetta API of a rosetta service.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub rosetta_uri: Option<String>,
     }
 
     #[derive(Debug, Serialize, PartialEq)]
@@ -234,12 +237,18 @@ pub struct Error {
 
 impl ServiceConfig {
     pub fn to_node_info(&self) -> node::Info {
+        let is_rosetta = self.service_type == ServiceType::Rosetta;
         node::Info {
             graphql_uri: self
                 .client_port
+                .filter(|_| !is_rosetta)
                 .map(|port| format!("http://localhost:{}/graphql", port + 1)),
             private_key: self.private_key.clone(),
-            node_type: self.service_type.clone(),
+            node_type: self.service_type,
+            rosetta_uri: self
+                .client_port
+                .filter(|_| is_rosetta)
+                .map(|port| format!("http://localhost:{port}")),
         }
     }
 }
@@ -316,6 +325,17 @@ mod tests {
             ..Default::default()
         };
         let services = vec![bp_service.clone()];
+        let rosetta = ServiceConfig {
+            service_type: ServiceType::Rosetta,
+            client_port: Some(3087),
+            ..Default::default()
+        }
+        .to_node_info();
+        assert_eq!(rosetta.graphql_uri, None);
+        assert_eq!(
+            rosetta.rosetta_uri.as_deref(),
+            Some("http://localhost:3087")
+        );
 
         let bp_info = node::Info {
             graphql_uri: Some(format!(
@@ -324,6 +344,7 @@ mod tests {
             )),
             private_key: bp_service.private_key,
             node_type: bp_service.service_type,
+            rosetta_uri: None,
         };
         let expect = network::Create {
             network_id: network_id.to_string(),
