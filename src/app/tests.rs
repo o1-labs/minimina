@@ -316,6 +316,48 @@ fn native_create_prepares_directories_without_running_anything() {
 }
 
 #[test]
+fn native_archive_uses_the_schema_of_its_package() {
+    let h = Harness::new();
+    // an unpacked archive deb: <root>/usr/local/bin and <root>/etc/mina/archive
+    let root = tempfile::tempdir().unwrap();
+    let bin = root.path().join("usr/local/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("mina"), "").unwrap();
+    let schema_dir = root.path().join("etc/mina/archive");
+    std::fs::create_dir_all(&schema_dir).unwrap();
+    std::fs::write(schema_dir.join("create_schema.sql"), "-- packaged").unwrap();
+    for _ in 0..6 {
+        h.fake.reply(0, "Public key: B62qtest\n", "");
+    }
+    for i in 0..6 {
+        h.fake
+            .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");
+    }
+    h.run(&[
+        "--mode",
+        "native",
+        "--bin-path",
+        path_arg(&bin),
+        "network",
+        "create",
+        "-n",
+        "pkg",
+    ])
+    .unwrap();
+
+    let net = h.dirs.network_path("pkg");
+    let applied = std::fs::read_to_string(net.join("create_schema.sql")).unwrap();
+    assert_eq!(applied, "-- packaged");
+    let schema_call = h
+        .fake
+        .lines()
+        .into_iter()
+        .find(|l| l.contains(" -f "))
+        .unwrap();
+    assert!(schema_call.ends_with(&format!("-f {}", net.join("create_schema.sql").display())));
+}
+
+#[test]
 fn native_default_network_generates_keys_with_mina() {
     let h = Harness::new();
     let bin = fake_mina_dir();

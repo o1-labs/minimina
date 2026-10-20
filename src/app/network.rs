@@ -11,11 +11,12 @@ use crate::{
     output::{self, network},
     runner::check,
     service::{ServiceConfig, ServiceType},
-    utils::{fetch_schema, TIMEOUT_IN_SECS},
+    utils::{self, fetch_schema, is_remote_schema, TIMEOUT_IN_SECS},
 };
 use anyhow::{bail, Context as _, Result};
 use log::{error, info, warn};
 use std::path::{Path, PathBuf};
+use url::Url;
 
 pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
     match cmd {
@@ -295,7 +296,8 @@ fn create_network(
             .archive_schema_files
             .as_ref()
             .context("archive node has no schema files")?;
-        apply_schema_scripts(docker, &postgres_name, scripts, &network_path)?;
+        let image = archive_node.archive_docker_image.as_deref();
+        apply_schema_scripts(ctx, docker, &postgres_name, scripts, &network_path, image)?;
         // stop postgres
         check(
             docker.compose_stop(vec![&postgres_name], None)?,
@@ -399,7 +401,7 @@ fn create_network_native(
 
         let db_uri = native.archive_db_uri();
         for script in archive_node.archive_schema_files.iter().flatten() {
-            let file_path = fetch_schema(script, network_path.clone())?;
+            let file_path = archive_schema(ctx, script, &network_path, None)?;
             info!("Applying schema script: {}", file_path.display());
             let out = ctx.runner.run(
                 "psql".as_ref(),
@@ -454,17 +456,70 @@ fn postgres_is_ready(docker: &DockerManager, postgres_name: &str) -> Result<()> 
     bail!("postgres '{postgres_name}' not ready within {TIMEOUT_IN_SECS}s")
 }
 
+/// The schema script `source` copied into the network directory.
+///
+/// A downloaded schema is pinned to some commit, which need not be the archive's
+/// version; the archive package ships the scripts of its own version, so for a
+/// remote `source` its copy is used when there is one (native: next to the
+/// binaries, docker: in the archive image). Local sources are used as given.
+fn archive_schema(
+    ctx: &Context,
+    source: &str,
+    network_path: &Path,
+    archive_image: Option<&str>,
+) -> Result<PathBuf> {
+    if is_remote_schema(source) {
+        let name = Url::parse(source)
+            .ok()
+            .and_then(|u| u.path_segments()?.next_back().map(str::to_string))
+            .filter(|n| !n.is_empty())
+            .with_context(|| format!("schema '{source}' has no file name"))?;
+        let packaged = match ctx.mode {
+            ExecutionMode::Native => utils::packaged_schema(ctx.bin_path()?, &name)
+                .map(|path| {
+                    std::fs::read(&path)
+                        .with_context(|| format!("reading {}", path.display()))
+                        .map(|bytes| (bytes, path.display().to_string()))
+                })
+                .transpose()?,
+            ExecutionMode::Docker => archive_image.and_then(|image| {
+                let in_image = format!("/{}/{name}", utils::PACKAGED_SCHEMA_DIR);
+                let out = ctx
+                    .runner
+                    .run(
+                        "docker".as_ref(),
+                        &["run", "--rm", "--entrypoint", "cat", image, &in_image],
+                        &[],
+                    )
+                    .ok()?;
+                (out.status.success() && !out.stdout.is_empty())
+                    .then(|| (out.stdout, format!("{image}:{in_image}")))
+            }),
+        };
+        if let Some((bytes, origin)) = packaged {
+            let path = network_path.join(&name);
+            std::fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))?;
+            info!("Using {name} of the archive package ({origin}) instead of {source}");
+            return Ok(path);
+        }
+        warn!("The archive package has no {name}; downloading {source}");
+    }
+    Ok(fetch_schema(source, network_path.to_path_buf())?)
+}
+
 /// Applies provided schema `scripts` to the postgres db, `postgres_name`
 fn apply_schema_scripts(
+    ctx: &Context,
     docker: &DockerManager,
     postgres_name: &str,
     scripts: &[String],
     network_path: &Path,
+    archive_image: Option<&str>,
 ) -> Result<()> {
     // fetch and copy scripts first
     let mut in_container: Vec<(String, PathBuf)> = Vec::new();
     for script in scripts {
-        let file_path = fetch_schema(script, network_path.to_path_buf())?;
+        let file_path = archive_schema(ctx, script, network_path, archive_image)?;
         let file_name = file_path
             .file_name()
             .with_context(|| format!("schema '{script}' has no file name"))?;
