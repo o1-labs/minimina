@@ -179,6 +179,15 @@ pub struct StartNetworkArgs {
     /// the other nodes (non-seed daemons exit if they find no peer at boot)
     #[clap(long, default_value_t = 900)]
     pub seed_timeout: u64,
+
+    /// Return only when every daemon reports SYNCED (and the archive node
+    /// api answers), asking their GraphQL every 10 s
+    #[clap(long, default_value_t = false)]
+    pub wait_synced: bool,
+
+    /// Seconds `--wait-synced` waits
+    #[clap(long, default_value_t = 1800, requires = "wait_synced")]
+    pub sync_timeout: u64,
 }
 
 #[derive(Subcommand)]

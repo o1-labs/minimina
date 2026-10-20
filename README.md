@@ -76,6 +76,16 @@ minimina network info
 minimina network status
 ```
 
+`network status` asks every running node over GraphQL (in parallel, 3 s timeout):
+daemons report `sync_status`, `height` and `peers` (via
+[mina-sdk](https://github.com/MinaProtocol/mina-sdk-rust)), the archive node api
+reports the archive's `canonical_height` and `pending_height` (via
+[mina-archive-sdk](https://github.com/o1-labs/mina-archive-sdk-rust)). A node that
+does not answer reports `error`.
+
+`network start --wait-synced [--sync-timeout 1800]` returns only when every
+daemon is `SYNCED`, which is what scripts need before they send transactions.
+
 ### Directory Structure
 
 The default network is stored at `~/.minimina/default/` (override with `$MINIMINA_HOME`):

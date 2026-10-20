@@ -96,30 +96,29 @@ impl Network {
 
     /// Polls until the node is synced with a block past genesis.
     fn wait_for_block(&self, uri: &str) -> u64 {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(10))
+        let client = mina_sdk::MinaClient::with_config(mina_sdk::ClientConfig {
+            graphql_uri: uri.to_string(),
+            retries: 1,
+            retry_delay: Duration::from_secs(1),
+            timeout: Duration::from_secs(10),
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .unwrap();
-        let query = r#"{"query":"{ syncStatus daemonStatus { blockchainLength } }"}"#;
         let start = Instant::now();
         let mut genesis_length = None;
         loop {
-            let reply: Option<Value> = client
-                .post(uri)
-                .header("Content-Type", "application/json")
-                .body(query)
-                .send()
-                .ok()
-                .and_then(|r| r.text().ok())
-                .and_then(|body| serde_json::from_str(&body).ok());
-            let data = reply.as_ref().map(|r| &r["data"]);
-            let status = data.and_then(|d| d["syncStatus"].as_str());
-            let length = data.and_then(|d| d["daemonStatus"]["blockchainLength"].as_u64());
+            let status = runtime.block_on(client.get_daemon_status()).ok();
+            let synced = status.as_ref().map(|s| s.sync_status.clone());
+            let length = status
+                .and_then(|s| s.blockchain_length)
+                .and_then(|l| u64::try_from(l).ok());
             eprintln!(
-                "+{:>4}s {uri}: {status:?} {length:?}",
+                "+{:>4}s {uri}: {synced:?} {length:?}",
                 start.elapsed().as_secs()
             );
-            if let (Some("SYNCED"), Some(length)) = (status, length) {
+            if let (Some(mina_sdk::SyncStatus::Synced), Some(length)) = (synced, length) {
                 let first = *genesis_length.get_or_insert(length);
                 if length > first || length >= 2 {
                     return length;

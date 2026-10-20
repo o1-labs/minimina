@@ -8,11 +8,11 @@ use crate::{
     directory_manager::NETWORK_KEYPAIRS,
     docker::manager::ContainerState,
     genesis_ledger::{self, REPLAYER_INPUT_JSON},
-    graphql::GraphQl,
-    native,
+    native, node_client,
     output::{self, node},
     runner::check,
     service::ServiceConfig,
+    utils::TIMEOUT_IN_SECS,
 };
 use anyhow::{bail, Context as _, Result};
 use log::{info, warn};
@@ -35,10 +35,18 @@ pub fn run(ctx: &Context, cmd: NodeCommand) -> Result<()> {
 
             if cmd.graphql_filtered_logs {
                 warn!("Waiting for graphql server to be operational so I can request filtered logs. This can take a moment...");
-                let gql = GraphQl::new(ctx.dirs.clone());
-                if let Some(gql_ep) = gql.get_endpoint(&node_id, &network_id)? {
-                    gql.wait_for_server(&gql_ep)?;
-                    gql.request_filtered_logs(&gql_ep)?;
+                let uri = ctx
+                    .dirs
+                    .get_services_info(&network_id)?
+                    .iter()
+                    .find(|s| s.service_name == node_id)
+                    .and_then(|s| s.to_node_info().graphql_uri);
+                if let Some(uri) = uri {
+                    node_client::wait_for_graphql(
+                        &uri,
+                        std::time::Duration::from_secs(TIMEOUT_IN_SECS.into()),
+                    )?;
+                    node_client::start_filtered_log(&uri)?;
                 }
             }
 
