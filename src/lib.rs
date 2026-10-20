@@ -10,6 +10,7 @@ pub mod genesis_ledger;
 pub mod graphql;
 pub mod keys;
 pub mod native;
+pub mod network_id;
 pub mod network_meta;
 pub mod output;
 pub mod runner;

@@ -11,6 +11,7 @@ use crate::daemon_args::{
     PRECOMPUTED_BLOCKS_DIR, PRECOMPUTED_BLOCKS_FILE, ROSETTA_ENV,
 };
 use crate::docker::compose::CONFIG_DIRECTORY;
+use crate::native::error::NativeError;
 use crate::native::port_manager;
 use crate::native::process_tracker::{proc_stat, ProcessRecord, ProcessTracker, Records};
 use crate::service::{ServiceConfig, ServiceType};
@@ -19,7 +20,7 @@ use log::{info, warn};
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Result};
+use std::io::Result;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -117,10 +118,11 @@ impl NativeManager {
             .into_iter()
             .find(|p| p.alive && p.name == service_name)
         {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("'{}' is running (pid {}); stop it first", p.name, p.pid),
-            ));
+            return Err(NativeError::RunningDuringReset {
+                name: p.name,
+                pid: p.pid,
+            }
+            .into());
         }
         let dir = self.config_dir_for_service(service_name);
         if dir.exists() {
@@ -157,10 +159,7 @@ impl NativeManager {
             .map(|p| p.name)
             .collect();
         if !running.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("already running: {}", running.join(", ")),
-            ));
+            return Err(NativeError::NetworkRunning(running).into());
         }
         port_manager::check_ports_available(&port_manager::collect_all_ports(services)?)?;
 
@@ -213,12 +212,7 @@ impl NativeManager {
     fn wait_for_seeds(&self, seeds: &[&ServiceConfig], timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         for seed in seeds {
-            let port = seed.client_port.map(|p| p + 2).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("seed '{}' has no client_port", seed.service_name),
-                )
-            })?;
+            let port = seed.require(&seed.client_port, "client_port")? + 2;
             info!(
                 "Waiting for seed '{}' to accept connections on port {port}",
                 seed.service_name
@@ -227,23 +221,19 @@ impl NativeManager {
             while std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_err() {
                 let record = self.tracker().get(&seed.service_name)?;
                 if !record.as_ref().is_some_and(ProcessRecord::is_alive) {
-                    return Err(io::Error::other(format!(
-                        "seed '{}' exited during startup; see {}",
-                        seed.service_name,
-                        self.logs_dir()
-                            .join(format!("{}.log", seed.service_name))
-                            .display()
-                    )));
+                    return Err(NativeError::SeedExited {
+                        seed: seed.service_name.clone(),
+                        log: self.logs_dir().join(format!("{}.log", seed.service_name)),
+                    }
+                    .into());
                 }
                 if Instant::now() >= deadline {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        format!(
-                            "seed '{}' did not accept connections on port {port} within {}s",
-                            seed.service_name,
-                            timeout.as_secs()
-                        ),
-                    ));
+                    return Err(NativeError::SeedTimeout {
+                        seed: seed.service_name.clone(),
+                        port,
+                        secs: timeout.as_secs(),
+                    }
+                    .into());
                 }
                 std::thread::sleep(Duration::from_millis(500));
             }
@@ -254,10 +244,7 @@ impl NativeManager {
     /// Starts one service; fails if it is running or one of its ports is taken.
     pub fn start_service(&self, service: &ServiceConfig, network_id: &str) -> Result<()> {
         if service.service_type == ServiceType::UptimeServiceBackend {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "the uptime service backend is not supported in native mode",
-            ));
+            return Err(NativeError::UptimeServiceUnsupported.into());
         }
         let names = process_names(service);
         if let Some(p) = self
@@ -265,10 +252,11 @@ impl NativeManager {
             .into_iter()
             .find(|p| p.alive && names.contains(&p.name))
         {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("'{}' is already running (pid {})", p.name, p.pid),
-            ));
+            return Err(NativeError::AlreadyRunning {
+                name: p.name,
+                pid: p.pid,
+            }
+            .into());
         }
         port_manager::check_ports_available(&port_manager::collect_all_ports(
             std::slice::from_ref(service),
@@ -278,21 +266,9 @@ impl NativeManager {
 
     fn spawn_service(&self, service: &ServiceConfig, network_id: &str) -> Result<()> {
         if service.service_type == ServiceType::ArchiveNodeApi {
-            let bin = service.archive_node_api_bin.as_deref().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "'{}' has no archive_node_api_bin; create the network again",
-                        service.service_name
-                    ),
-                )
-            })?;
-            let port = service.client_port.ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("'{}' has no client_port", service.service_name),
-                )
-            })?;
+            // set by `network create`, which installs the server
+            let bin = service.require(&service.archive_node_api_bin, "archive_node_api_bin")?;
+            let port = *service.require(&service.client_port, "client_port")?;
             let env = archive_node_api::env(&self.archive_db_uri(), port);
             let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
             return self.spawn_with_env(&service.service_name, bin, &[], &env);
@@ -338,15 +314,7 @@ impl NativeManager {
     }
 
     fn archive_process_command(&self, service: &ServiceConfig) -> Result<(PathBuf, Vec<String>)> {
-        let port = service.archive_port.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "archive node '{}' has no archive_port",
-                    service.service_name
-                ),
-            )
-        })?;
+        let port = service.require(&service.archive_port, "archive_port")?;
         Ok((
             self.bin_path.join("mina-archive"),
             vec![
@@ -398,11 +366,10 @@ impl NativeManager {
             .stderr(Stdio::from(log_file_err))
             .process_group(0)
             .spawn()
-            .map_err(|e| {
-                io::Error::new(
-                    e.kind(),
-                    format!("Failed to start {name} ({}): {e}", binary.display()),
-                )
+            .map_err(|cause| NativeError::Spawn {
+                name: name.to_string(),
+                binary: binary.to_path_buf(),
+                cause,
             })?;
 
         let pid = child.id();
@@ -450,10 +417,7 @@ impl NativeManager {
         self.tracker().update(|records| {
             let archive = format!("{service_name}{ARCHIVE_SUFFIX}");
             if !records.contains_key(service_name) {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("Service '{service_name}' is not running"),
-                ));
+                return Err(NativeError::NotRunning(service_name.to_string()).into());
             }
             // the daemon goes first so it does not lose its archive mid-run
             stop_records(records, &[service_name.to_string()], timeout);
@@ -474,11 +438,14 @@ impl NativeManager {
 
     pub fn service_logs(&self, service_name: &str) -> Result<String> {
         let log_file = self.logs_dir().join(format!("{service_name}.log"));
-        fs::read_to_string(&log_file).map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("no log for '{service_name}' at {}: {e}", log_file.display()),
-            )
+        fs::read_to_string(&log_file).map_err(|cause| {
+            NativeError::Unreadable {
+                what: "log",
+                service: service_name.to_string(),
+                path: log_file.clone(),
+                cause,
+            }
+            .into()
         })
     }
 
@@ -501,14 +468,14 @@ impl NativeManager {
             return Ok(blocks);
         }
         let file = config_dir.join(PRECOMPUTED_BLOCKS_FILE);
-        fs::read_to_string(&file).map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!(
-                    "no precomputed blocks for '{service_name}' at {}: {e}",
-                    file.display()
-                ),
-            )
+        fs::read_to_string(&file).map_err(|cause| {
+            NativeError::Unreadable {
+                what: "precomputed blocks",
+                service: service_name.to_string(),
+                path: file.clone(),
+                cause,
+            }
+            .into()
         })
     }
 
@@ -539,12 +506,8 @@ fn process_names(service: &ServiceConfig) -> Vec<String> {
 }
 
 fn utf8(path: &Path) -> Result<&str> {
-    path.to_str().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("path '{}' is not valid UTF-8", path.display()),
-        )
-    })
+    path.to_str()
+        .ok_or_else(|| NativeError::NotUtf8(path.to_path_buf()).into())
 }
 
 /// Terminates the process groups of `names` in parallel and drops them from `records`.
@@ -596,6 +559,7 @@ fn wait_until_dead(records: &[ProcessRecord], timeout: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
 
     fn manager() -> NativeManager {
         NativeManager::new(

@@ -11,24 +11,6 @@ use std::{
 };
 use url::Url;
 
-/// Parses `MAJOR.MINOR[.PATCH]` with an optional `v` prefix and `-`/`+` suffix
-/// (`2.29.1`, `v2.29.1-desktop.1`).
-pub fn parse_version(version: &str) -> Option<(u32, u32, u32)> {
-    let core = version
-        .trim()
-        .trim_start_matches('v')
-        .split(['-', '+'])
-        .next()?;
-    let mut parts = core.split('.').map(str::parse::<u32>);
-    let major = parts.next()?.ok()?;
-    let minor = parts.next()?.ok()?;
-    let patch = parts.next().unwrap_or(Ok(0)).ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((major, minor, patch))
-}
-
 /// Timeout in seconds for waiting operations
 pub const TIMEOUT_IN_SECS: u16 = 180;
 

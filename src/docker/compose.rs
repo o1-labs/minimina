@@ -501,13 +501,12 @@ fn path_str(path: &Path) -> io::Result<&str> {
 }
 
 /// Returns a clone of a topology field that the compose file needs.
-fn required<T: Clone>(field: &Option<T>, name: &str, config: &ServiceConfig) -> io::Result<T> {
-    field.clone().ok_or_else(|| {
-        invalid(format!(
-            "service '{}' has no '{name}' in its topology",
-            config.service_name
-        ))
-    })
+fn required<T: Clone>(
+    field: &Option<T>,
+    name: &'static str,
+    config: &ServiceConfig,
+) -> io::Result<T> {
+    Ok(config.require(field, name)?.clone())
 }
 
 #[cfg(test)]

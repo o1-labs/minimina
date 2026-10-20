@@ -176,11 +176,16 @@ pub fn handle_topology(
     }
 }
 
-/// Native mode: the archive node api runs the npm package; checks Node.js and
-/// installs the package (once per version) into `~/.minimina/.tools`, and
-/// records the executable in the service.
-pub fn prepare_archive_node_api(ctx: &Context, services: &mut [ServiceConfig]) -> Result<()> {
-    if ctx.mode != ExecutionMode::Native {
+/// Installs what the archive node api needs to run.
+///
+/// Both modes run it. Docker mode runs its image
+/// (`ghcr.io/o1-labs/archive-node-api:<version>`, see `docker/compose.rs`) and
+/// needs nothing here. Native mode runs the npm package: this checks Node.js,
+/// installs the package once per version into `~/.minimina/.tools`, and records
+/// the executable in the service.
+pub fn install_archive_node_api(ctx: &Context, services: &mut [ServiceConfig]) -> Result<()> {
+    if ctx.mode == ExecutionMode::Docker {
+        // the compose service runs the image
         return Ok(());
     }
     for service in services

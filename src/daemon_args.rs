@@ -115,10 +115,7 @@ impl Layout<'_> {
             // every container has its own ports
             (None, ExecutionMode::Docker) => 3100,
             (None, ExecutionMode::Native) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("daemon '{}' has no client_port", service.service_name),
-                ))
+                *service.require(&service.client_port, "client_port")?
             }
         };
         let mut args = vec!["daemon".to_string()];
@@ -226,12 +223,7 @@ impl Layout<'_> {
             ServiceType::SnarkWorker
             | ServiceType::UptimeServiceBackend
             | ServiceType::Rosetta
-            | ServiceType::ArchiveNodeApi => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("'{}' is not a daemon", service.service_name),
-                ))
-            }
+            | ServiceType::ArchiveNodeApi => return Err(service.not_a_daemon().into()),
         }
         self.add_libp2p_keypair(service, &mut args);
         Ok(args)
@@ -274,20 +266,9 @@ pub fn rosetta_args(
     layout: &Layout,
     archive_uri: &str,
 ) -> io::Result<Vec<String>> {
-    let missing = |what: &str| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("rosetta '{}' has no {what}", service.service_name),
-        )
-    };
-    let port = service.client_port.ok_or_else(|| missing("client_port"))?;
-    let node = service
-        .rosetta_graphql_node
-        .as_deref()
-        .ok_or_else(|| missing("rosetta_graphql_node"))?;
-    let graphql_port = service
-        .rosetta_graphql_port
-        .ok_or_else(|| missing("rosetta_graphql_port"))?;
+    let port = service.require(&service.client_port, "client_port")?;
+    let node = service.require(&service.rosetta_graphql_node, "rosetta_graphql_node")?;
+    let graphql_port = service.require(&service.rosetta_graphql_port, "rosetta_graphql_port")?;
     let mut args = Vec::new();
     arg(&mut args, "--port", port.to_string());
     arg(&mut args, "--archive-uri", archive_uri);

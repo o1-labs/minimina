@@ -5,8 +5,7 @@
 //! installs into `~/.minimina/.tools/archive-node-api/<version>` with the host's
 //! `npm`; the package needs Node.js 22.12 or newer.
 
-use crate::runner::{check, Runner};
-use crate::utils::parse_version;
+use crate::runner::{Runner, Tool, Version};
 use anyhow::{bail, Context as _, Result};
 use log::info;
 use std::path::{Path, PathBuf};
@@ -15,7 +14,13 @@ pub const DEFAULT_VERSION: &str = "2.0.0";
 const NPM_PACKAGE: &str = "@o1-labs/mina-archive-node-graphql";
 const BIN: &str = "mina-archive-node-graphql";
 /// `engines.node` of the package.
-const MIN_NODE: (u32, u32, u32) = (22, 12, 0);
+const NODE: Tool = Tool {
+    name: "Node.js",
+    program: "node",
+    version_args: &["--version"],
+    min: Version(22, 12, 0),
+    install: "The archive node api runs on it; see https://nodejs.org (or use `bin` in the spec).",
+};
 /// Name of the tool directory under `~/.minimina/.tools`.
 pub const TOOL: &str = "archive-node-api";
 
@@ -37,7 +42,7 @@ pub fn ensure_native(
     version: &str,
     bin: Option<&Path>,
 ) -> Result<PathBuf> {
-    check_node(runner)?;
+    runner.require(&NODE)?;
     if let Some(bin) = bin {
         if !bin.is_file() {
             bail!("archive node api: '{}' does not exist", bin.display());
@@ -57,8 +62,8 @@ pub fn ensure_native(
         .with_context(|| format!("creating {}", tool_dir.display()))?;
     let prefix = tool_dir.to_string_lossy();
     let package = format!("{NPM_PACKAGE}@{version}");
-    let out = runner
-        .run(
+    runner
+        .run_checked(
             "npm".as_ref(),
             &[
                 "install",
@@ -70,9 +75,9 @@ pub fn ensure_native(
                 &package,
             ],
             &[],
+            &format!("npm install {package}"),
         )
-        .context("archive node api: running npm (install Node.js and npm)")?;
-    check(out, &format!("npm install {package}"))?;
+        .context("archive node api: npm comes with Node.js")?;
     if !installed.is_file() {
         bail!(
             "archive node api: npm installed {package}, but {} is missing",
@@ -80,21 +85,6 @@ pub fn ensure_native(
         );
     }
     Ok(installed)
-}
-
-/// The package refuses older Node.js; say so before anything starts.
-fn check_node(runner: &dyn Runner) -> Result<()> {
-    let (major, minor, patch) = MIN_NODE;
-    let wanted = format!("Node.js {major}.{minor}.{patch} or newer");
-    let out = runner
-        .run("node".as_ref(), &["--version"], &[])
-        .with_context(|| format!("archive node api needs {wanted}; `node` was not found"))?;
-    let out = check(out, "node --version")?;
-    let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    match parse_version(&version) {
-        Some(found) if found >= MIN_NODE => Ok(()),
-        _ => bail!("archive node api needs {wanted}; found {version}"),
-    }
 }
 
 #[cfg(test)]
@@ -108,14 +98,19 @@ mod tests {
         let fake = FakeRunner::default();
         fake.reply(0, "v18.19.1\n", "");
         let err = ensure_native(&fake, dir.path(), "2.0.0", None).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "archive node api needs Node.js 22.12.0 or newer; found v18.19.1"
+        assert!(
+            err.to_string()
+                .starts_with("Node.js 18.19.1 is older than the minimum supported version 22.12.0"),
+            "{err}"
         );
 
         fake.reply_err(std::io::ErrorKind::NotFound);
         let err = ensure_native(&fake, dir.path(), "2.0.0", None).unwrap_err();
-        assert!(err.to_string().contains("`node` was not found"), "{err}");
+        assert!(
+            err.to_string()
+                .starts_with("Node.js is required, but `node` was not found"),
+            "{err}"
+        );
     }
 
     #[test]

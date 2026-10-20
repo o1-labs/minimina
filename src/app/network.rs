@@ -45,7 +45,7 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
 
             // build services from topology file
             let mut services = setup::handle_topology(ctx, &cmd, &network_id, keys)?;
-            setup::prepare_archive_node_api(ctx, &mut services)?;
+            setup::install_archive_node_api(ctx, &mut services)?;
 
             // copy libp2p + network keys
             ctx.dirs

@@ -109,23 +109,8 @@ pub enum NetworkCommand {
 #[derive(Args, Debug, Clone)]
 pub struct NetworkId {
     /// Network identifier
-    #[clap(short, long, default_value = "default", value_parser = parse_network_id)]
+    #[clap(short, long, default_value = "default", value_parser = crate::network_id::parse)]
     pub network_id: String,
-}
-
-/// A network id names a directory under the minimina home: letters, digits,
-/// `.`, `_` and `-`, starting with a letter or digit (so no `..`, `/` or hidden
-/// directories, which minimina keeps for itself).
-fn parse_network_id(id: &str) -> Result<String, String> {
-    let mut chars = id.chars();
-    let starts_well = chars.next().is_some_and(|c| c.is_ascii_alphanumeric());
-    if starts_well && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
-        Ok(id.to_string())
-    } else {
-        Err(format!(
-            "'{id}': use letters, digits, '.', '_' and '-', starting with a letter or digit"
-        ))
-    }
 }
 
 /// Seconds to wait after SIGTERM before SIGKILL (native) or `docker compose stop -t` (docker).
@@ -384,14 +369,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn network_ids_name_plain_directories() {
-        for ok in ["default", "hf-4.0.2", "My_Net.1"] {
-            assert_eq!(parse_network_id(ok).as_deref(), Ok(ok));
-        }
-        for bad in ["", "../x", "a/b", ".tools", "-x", "a b"] {
-            assert!(parse_network_id(bad).is_err(), "{bad}");
-        }
-        assert!(Cli::try_parse_from(["minimina", "network", "status", "-n", "../etc"]).is_err());
+    fn network_id_is_checked_by_every_command() {
+        let err = Cli::try_parse_from(["minimina", "network", "status", "-n", "../etc"])
+            .err()
+            .unwrap();
+        assert!(
+            err.to_string().contains("invalid network id '../etc'"),
+            "{err}"
+        );
     }
 
     #[test]

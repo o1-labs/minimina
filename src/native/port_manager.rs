@@ -51,20 +51,10 @@ pub fn collect_all_ports(services: &[ServiceConfig]) -> io::Result<Vec<PortUse>>
             ServiceType::SnarkWorker | ServiceType::UptimeServiceBackend => {}
             // one port: the API
             ServiceType::Rosetta | ServiceType::ArchiveNodeApi => {
-                add(service.client_port.ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("'{}' has no client_port", service.service_name),
-                    )
-                })?)
+                add(*service.require(&service.client_port, "client_port")?)
             }
             _ => {
-                let client_port = service.client_port.ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("daemon '{}' has no client_port", service.service_name),
-                    )
-                })?;
+                let client_port = *service.require(&service.client_port, "client_port")?;
                 for offset in 0..5 {
                     let port = client_port.checked_add(offset).ok_or_else(|| {
                         io::Error::new(

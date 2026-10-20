@@ -87,7 +87,43 @@ pub struct ServiceConfig {
     pub uptime_service_other_config_files: Option<Vec<PathBuf>>,
 }
 
+/// A service config that does not fit what is asked of it.
+#[derive(Debug, thiserror::Error)]
+pub enum ServiceError {
+    #[error("'{service}' has no {field}")]
+    MissingField {
+        service: String,
+        field: &'static str,
+    },
+    #[error("'{service}' is not a daemon")]
+    NotADaemon { service: String },
+}
+
+impl From<ServiceError> for std::io::Error {
+    fn from(e: ServiceError) -> Self {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
+    }
+}
+
 impl ServiceConfig {
+    /// `value`, a field of this service called `field`, or an error naming both.
+    pub fn require<'a, T>(
+        &self,
+        value: &'a Option<T>,
+        field: &'static str,
+    ) -> Result<&'a T, ServiceError> {
+        value.as_ref().ok_or_else(|| ServiceError::MissingField {
+            service: self.service_name.clone(),
+            field,
+        })
+    }
+
+    pub fn not_a_daemon(&self) -> ServiceError {
+        ServiceError::NotADaemon {
+            service: self.service_name.clone(),
+        }
+    }
+
     /// libp2p address of a seed: its compose service name in docker mode,
     /// localhost in native mode (every node shares the host).
     pub fn generate_peer(
