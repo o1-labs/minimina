@@ -154,7 +154,10 @@ minimina network create -n mynet --spec net.toml
 minimina network start -n mynet
 ```
 
-Roles: `seed`, `block-producer`, `plain`, `archive`, `snark-coordinator`.
+Roles: `seed`, `block-producer`, `plain`, `archive`, `snark-coordinator`, `rosetta`.
+A `rosetta` node runs `mina-rosetta` against the archive database and the GraphQL
+API of a daemon (`node = "<name>"`, default: the archive node); the output of
+`network create` gives its `rosetta_uri`.
 Names default to `<role>-<n>` (`seed-1`, `bp-1`, `node-1`); client ports start at
 3100 in steps of 10. Only block producers hold stake unless a node sets `balance`.
 [docs/examples/network.toml](docs/examples/network.toml) shows every option:

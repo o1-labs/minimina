@@ -22,6 +22,10 @@ role = "plain"                # follows the chain, produces no blocks
 [[nodes]]
 role = "archive"              # + mina-archive and a postgres database
 
+[[nodes]]
+role = "rosetta"              # mina-rosetta: reads the archive database and
+# node = "node-1"             # the GraphQL API of this daemon (default: the archive node)
+
 # [[nodes]]
 # role = "snark-coordinator"
 # workers = 1
@@ -32,6 +36,12 @@ role = "archive"              # + mina-archive and a postgres database
 [ledger]
 accounts = 3
 balance = "1000"
+
+# Docker mode images (defaults: the built-in 4.0.1 images).
+# [docker]
+# daemon_image = "minaprotocol/mina-daemon:..."
+# archive_image = "minaprotocol/mina-archive:..."
+# rosetta_image = "minaprotocol/mina-rosetta:..."
 
 # Merged into the generated genesis runtime config.
 # [runtime_config.genesis]

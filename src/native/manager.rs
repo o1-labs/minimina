@@ -6,8 +6,8 @@
 
 use crate::cli::{ExecutionMode, Profile};
 use crate::daemon_args::{
-    mina_args, sort_precomputed_block_files, DaemonFeatures, Layout, PRECOMPUTED_BLOCKS_DIR,
-    PRECOMPUTED_BLOCKS_FILE,
+    mina_args, rosetta_args, sort_precomputed_block_files, DaemonFeatures, Layout,
+    PRECOMPUTED_BLOCKS_DIR, PRECOMPUTED_BLOCKS_FILE, ROSETTA_ENV,
 };
 use crate::docker::compose::CONFIG_DIRECTORY;
 use crate::native::port_manager;
@@ -177,16 +177,22 @@ impl NativeManager {
             })
             .partition(|s| s.service_type == ServiceType::Seed);
 
+        // rosetta talks to a daemon and the archive database, so it comes last
+        let (apis, others): (Vec<&ServiceConfig>, Vec<&ServiceConfig>) = others
+            .into_iter()
+            .partition(|s| s.service_type == ServiceType::Rosetta);
+
         let result = seeds
             .iter()
             .try_for_each(|s| self.spawn_service(s, network_id))
-            .and_then(|()| match others.is_empty() {
+            .and_then(|()| match others.is_empty() && apis.is_empty() {
                 true => Ok(()),
                 false => self.wait_for_seeds(&seeds, seed_timeout),
             })
             .and_then(|()| {
                 others
                     .iter()
+                    .chain(&apis)
                     .try_for_each(|s| self.spawn_service(s, network_id))
             });
         if let Err(e) = result {
@@ -265,6 +271,24 @@ impl NativeManager {
     }
 
     fn spawn_service(&self, service: &ServiceConfig, network_id: &str) -> Result<()> {
+        if service.service_type == ServiceType::Rosetta {
+            let layout = Layout {
+                mode: ExecutionMode::Native,
+                network: network_id,
+                network_dir: utf8(&self.network_path)?,
+                config_dir: "",
+                uptime_service: None,
+                features: self.features,
+            };
+            let args = rosetta_args(service, &layout, &self.archive_db_uri())?;
+            return self.spawn_with_env(
+                &service.service_name,
+                &self.bin_path.join("mina-rosetta"),
+                &args,
+                ROSETTA_ENV,
+            );
+        }
+
         // the archive daemon pushes blocks to mina-archive, so that comes up first
         if service.service_type == ServiceType::ArchiveNode {
             let name = format!("{}{ARCHIVE_SUFFIX}", service.service_name);
@@ -310,6 +334,16 @@ impl NativeManager {
     }
 
     fn spawn(&self, name: &str, binary: &Path, args: &[String]) -> Result<()> {
+        self.spawn_with_env(name, binary, args, &[])
+    }
+
+    fn spawn_with_env(
+        &self,
+        name: &str,
+        binary: &Path,
+        args: &[String],
+        env: &[(&str, &str)],
+    ) -> Result<()> {
         fs::create_dir_all(self.logs_dir())?;
         let log_file_path = self.logs_dir().join(format!("{name}.log"));
         info!(
@@ -332,6 +366,7 @@ impl NativeManager {
             .env("MINA_CLIENT_TRUSTLIST", "0.0.0.0/0")
             .env("RAYON_NUM_THREADS", "2")
             .envs(super::mina_env(&self.bin_path, self.profile))
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_file_err))
@@ -730,7 +765,7 @@ mod tests {
                 net: tempfile::tempdir().unwrap(),
                 bin: tempfile::tempdir().unwrap(),
             };
-            for name in ["mina", "mina-archive"] {
+            for name in ["mina", "mina-archive", "mina-rosetta"] {
                 let path = sandbox.bin.path().join(name);
                 fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -865,6 +900,31 @@ exec sleep 300"#
         let native = sandbox.manager();
         native.start_service(&seed("a"), "net").unwrap();
         wait_for_log(&native, "a", "profile=lightnet", 1);
+        native.stop_all(Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn rosetta_runs_with_its_pool_size() {
+        let sandbox = Sandbox::new(
+            "echo \"$(basename $0) pool=$MINA_ROSETTA_MAX_DB_POOL_SIZE $*\"; exec sleep 300",
+        );
+        let native = sandbox.manager();
+        let rosetta = ServiceConfig {
+            service_type: ServiceType::Rosetta,
+            service_name: "r".into(),
+            client_port: Some(free_port()),
+            rosetta_graphql_node: Some("archive".into()),
+            rosetta_graphql_port: Some(3141),
+            ..Default::default()
+        };
+        native.start_service(&rosetta, "net").unwrap();
+        wait_for_log(&native, "r", "mina-rosetta pool=16 --port", 1);
+        wait_for_log(
+            &native,
+            "r",
+            "--graphql-uri http://127.0.0.1:3141/graphql",
+            1,
+        );
         native.stop_all(Duration::from_secs(5)).unwrap();
     }
 

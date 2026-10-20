@@ -36,6 +36,8 @@ const DEFAULT_DAEMON_DOCKER_IMAGE: &str =
     "minaprotocol/mina-daemon:4.0.1-1e9d141-bookworm-devnet-generic";
 const DEFAULT_ARCHIVE_DOCKER_IMAGE: &str =
     "minaprotocol/mina-archive:4.0.1-1e9d141-bookworm-devnet";
+const DEFAULT_ROSETTA_DOCKER_IMAGE: &str =
+    "minaprotocol/mina-rosetta:4.0.1-1e9d141-bookworm-devnet";
 const IMAGE_COMMIT_HASH: &str = "1e9d141";
 
 /// Everything a command handler needs from its environment.

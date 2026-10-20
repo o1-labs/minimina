@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use crate::cli::ExecutionMode;
 use crate::topology::GitBuild;
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, Default)]
 pub enum ServiceType {
     #[serde(rename = "Seed_node")]
     Seed,
@@ -27,6 +27,9 @@ pub enum ServiceType {
     ArchiveNode,
     #[serde(rename = "Uptime_service_backend")]
     UptimeServiceBackend,
+    /// `mina-rosetta`: the Rosetta API on top of a daemon and the archive database.
+    #[serde(rename = "Rosetta")]
+    Rosetta,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -63,6 +66,12 @@ pub struct ServiceConfig {
     pub archive_docker_image: Option<String>,
     pub archive_schema_files: Option<Vec<String>>,
     pub archive_port: Option<u16>,
+
+    //rosetta specific: --port is client_port
+    /// Daemon whose GraphQL API rosetta reads (`--graphql-uri`).
+    pub rosetta_graphql_node: Option<String>,
+    /// GraphQL (REST) port of that daemon.
+    pub rosetta_graphql_port: Option<u16>,
 
     //uptime service backend specific
     pub uptime_service_backend_app_config: Option<PathBuf>,

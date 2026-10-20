@@ -4,7 +4,9 @@
 //! deploying various Mina services in a Docker environment.
 
 use crate::cli::{ExecutionMode, Profile};
-use crate::daemon_args::{mina_args, DaemonFeatures, Layout, PRECOMPUTED_BLOCKS_DIR};
+use crate::daemon_args::{
+    mina_args, rosetta_args, DaemonFeatures, Layout, PRECOMPUTED_BLOCKS_DIR, ROSETTA_ENV,
+};
 use crate::service::{ServiceConfig, ServiceType};
 use log::debug;
 use serde::ser::{SerializeStruct, Serializer};
@@ -133,14 +135,17 @@ impl DockerCompose {
         };
 
         //insert volumes for each service
-        let mut volumes = configs.iter().fold(HashMap::new(), |mut acc, config| {
-            let service_name = format!("{}-{network_name}", config.service_name.clone());
-            if let Some(volume) = blocks_volume(&service_name) {
-                acc.insert(volume, None);
-            }
-            acc.insert(service_name, None);
-            acc
-        });
+        let mut volumes = configs
+            .iter()
+            .filter(|c| c.service_type != ServiceType::Rosetta)
+            .fold(HashMap::new(), |mut acc, config| {
+                let service_name = format!("{}-{network_name}", config.service_name.clone());
+                if let Some(volume) = blocks_volume(&service_name) {
+                    acc.insert(volume, None);
+                }
+                acc.insert(service_name, None);
+                acc
+            });
 
         let uptime_service_hostname = if let Some(uptime_service_backend) =
             ServiceConfig::get_uptime_service_backend(configs)
@@ -164,6 +169,8 @@ impl DockerCompose {
                     // We'll handle UptimeServiceBackend outside of this map operation
                     // because it has different shape than other daemon services
                     ServiceType::UptimeServiceBackend => None,
+                    // not a daemon: added with the archive database below
+                    ServiceType::Rosetta => None,
                     _ => {
                         let service_name =
                             format!("{}-{network_name}", config.service_name.clone());
@@ -333,6 +340,58 @@ impl DockerCompose {
                         uptime_service_backend,
                     )?,
                     ports: Some(vec!["8080:8080".to_string()]),
+                    ..Default::default()
+                },
+            );
+        }
+
+        for rosetta in configs
+            .iter()
+            .filter(|c| c.service_type == ServiceType::Rosetta)
+        {
+            let archive = ServiceConfig::get_archive_node(configs).ok_or_else(|| {
+                invalid(format!(
+                    "rosetta '{}' needs an archive node",
+                    rosetta.service_name
+                ))
+            })?;
+            let layout = Layout {
+                mode: ExecutionMode::Docker,
+                network: network_name,
+                network_dir: "/local-network",
+                config_dir: &config_dir,
+                uptime_service: None,
+                features,
+            };
+            let archive_uri =
+                format!("postgres://postgres:postgres@postgres-{network_name}:5432/archive");
+            let args = rosetta_args(rosetta, &layout, &archive_uri)?;
+            let port = required(&rosetta.client_port, "client_port", rosetta)?;
+            let name = format!("{}-{network_name}", rosetta.service_name);
+            let mut depends_on = vec![format!("{}-{network_name}", archive.service_name)];
+            if let Some(node) = &rosetta.rosetta_graphql_node {
+                depends_on.push(format!("{node}-{network_name}"));
+            }
+            depends_on.dedup();
+            // a service's own `environment` replaces the merged default one
+            let environment = ROSETTA_ENV
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .chain([(Profile::ENV.to_string(), profile.to_string())])
+                .collect();
+            services.insert(
+                name.clone(),
+                Service {
+                    // MINA_PROFILE and the restart policy of the daemons
+                    merge: Some("*default-attributes"),
+                    container_name: name,
+                    image: required(&rosetta.docker_image, "docker_image", rosetta)?,
+                    // the image's own entrypoint starts a whole stack (daemon, postgres)
+                    entrypoint: Some(vec!["mina-rosetta".to_string()]),
+                    command: Some(args.join(" ")),
+                    environment: Some(environment),
+                    ports: Some(vec![format!("{port}:{port}")]),
+                    depends_on: Some(depends_on),
                     ..Default::default()
                 },
             );
@@ -515,6 +574,79 @@ mod tests {
         assert!(!docker_compose.contains("postgres-data"));
         assert!(!docker_compose.contains("archive-data"));
         assert!(!docker_compose.contains("-archive-address"));
+    }
+
+    #[test]
+    fn rosetta_runs_mina_rosetta_against_the_archive() {
+        let configs = vec![
+            ServiceConfig {
+                service_name: "seed".to_string(),
+                service_type: ServiceType::Seed,
+                docker_image: Some("daemon".into()),
+                client_port: Some(3100),
+                ..Default::default()
+            },
+            ServiceConfig {
+                service_name: "archive".to_string(),
+                service_type: ServiceType::ArchiveNode,
+                docker_image: Some("daemon".into()),
+                archive_docker_image: Some("archive".into()),
+                client_port: Some(3110),
+                archive_port: Some(3115),
+                ..Default::default()
+            },
+            ServiceConfig {
+                service_name: "rosetta".to_string(),
+                service_type: ServiceType::Rosetta,
+                docker_image: Some("rosetta-image".into()),
+                client_port: Some(3120),
+                rosetta_graphql_node: Some("archive".into()),
+                rosetta_graphql_port: Some(3111),
+                ..Default::default()
+            },
+        ];
+        let yaml = DockerCompose::generate(
+            &configs,
+            Path::new("/net/hf"),
+            Profile::Devnet,
+            DaemonFeatures::default(),
+        )
+        .unwrap();
+        let compose: serde_json::Value = serde_norway::from_str(
+            &yaml
+                .replace("<<: *default-attributes", "")
+                .replace("&default-attributes", ""),
+        )
+        .unwrap();
+        let rosetta = &compose["services"]["rosetta-hf"];
+        assert_eq!(rosetta["image"], "rosetta-image");
+        assert_eq!(rosetta["entrypoint"][0], "mina-rosetta");
+        let command = rosetta["command"].as_str().unwrap();
+        assert!(command.contains("--port 3120"), "{command}");
+        assert!(
+            command.contains("--archive-uri postgres://postgres:postgres@postgres-hf:5432/archive")
+        );
+        assert!(command.contains("--graphql-uri http://archive-hf:3111/graphql"));
+        assert_eq!(rosetta["depends_on"][0], "archive-hf");
+        assert_eq!(rosetta["ports"][0], "3120:3120");
+        assert_eq!(
+            rosetta["environment"]["MINA_ROSETTA_MAX_DB_POOL_SIZE"],
+            "16"
+        );
+        assert_eq!(rosetta["environment"]["MINA_PROFILE"], "devnet");
+        // no config volume for rosetta
+        assert!(compose["volumes"].get("rosetta-hf").is_none());
+
+        let without_archive = DockerCompose::generate(
+            &[configs[0].clone(), configs[2].clone()],
+            Path::new("/net/hf"),
+            Profile::Devnet,
+            DaemonFeatures::default(),
+        )
+        .unwrap_err();
+        assert!(without_archive
+            .to_string()
+            .contains("needs an archive node"));
     }
 
     #[test]

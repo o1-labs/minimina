@@ -49,6 +49,13 @@ pub fn collect_all_ports(services: &[ServiceConfig]) -> io::Result<Vec<PortUse>>
         };
         match service.service_type {
             ServiceType::SnarkWorker | ServiceType::UptimeServiceBackend => {}
+            // one port: the API
+            ServiceType::Rosetta => add(service.client_port.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("rosetta '{}' has no client_port", service.service_name),
+                )
+            })?),
             _ => {
                 let client_port = service.client_port.ok_or_else(|| {
                     io::Error::new(

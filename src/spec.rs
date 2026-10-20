@@ -18,6 +18,9 @@
 //! [[nodes]]
 //! role = "archive"
 //!
+//! [[nodes]]
+//! role = "rosetta"                # reads the archive and the archive's daemon
+//!
 //! [ledger]                        # funded accounts for tests: account-1 ...
 //! accounts = 5
 //! balance = "1000"
@@ -60,6 +63,8 @@ pub enum Role {
     Plain,
     Archive,
     SnarkCoordinator,
+    /// `mina-rosetta`, not a daemon: needs an archive node.
+    Rosetta,
 }
 
 impl Role {
@@ -70,6 +75,7 @@ impl Role {
             Role::Plain => "node",
             Role::Archive => "archive",
             Role::SnarkCoordinator => "snark-coordinator",
+            Role::Rosetta => "rosetta",
         }
     }
 }
@@ -93,6 +99,8 @@ pub struct NodeGroup {
     pub workers: Option<u16>,
     /// Snark coordinator: fee per snark work.
     pub fee: Option<String>,
+    /// Rosetta: the daemon whose GraphQL API it reads. Default: the archive node.
+    pub node: Option<String>,
 }
 
 fn one() -> u16 {
@@ -114,6 +122,7 @@ pub struct LedgerSpec {
 pub struct DockerSpec {
     pub daemon_image: Option<String>,
     pub archive_image: Option<String>,
+    pub rosetta_image: Option<String>,
 }
 
 /// One node of the network, with its name and ports decided.
@@ -127,11 +136,18 @@ pub struct PlannedNode {
     /// Snark coordinator: names of its workers.
     pub workers: Vec<String>,
     pub fee: Option<String>,
+    /// Rosetta: name and client port of the daemon it reads.
+    pub graphql_node: Option<(String, u16)>,
 }
 
 impl PlannedNode {
     /// Whether the node needs a block producer key pair (a block producer,
     /// or a coordinator, whose public key receives the snark fees).
+    /// Whether the node is a mina daemon (has libp2p keys and peers).
+    pub fn is_daemon(&self) -> bool {
+        self.role != Role::Rosetta
+    }
+
     pub fn needs_key(&self) -> bool {
         matches!(self.role, Role::BlockProducer | Role::SnarkCoordinator) || self.balance.is_some()
     }
@@ -155,6 +171,7 @@ impl NetworkSpec {
             archive_port: None,
             workers: None,
             fee: None,
+            node: None,
         };
         let mut archive = node(Role::Archive, "mina-archive", 5005);
         archive.archive_port = Some(3086);
@@ -235,6 +252,12 @@ impl NetworkSpec {
                     group.role
                 );
             }
+            if group.role != Role::Rosetta && group.node.is_some() {
+                bail!("{:?} nodes: `node` is for rosetta", group.role);
+            }
+            if group.role == Role::Rosetta && group.balance.is_some() {
+                bail!("rosetta is not a daemon and has no account: remove `balance`");
+            }
             for _ in 0..group.count {
                 let prefix = group.role.default_name();
                 let n = index.entry(prefix).or_default();
@@ -264,8 +287,42 @@ impl NetworkSpec {
                     client_port,
                     workers,
                     fee: group.fee.clone(),
+                    graphql_node: None,
                 });
             }
+        }
+
+        // rosetta reads the archive database and a daemon's GraphQL API
+        if count(Role::Rosetta) > 0 && count(Role::Archive) == 0 {
+            bail!("rosetta needs an archive node; add a node with role = \"archive\"");
+        }
+        let groups = self
+            .nodes
+            .iter()
+            .flat_map(|g| std::iter::repeat_n(g, g.count as usize));
+        let daemons: Vec<(String, u16, Role)> = nodes
+            .iter()
+            .map(|n| (n.name.clone(), n.client_port, n.role))
+            .collect();
+        for (node, group) in nodes.iter_mut().zip(groups) {
+            if node.role != Role::Rosetta {
+                continue;
+            }
+            let wanted = |d: &&(String, u16, Role)| match &group.node {
+                Some(name) => &d.0 == name,
+                None => d.2 == Role::Archive,
+            };
+            let (name, port, role) = daemons.iter().find(wanted).with_context(|| {
+                format!(
+                    "rosetta '{}': no node '{}'",
+                    node.name,
+                    group.node.as_deref().unwrap_or_default()
+                )
+            })?;
+            if *role == Role::Rosetta {
+                bail!("rosetta '{}': '{name}' is not a daemon", node.name);
+            }
+            node.graphql_node = Some((name.clone(), *port));
         }
 
         let mut names = BTreeSet::new();
@@ -363,6 +420,52 @@ mod tests {
             s.runtime_config_json().unwrap().unwrap(),
             serde_json::json!({"proof": {"block_window_duration_ms": 30000}})
         );
+    }
+
+    #[test]
+    fn rosetta_reads_the_archive_unless_told_otherwise() {
+        let s = spec(
+            r#"
+            [[nodes]]
+            role = "seed"
+            [[nodes]]
+            role = "plain"
+            [[nodes]]
+            role = "archive"
+            [[nodes]]
+            role = "rosetta"
+            [[nodes]]
+            role = "rosetta"
+            node = "node-1"
+            "#,
+        );
+        let plan = s.plan().unwrap();
+        assert_eq!(plan[3].name, "rosetta-1");
+        assert_eq!(plan[3].graphql_node, Some(("archive".to_string(), 3120)));
+        assert_eq!(plan[4].graphql_node, Some(("node-1".to_string(), 3110)));
+        assert!(!plan[3].is_daemon() && !plan[3].needs_key());
+    }
+
+    #[test]
+    fn rosetta_needs_an_archive_and_a_daemon() {
+        let err = |toml: &str| spec(toml).plan().unwrap_err().to_string();
+        assert!(
+            err("[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"rosetta\"")
+                .contains("rosetta needs an archive node")
+        );
+        let base = "[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"archive\"\n";
+        assert!(err(&format!(
+            "{base}[[nodes]]\nrole = \"rosetta\"\nnode = \"nope\""
+        ))
+        .contains("no node 'nope'"));
+        assert!(err(&format!(
+            "{base}[[nodes]]\nrole = \"rosetta\"\n[[nodes]]\nrole = \"rosetta\"\nnode = \"rosetta-1\""
+        ))
+        .contains("'rosetta-1' is not a daemon"));
+        assert!(err(&format!(
+            "{base}[[nodes]]\nrole = \"plain\"\nnode = \"seed-1\""
+        ))
+        .contains("`node` is for rosetta"));
     }
 
     #[test]
