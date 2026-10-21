@@ -8,6 +8,7 @@ use crate::{
     archive_node_api,
     cli::{CreateNetworkArgs, ExecutionMode},
     genesis_ledger::default,
+    install::Installer,
     keys::{KeysManager, NodeKey},
     native::keys::NativeKeysManager,
     service::{ServiceConfig, ServiceType},
@@ -188,6 +189,7 @@ pub fn install_archive_node_api(ctx: &Context, services: &mut [ServiceConfig]) -
         // the compose service runs the image
         return Ok(());
     }
+    let installer = Installer::new(ctx.dirs.tools_root(), ctx.runner.as_ref());
     for service in services
         .iter_mut()
         .filter(|s| s.service_type == ServiceType::ArchiveNodeApi)
@@ -196,13 +198,13 @@ pub fn install_archive_node_api(ctx: &Context, services: &mut [ServiceConfig]) -
             .archive_node_api_version
             .clone()
             .unwrap_or_else(|| archive_node_api::DEFAULT_VERSION.to_string());
-        let bin = archive_node_api::ensure_native(
-            ctx.runner.as_ref(),
-            &ctx.dirs.tool_path(archive_node_api::TOOL, &version),
-            &version,
-            service.archive_node_api_bin.as_deref(),
-        )
-        .with_context(|| format!("preparing '{}'", service.service_name))?;
+        let bin = installer
+            .npm_app(
+                &archive_node_api::APP,
+                &version,
+                service.archive_node_api_bin.as_deref(),
+            )
+            .with_context(|| format!("preparing '{}'", service.service_name))?;
         service.archive_node_api_bin = Some(bin);
     }
     Ok(())

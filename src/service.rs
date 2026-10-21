@@ -105,8 +105,19 @@ impl From<ServiceError> for std::io::Error {
     }
 }
 
+/// A field of a service config, or [`ServiceError::MissingField`] naming the
+/// service and the field: `require!(service, archive_port)`.
+#[macro_export]
+macro_rules! require {
+    ($service:expr, $field:ident) => {{
+        let service = &$service;
+        service.require(&service.$field, stringify!($field))
+    }};
+}
+
 impl ServiceConfig {
     /// `value`, a field of this service called `field`, or an error naming both.
+    /// Use [`require!`](crate::require), which takes the name from the field.
     pub fn require<'a, T>(
         &self,
         value: &'a Option<T>,

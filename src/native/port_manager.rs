@@ -1,5 +1,6 @@
 //! Port checks for native networks, where every node shares the host's ports.
 
+use crate::require;
 use crate::service::{ServiceConfig, ServiceType};
 use std::collections::HashMap;
 use std::io;
@@ -51,10 +52,10 @@ pub fn collect_all_ports(services: &[ServiceConfig]) -> io::Result<Vec<PortUse>>
             ServiceType::SnarkWorker | ServiceType::UptimeServiceBackend => {}
             // one port: the API
             ServiceType::Rosetta | ServiceType::ArchiveNodeApi => {
-                add(*service.require(&service.client_port, "client_port")?)
+                add(*require!(service, client_port)?)
             }
             _ => {
-                let client_port = *service.require(&service.client_port, "client_port")?;
+                let client_port = *require!(service, client_port)?;
                 for offset in 0..5 {
                     let port = client_port.checked_add(offset).ok_or_else(|| {
                         io::Error::new(

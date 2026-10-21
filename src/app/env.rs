@@ -2,8 +2,10 @@
 
 use crate::{
     cli::ExecutionMode,
+    install::{require, Tool},
     native::mina_locator,
-    runner::{Runner, Tool, Version},
+    runner::Runner,
+    version::Version,
 };
 use anyhow::{bail, Result};
 use std::path::PathBuf;
@@ -34,7 +36,7 @@ pub fn check_execution_environment(mode: &ExecutionMode, runner: &dyn Runner) ->
         );
     }
 
-    runner.require(&COMPOSE)?;
+    require(runner, &COMPOSE)?;
     Ok(())
 }
 

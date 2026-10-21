@@ -14,6 +14,7 @@ use crate::docker::compose::CONFIG_DIRECTORY;
 use crate::native::error::NativeError;
 use crate::native::port_manager;
 use crate::native::process_tracker::{proc_stat, ProcessRecord, ProcessTracker, Records};
+use crate::require;
 use crate::service::{ServiceConfig, ServiceType};
 use chrono::Local;
 use log::{info, warn};
@@ -212,7 +213,7 @@ impl NativeManager {
     fn wait_for_seeds(&self, seeds: &[&ServiceConfig], timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         for seed in seeds {
-            let port = seed.require(&seed.client_port, "client_port")? + 2;
+            let port = require!(seed, client_port)? + 2;
             info!(
                 "Waiting for seed '{}' to accept connections on port {port}",
                 seed.service_name
@@ -267,8 +268,8 @@ impl NativeManager {
     fn spawn_service(&self, service: &ServiceConfig, network_id: &str) -> Result<()> {
         if service.service_type == ServiceType::ArchiveNodeApi {
             // set by `network create`, which installs the server
-            let bin = service.require(&service.archive_node_api_bin, "archive_node_api_bin")?;
-            let port = *service.require(&service.client_port, "client_port")?;
+            let bin = require!(service, archive_node_api_bin)?;
+            let port = *require!(service, client_port)?;
             let env = archive_node_api::env(&self.archive_db_uri(), port);
             let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
             return self.spawn_with_env(&service.service_name, bin, &[], &env);
@@ -314,7 +315,7 @@ impl NativeManager {
     }
 
     fn archive_process_command(&self, service: &ServiceConfig) -> Result<(PathBuf, Vec<String>)> {
-        let port = service.require(&service.archive_port, "archive_port")?;
+        let port = require!(service, archive_port)?;
         Ok((
             self.bin_path.join("mina-archive"),
             vec![

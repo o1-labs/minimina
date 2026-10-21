@@ -8,7 +8,8 @@ use crate::cli::{ExecutionMode, Profile};
 use crate::daemon_args::{
     mina_args, rosetta_args, DaemonFeatures, Layout, PRECOMPUTED_BLOCKS_DIR, ROSETTA_ENV,
 };
-use crate::service::{ServiceConfig, ServiceType};
+use crate::require;
+use crate::service::{ServiceConfig, ServiceError, ServiceType};
 use log::debug;
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
@@ -185,7 +186,7 @@ impl DockerCompose {
                             container_name: service_name.clone(),
                             entrypoint: Some(vec!["mina".to_string()]),
                             volumes: Some(daemon_volumes(&service_name)),
-                            image: match required(&config.docker_image, "docker_image", config) {
+                            image: match owned(require!(config, docker_image)) {
                                 Ok(image) => image,
                                 Err(e) => return Some(Err(e)),
                             },
@@ -254,11 +255,7 @@ impl DockerCompose {
                 archive_service_name.clone(),
                 Service {
                     container_name: archive_service_name.clone(),
-                    image: required(
-                        &archive_config.archive_docker_image,
-                        "archive_docker_image",
-                        archive_config,
-                    )?,
+                    image: owned(require!(archive_config, archive_docker_image))?,
                     command: Some(archive_command),
                     volumes: Some(vec![
                         format!("{}:/data", archive_node_name),
@@ -279,7 +276,7 @@ impl DockerCompose {
                     container_name: archive_node_name.clone(),
                     entrypoint: Some(vec!["mina".to_string()]),
                     volumes: Some(daemon_volumes(&archive_node_name)),
-                    image: required(&archive_config.docker_image, "docker_image", archive_config)?,
+                    image: owned(require!(archive_config, docker_image))?,
                     command: Some(archive_command),
                     ports: match archive_config.client_port {
                         Some(port) => {
@@ -307,19 +304,17 @@ impl DockerCompose {
             );
             let mut uptime_service_env = HashMap::new();
             let app_config = Self::get_filename(
-                required(
-                    &uptime_service_backend.uptime_service_backend_app_config,
-                    "uptime_service_backend_app_config",
+                owned(require!(
                     uptime_service_backend,
-                )?
+                    uptime_service_backend_app_config
+                ))?
                 .as_path(),
             )?;
             let minasheets_config = Self::get_filename(
-                required(
-                    &uptime_service_backend.uptime_service_backend_minasheets,
-                    "uptime_service_backend_minasheets",
+                owned(require!(
                     uptime_service_backend,
-                )?
+                    uptime_service_backend_minasheets
+                ))?
                 .as_path(),
             )?;
             uptime_service_env.insert(
@@ -340,11 +335,7 @@ impl DockerCompose {
                         format!("{network_path_string}/uptime-storage:/uptime-storage"),
                     ]),
                     environment: Some(uptime_service_env),
-                    image: required(
-                        &uptime_service_backend.docker_image,
-                        "docker_image",
-                        uptime_service_backend,
-                    )?,
+                    image: owned(require!(uptime_service_backend, docker_image))?,
                     ports: Some(vec!["8080:8080".to_string()]),
                     ..Default::default()
                 },
@@ -372,7 +363,7 @@ impl DockerCompose {
             let archive_uri =
                 format!("postgres://postgres:postgres@postgres-{network_name}:5432/archive");
             let args = rosetta_args(rosetta, &layout, &archive_uri)?;
-            let port = required(&rosetta.client_port, "client_port", rosetta)?;
+            let port = owned(require!(rosetta, client_port))?;
             let name = format!("{}-{network_name}", rosetta.service_name);
             let mut depends_on = vec![format!("{}-{network_name}", archive.service_name)];
             if let Some(node) = &rosetta.rosetta_graphql_node {
@@ -391,7 +382,7 @@ impl DockerCompose {
                     // MINA_PROFILE and the restart policy of the daemons
                     merge: Some("*default-attributes"),
                     container_name: name,
-                    image: required(&rosetta.docker_image, "docker_image", rosetta)?,
+                    image: owned(require!(rosetta, docker_image))?,
                     // the image's own entrypoint starts a whole stack (daemon, postgres)
                     entrypoint: Some(vec!["mina-rosetta".to_string()]),
                     command: Some(args.join(" ")),
@@ -413,7 +404,7 @@ impl DockerCompose {
                     api.service_name
                 ))
             })?;
-            let port = required(&api.client_port, "client_port", api)?;
+            let port = owned(require!(api, client_port))?;
             let pg_conn =
                 format!("postgres://postgres:postgres@postgres-{network_name}:5432/archive");
             let name = format!("{}-{network_name}", api.service_name);
@@ -421,7 +412,7 @@ impl DockerCompose {
                 name.clone(),
                 Service {
                     container_name: name,
-                    image: required(&api.docker_image, "docker_image", api)?,
+                    image: owned(require!(api, docker_image))?,
                     environment: Some(
                         archive_node_api::env(&pg_conn, port)
                             .into_iter()
@@ -500,13 +491,9 @@ fn path_str(path: &Path) -> io::Result<&str> {
         .ok_or_else(|| invalid(format!("path '{}' is not valid UTF-8", path.display())))
 }
 
-/// Returns a clone of a topology field that the compose file needs.
-fn required<T: Clone>(
-    field: &Option<T>,
-    name: &'static str,
-    config: &ServiceConfig,
-) -> io::Result<T> {
-    Ok(config.require(field, name)?.clone())
+/// A field the compose file needs, owned (from [`require!`]).
+fn owned<T: Clone>(field: Result<&T, ServiceError>) -> io::Result<T> {
+    Ok(field?.clone())
 }
 
 #[cfg(test)]

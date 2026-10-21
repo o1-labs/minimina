@@ -1,28 +1,21 @@
 //! Archive Node API (<https://github.com/o1-labs/Archive-Node-API>): a GraphQL
 //! server over the archive database, for events and actions of zkApps.
 //!
-//! Docker mode runs its image. Native mode runs the npm package, which minimina
-//! installs into `~/.minimina/.tools/archive-node-api/<version>` with the host's
-//! `npm`; the package needs Node.js 22.12 or newer.
+//! Docker mode runs its image; native mode runs its npm package, which
+//! [`crate::install`] installs.
 
-use crate::runner::{Runner, Tool, Version};
-use anyhow::{bail, Context as _, Result};
-use log::info;
-use std::path::{Path, PathBuf};
+use crate::install::npm;
+use crate::version::Version;
 
 pub const DEFAULT_VERSION: &str = "2.0.0";
-const NPM_PACKAGE: &str = "@o1-labs/mina-archive-node-graphql";
-const BIN: &str = "mina-archive-node-graphql";
-/// `engines.node` of the package.
-const NODE: Tool = Tool {
-    name: "Node.js",
-    program: "node",
-    version_args: &["--version"],
-    min: Version(22, 12, 0),
-    install: "The archive node api runs on it; see https://nodejs.org (or use `bin` in the spec).",
+
+/// The npm package native mode runs.
+pub const APP: npm::App = npm::App {
+    tool: "archive-node-api",
+    package: "@o1-labs/mina-archive-node-graphql",
+    bin: "mina-archive-node-graphql",
+    node: Version(22, 12, 0),
 };
-/// Name of the tool directory under `~/.minimina/.tools`.
-pub const TOOL: &str = "archive-node-api";
 
 pub fn docker_image(version: &str) -> String {
     format!("ghcr.io/o1-labs/archive-node-api:{version}")
@@ -32,131 +25,4 @@ pub fn docker_image(version: &str) -> String {
 /// It serves GraphQL at `/`.
 pub fn env(pg_conn: &str, port: u16) -> Vec<(&'static str, String)> {
     vec![("PG_CONN", pg_conn.to_string()), ("PORT", port.to_string())]
-}
-
-/// The server's executable for native mode: `bin` when given, else the managed
-/// install of `version` in `tool_dir`, installed with npm when missing.
-pub fn ensure_native(
-    runner: &dyn Runner,
-    tool_dir: &Path,
-    version: &str,
-    bin: Option<&Path>,
-) -> Result<PathBuf> {
-    runner.require(&NODE)?;
-    if let Some(bin) = bin {
-        if !bin.is_file() {
-            bail!("archive node api: '{}' does not exist", bin.display());
-        }
-        return Ok(bin.to_path_buf());
-    }
-
-    let installed = tool_dir.join("node_modules/.bin").join(BIN);
-    if installed.is_file() {
-        return Ok(installed);
-    }
-    info!(
-        "Installing {NPM_PACKAGE}@{version} into {}",
-        tool_dir.display()
-    );
-    std::fs::create_dir_all(tool_dir)
-        .with_context(|| format!("creating {}", tool_dir.display()))?;
-    let prefix = tool_dir.to_string_lossy();
-    let package = format!("{NPM_PACKAGE}@{version}");
-    runner
-        .run_checked(
-            "npm".as_ref(),
-            &[
-                "install",
-                "--prefix",
-                &prefix,
-                "--omit=dev",
-                "--no-audit",
-                "--no-fund",
-                &package,
-            ],
-            &[],
-            &format!("npm install {package}"),
-        )
-        .context("archive node api: npm comes with Node.js")?;
-    if !installed.is_file() {
-        bail!(
-            "archive node api: npm installed {package}, but {} is missing",
-            installed.display()
-        );
-    }
-    Ok(installed)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runner::fake::FakeRunner;
-
-    #[test]
-    fn old_or_missing_node_is_explained() {
-        let dir = tempfile::tempdir().unwrap();
-        let fake = FakeRunner::default();
-        fake.reply(0, "v18.19.1\n", "");
-        let err = ensure_native(&fake, dir.path(), "2.0.0", None).unwrap_err();
-        assert!(
-            err.to_string()
-                .starts_with("Node.js 18.19.1 is older than the minimum supported version 22.12.0"),
-            "{err}"
-        );
-
-        fake.reply_err(std::io::ErrorKind::NotFound);
-        let err = ensure_native(&fake, dir.path(), "2.0.0", None).unwrap_err();
-        assert!(
-            err.to_string()
-                .starts_with("Node.js is required, but `node` was not found"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn installs_the_pinned_version_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let fake = FakeRunner::default();
-        fake.reply(0, "v24.21.0\n", "").reply(0, "", "");
-        // npm "installs": the fake does nothing, so the binary is missing
-        let err = ensure_native(&fake, dir.path(), "2.0.0", None).unwrap_err();
-        assert!(err.to_string().contains("is missing"), "{err}");
-        {
-            let calls = fake.calls.borrow();
-            assert_eq!(calls[1].program, "npm");
-            assert_eq!(
-                calls[1].args.last().map(String::as_str),
-                Some("@o1-labs/mina-archive-node-graphql@2.0.0")
-            );
-        }
-
-        let bin = dir
-            .path()
-            .join("node_modules/.bin/mina-archive-node-graphql");
-        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
-        std::fs::write(&bin, "").unwrap();
-        fake.reply(0, "v22.12.0\n", "");
-        assert_eq!(
-            ensure_native(&fake, dir.path(), "2.0.0", None).unwrap(),
-            bin
-        );
-        // node check only: nothing installed again
-        assert_eq!(fake.calls.borrow().len(), 3);
-    }
-
-    #[test]
-    fn explicit_binary_is_used_as_given() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("server.js");
-        let fake = FakeRunner::default();
-        fake.reply(0, "v24.0.0", "");
-        let err = ensure_native(&fake, dir.path(), "2.0.0", Some(&bin)).unwrap_err();
-        assert!(err.to_string().contains("does not exist"));
-        std::fs::write(&bin, "").unwrap();
-        fake.reply(0, "v24.0.0", "");
-        assert_eq!(
-            ensure_native(&fake, dir.path(), "2.0.0", Some(&bin)).unwrap(),
-            bin
-        );
-    }
 }

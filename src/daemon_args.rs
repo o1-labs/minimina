@@ -7,6 +7,7 @@
 use crate::cli::ExecutionMode;
 use crate::directory_manager::{LIBP2P_KEYPAIRS, NETWORK_KEYPAIRS};
 use crate::genesis_ledger::GENESIS_LEDGER_JSON;
+use crate::require;
 use crate::service::{ServiceConfig, ServiceType};
 use log::warn;
 use serde::{Deserialize, Serialize};
@@ -114,9 +115,7 @@ impl Layout<'_> {
             (Some(port), _) => port,
             // every container has its own ports
             (None, ExecutionMode::Docker) => 3100,
-            (None, ExecutionMode::Native) => {
-                *service.require(&service.client_port, "client_port")?
-            }
+            (None, ExecutionMode::Native) => *require!(service, client_port)?,
         };
         let mut args = vec!["daemon".to_string()];
         arg(&mut args, "-client-port", client_port.to_string());
@@ -266,9 +265,9 @@ pub fn rosetta_args(
     layout: &Layout,
     archive_uri: &str,
 ) -> io::Result<Vec<String>> {
-    let port = service.require(&service.client_port, "client_port")?;
-    let node = service.require(&service.rosetta_graphql_node, "rosetta_graphql_node")?;
-    let graphql_port = service.require(&service.rosetta_graphql_port, "rosetta_graphql_port")?;
+    let port = require!(service, client_port)?;
+    let node = require!(service, rosetta_graphql_node)?;
+    let graphql_port = require!(service, rosetta_graphql_port)?;
     let mut args = Vec::new();
     arg(&mut args, "--port", port.to_string());
     arg(&mut args, "--archive-uri", archive_uri);

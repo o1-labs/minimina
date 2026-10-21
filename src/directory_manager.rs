@@ -67,9 +67,9 @@ impl DirectoryManager {
         &self.base_path
     }
 
-    /// Directory for a tool minimina installs, e.g. `.tools/archive-node-api/2.0.0`.
-    pub fn tool_path(&self, tool: &str, version: &str) -> PathBuf {
-        self.base_path.join(TOOLS_DIR).join(tool).join(version)
+    /// Where minimina installs the tools it runs (see [`crate::install`]).
+    pub fn tools_root(&self) -> PathBuf {
+        self.base_path.join(TOOLS_DIR)
     }
 
     // return path to network directory
