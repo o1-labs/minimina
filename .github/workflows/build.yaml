@@ -146,7 +146,7 @@ jobs:
     - name: 🧰 Build tools
       run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git gcc libc6-dev
+          apt-get install -y --no-install-recommends ca-certificates curl git gcc libc6-dev make perl
           curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
 
