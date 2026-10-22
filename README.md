@@ -154,10 +154,15 @@ minimina network create -n mynet --spec net.toml
 minimina network start -n mynet
 ```
 
-Roles: `seed`, `block-producer`, `plain`, `archive`, `snark-coordinator`, `rosetta`.
+Roles: `seed`, `block-producer`, `plain`, `archive`, `snark-coordinator`, `rosetta`,
+`archive-node-api`.
 A `rosetta` node runs `mina-rosetta` against the archive database and the GraphQL
 API of a daemon (`node = "<name>"`, default: the archive node); the output of
-`network create` gives its `rosetta_uri`.
+`network create` gives its `rosetta_uri`. An `archive-node-api` node runs
+[Archive-Node-API](https://github.com/o1-labs/Archive-Node-API) against the archive
+database (GraphQL at `/` on its port). In native mode it needs Node.js 22.12 or newer:
+minimina installs the npm package once per version into `~/.minimina/.tools`
+(`version`, default `2.0.0`), or runs your own build (`bin`).
 Names default to `<role>-<n>` (`seed-1`, `bp-1`, `node-1`); client ports start at
 3100 in steps of 10. Only block producers hold stake unless a node sets `balance`.
 [docs/examples/network.toml](docs/examples/network.toml) shows every option:

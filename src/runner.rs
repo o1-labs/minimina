@@ -11,6 +11,18 @@ use std::process::{Command, Output};
 pub trait Runner {
     /// Runs `program` with `args` and extra environment `envs`, capturing its output.
     fn run(&self, program: &OsStr, args: &[&str], envs: &[(&str, &str)]) -> io::Result<Output>;
+
+    /// Like [`Runner::run`], but fails unless the program exits 0; the error
+    /// names `what` and has the program's stderr (else stdout).
+    fn run_checked(
+        &self,
+        program: &OsStr,
+        args: &[&str],
+        envs: &[(&str, &str)],
+        what: &str,
+    ) -> io::Result<Output> {
+        check(self.run(program, args, envs)?, what)
+    }
 }
 
 /// Runs commands on the host.
@@ -169,6 +181,16 @@ mod tests {
         // mina without its libp2p helper exits 20 and prints nothing
         let err = check(output(20, "", ""), "mina").unwrap_err();
         assert_eq!(err.to_string(), "mina failed (exit status: 20): no output");
+    }
+
+    #[test]
+    fn run_checked_fails_on_exit_code() {
+        let fake = FakeRunner::default();
+        fake.reply(2, "", "nope");
+        let err = fake
+            .run_checked("x".as_ref(), &[], &[], "doing x")
+            .unwrap_err();
+        assert_eq!(err.to_string(), "doing x failed (exit status: 2): nope");
     }
 
     #[test]

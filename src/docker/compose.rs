@@ -3,11 +3,13 @@
 //! This module facilitates the generation contents of `docker-compose.yaml` for
 //! deploying various Mina services in a Docker environment.
 
+use crate::archive_node_api;
 use crate::cli::{ExecutionMode, Profile};
 use crate::daemon_args::{
     mina_args, rosetta_args, DaemonFeatures, Layout, PRECOMPUTED_BLOCKS_DIR, ROSETTA_ENV,
 };
-use crate::service::{ServiceConfig, ServiceType};
+use crate::require;
+use crate::service::{ServiceConfig, ServiceError, ServiceType};
 use log::debug;
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
@@ -137,7 +139,12 @@ impl DockerCompose {
         //insert volumes for each service
         let mut volumes = configs
             .iter()
-            .filter(|c| c.service_type != ServiceType::Rosetta)
+            .filter(|c| {
+                !matches!(
+                    c.service_type,
+                    ServiceType::Rosetta | ServiceType::ArchiveNodeApi
+                )
+            })
             .fold(HashMap::new(), |mut acc, config| {
                 let service_name = format!("{}-{network_name}", config.service_name.clone());
                 if let Some(volume) = blocks_volume(&service_name) {
@@ -169,8 +176,8 @@ impl DockerCompose {
                     // We'll handle UptimeServiceBackend outside of this map operation
                     // because it has different shape than other daemon services
                     ServiceType::UptimeServiceBackend => None,
-                    // not a daemon: added with the archive database below
-                    ServiceType::Rosetta => None,
+                    // not daemons: added with the archive database below
+                    ServiceType::Rosetta | ServiceType::ArchiveNodeApi => None,
                     _ => {
                         let service_name =
                             format!("{}-{network_name}", config.service_name.clone());
@@ -179,7 +186,7 @@ impl DockerCompose {
                             container_name: service_name.clone(),
                             entrypoint: Some(vec!["mina".to_string()]),
                             volumes: Some(daemon_volumes(&service_name)),
-                            image: match required(&config.docker_image, "docker_image", config) {
+                            image: match owned(require!(config, docker_image)) {
                                 Ok(image) => image,
                                 Err(e) => return Some(Err(e)),
                             },
@@ -248,11 +255,7 @@ impl DockerCompose {
                 archive_service_name.clone(),
                 Service {
                     container_name: archive_service_name.clone(),
-                    image: required(
-                        &archive_config.archive_docker_image,
-                        "archive_docker_image",
-                        archive_config,
-                    )?,
+                    image: owned(require!(archive_config, archive_docker_image))?,
                     command: Some(archive_command),
                     volumes: Some(vec![
                         format!("{}:/data", archive_node_name),
@@ -273,7 +276,7 @@ impl DockerCompose {
                     container_name: archive_node_name.clone(),
                     entrypoint: Some(vec!["mina".to_string()]),
                     volumes: Some(daemon_volumes(&archive_node_name)),
-                    image: required(&archive_config.docker_image, "docker_image", archive_config)?,
+                    image: owned(require!(archive_config, docker_image))?,
                     command: Some(archive_command),
                     ports: match archive_config.client_port {
                         Some(port) => {
@@ -301,19 +304,17 @@ impl DockerCompose {
             );
             let mut uptime_service_env = HashMap::new();
             let app_config = Self::get_filename(
-                required(
-                    &uptime_service_backend.uptime_service_backend_app_config,
-                    "uptime_service_backend_app_config",
+                owned(require!(
                     uptime_service_backend,
-                )?
+                    uptime_service_backend_app_config
+                ))?
                 .as_path(),
             )?;
             let minasheets_config = Self::get_filename(
-                required(
-                    &uptime_service_backend.uptime_service_backend_minasheets,
-                    "uptime_service_backend_minasheets",
+                owned(require!(
                     uptime_service_backend,
-                )?
+                    uptime_service_backend_minasheets
+                ))?
                 .as_path(),
             )?;
             uptime_service_env.insert(
@@ -334,11 +335,7 @@ impl DockerCompose {
                         format!("{network_path_string}/uptime-storage:/uptime-storage"),
                     ]),
                     environment: Some(uptime_service_env),
-                    image: required(
-                        &uptime_service_backend.docker_image,
-                        "docker_image",
-                        uptime_service_backend,
-                    )?,
+                    image: owned(require!(uptime_service_backend, docker_image))?,
                     ports: Some(vec!["8080:8080".to_string()]),
                     ..Default::default()
                 },
@@ -366,7 +363,7 @@ impl DockerCompose {
             let archive_uri =
                 format!("postgres://postgres:postgres@postgres-{network_name}:5432/archive");
             let args = rosetta_args(rosetta, &layout, &archive_uri)?;
-            let port = required(&rosetta.client_port, "client_port", rosetta)?;
+            let port = owned(require!(rosetta, client_port))?;
             let name = format!("{}-{network_name}", rosetta.service_name);
             let mut depends_on = vec![format!("{}-{network_name}", archive.service_name)];
             if let Some(node) = &rosetta.rosetta_graphql_node {
@@ -385,13 +382,48 @@ impl DockerCompose {
                     // MINA_PROFILE and the restart policy of the daemons
                     merge: Some("*default-attributes"),
                     container_name: name,
-                    image: required(&rosetta.docker_image, "docker_image", rosetta)?,
+                    image: owned(require!(rosetta, docker_image))?,
                     // the image's own entrypoint starts a whole stack (daemon, postgres)
                     entrypoint: Some(vec!["mina-rosetta".to_string()]),
                     command: Some(args.join(" ")),
                     environment: Some(environment),
                     ports: Some(vec![format!("{port}:{port}")]),
                     depends_on: Some(depends_on),
+                    ..Default::default()
+                },
+            );
+        }
+
+        for api in configs
+            .iter()
+            .filter(|c| c.service_type == ServiceType::ArchiveNodeApi)
+        {
+            let archive = ServiceConfig::get_archive_node(configs).ok_or_else(|| {
+                invalid(format!(
+                    "archive node api '{}' needs an archive node",
+                    api.service_name
+                ))
+            })?;
+            let port = owned(require!(api, client_port))?;
+            let pg_conn =
+                format!("postgres://postgres:postgres@postgres-{network_name}:5432/archive");
+            let name = format!("{}-{network_name}", api.service_name);
+            services.insert(
+                name.clone(),
+                Service {
+                    container_name: name,
+                    image: owned(require!(api, docker_image))?,
+                    environment: Some(
+                        archive_node_api::env(&pg_conn, port)
+                            .into_iter()
+                            .map(|(k, v)| (k.to_string(), v))
+                            .collect(),
+                    ),
+                    ports: Some(vec![format!("{port}:{port}")]),
+                    depends_on: Some(vec![
+                        format!("postgres-{network_name}"),
+                        format!("{}-{network_name}", archive.service_name),
+                    ]),
                     ..Default::default()
                 },
             );
@@ -459,14 +491,9 @@ fn path_str(path: &Path) -> io::Result<&str> {
         .ok_or_else(|| invalid(format!("path '{}' is not valid UTF-8", path.display())))
 }
 
-/// Returns a clone of a topology field that the compose file needs.
-fn required<T: Clone>(field: &Option<T>, name: &str, config: &ServiceConfig) -> io::Result<T> {
-    field.clone().ok_or_else(|| {
-        invalid(format!(
-            "service '{}' has no '{name}' in its topology",
-            config.service_name
-        ))
-    })
+/// A field the compose file needs, owned (from [`require!`]).
+fn owned<T: Clone>(field: Result<&T, ServiceError>) -> io::Result<T> {
+    Ok(field?.clone())
 }
 
 #[cfg(test)]
@@ -647,6 +674,58 @@ mod tests {
         assert!(without_archive
             .to_string()
             .contains("needs an archive node"));
+    }
+
+    #[test]
+    fn archive_node_api_reads_the_archive_database() {
+        let configs = vec![
+            ServiceConfig {
+                service_name: "seed".to_string(),
+                service_type: ServiceType::Seed,
+                docker_image: Some("daemon".into()),
+                client_port: Some(3100),
+                ..Default::default()
+            },
+            ServiceConfig {
+                service_name: "archive".to_string(),
+                service_type: ServiceType::ArchiveNode,
+                docker_image: Some("daemon".into()),
+                archive_docker_image: Some("archive".into()),
+                client_port: Some(3110),
+                archive_port: Some(3115),
+                ..Default::default()
+            },
+            ServiceConfig {
+                service_name: "ana".to_string(),
+                service_type: ServiceType::ArchiveNodeApi,
+                docker_image: Some("ghcr.io/o1-labs/archive-node-api:2.0.0".into()),
+                client_port: Some(3120),
+                ..Default::default()
+            },
+        ];
+        let yaml = DockerCompose::generate(
+            &configs,
+            Path::new("/net/hf"),
+            Profile::Devnet,
+            DaemonFeatures::default(),
+        )
+        .unwrap();
+        let compose: serde_json::Value = serde_norway::from_str(
+            &yaml
+                .replace("<<: *default-attributes", "")
+                .replace("&default-attributes", ""),
+        )
+        .unwrap();
+        let api = &compose["services"]["ana-hf"];
+        assert_eq!(api["image"], "ghcr.io/o1-labs/archive-node-api:2.0.0");
+        assert_eq!(
+            api["environment"]["PG_CONN"],
+            "postgres://postgres:postgres@postgres-hf:5432/archive"
+        );
+        assert_eq!(api["environment"]["PORT"], "3120");
+        assert_eq!(api["ports"][0], "3120:3120");
+        assert_eq!(api["depends_on"][1], "archive-hf");
+        assert!(compose["volumes"].get("ana-hf").is_none());
     }
 
     #[test]

@@ -109,7 +109,7 @@ pub enum NetworkCommand {
 #[derive(Args, Debug, Clone)]
 pub struct NetworkId {
     /// Network identifier
-    #[clap(short, long, default_value = "default")]
+    #[clap(short, long, default_value = "default", value_parser = crate::network_id::parse)]
     pub network_id: String,
 }
 
@@ -367,6 +367,17 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_id_is_checked_by_every_command() {
+        let err = Cli::try_parse_from(["minimina", "network", "status", "-n", "../etc"])
+            .err()
+            .unwrap();
+        assert!(
+            err.to_string().contains("invalid network id '../etc'"),
+            "{err}"
+        );
+    }
 
     #[test]
     fn spec_excludes_topology_and_ledger() {

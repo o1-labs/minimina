@@ -65,6 +65,9 @@ pub enum Role {
     SnarkCoordinator,
     /// `mina-rosetta`, not a daemon: needs an archive node.
     Rosetta,
+    /// Archive Node API (GraphQL over the archive database), not a daemon:
+    /// needs an archive node.
+    ArchiveNodeApi,
 }
 
 impl Role {
@@ -76,6 +79,7 @@ impl Role {
             Role::Archive => "archive",
             Role::SnarkCoordinator => "snark-coordinator",
             Role::Rosetta => "rosetta",
+            Role::ArchiveNodeApi => "archive-node-api",
         }
     }
 }
@@ -101,6 +105,11 @@ pub struct NodeGroup {
     pub fee: Option<String>,
     /// Rosetta: the daemon whose GraphQL API it reads. Default: the archive node.
     pub node: Option<String>,
+    /// Archive node api: version of the npm package / docker image.
+    pub version: Option<String>,
+    /// Archive node api, native mode: the server's executable instead of the
+    /// managed npm install.
+    pub bin: Option<std::path::PathBuf>,
 }
 
 fn one() -> u16 {
@@ -123,6 +132,8 @@ pub struct DockerSpec {
     pub daemon_image: Option<String>,
     pub archive_image: Option<String>,
     pub rosetta_image: Option<String>,
+    /// Default: ghcr.io/o1-labs/archive-node-api:<version>.
+    pub archive_node_api_image: Option<String>,
 }
 
 /// One node of the network, with its name and ports decided.
@@ -138,6 +149,9 @@ pub struct PlannedNode {
     pub fee: Option<String>,
     /// Rosetta: name and client port of the daemon it reads.
     pub graphql_node: Option<(String, u16)>,
+    /// Archive node api: version and own executable.
+    pub version: Option<String>,
+    pub bin: Option<std::path::PathBuf>,
 }
 
 impl PlannedNode {
@@ -145,7 +159,7 @@ impl PlannedNode {
     /// or a coordinator, whose public key receives the snark fees).
     /// Whether the node is a mina daemon (has libp2p keys and peers).
     pub fn is_daemon(&self) -> bool {
-        self.role != Role::Rosetta
+        !matches!(self.role, Role::Rosetta | Role::ArchiveNodeApi)
     }
 
     pub fn needs_key(&self) -> bool {
@@ -172,6 +186,8 @@ impl NetworkSpec {
             workers: None,
             fee: None,
             node: None,
+            version: None,
+            bin: None,
         };
         let mut archive = node(Role::Archive, "mina-archive", 5005);
         archive.archive_port = Some(3086);
@@ -255,8 +271,20 @@ impl NetworkSpec {
             if group.role != Role::Rosetta && group.node.is_some() {
                 bail!("{:?} nodes: `node` is for rosetta", group.role);
             }
-            if group.role == Role::Rosetta && group.balance.is_some() {
-                bail!("rosetta is not a daemon and has no account: remove `balance`");
+            let daemon = !matches!(group.role, Role::Rosetta | Role::ArchiveNodeApi);
+            if !daemon && group.balance.is_some() {
+                bail!(
+                    "{:?} is not a daemon and has no account: remove `balance`",
+                    group.role
+                );
+            }
+            if group.role != Role::ArchiveNodeApi
+                && (group.version.is_some() || group.bin.is_some())
+            {
+                bail!(
+                    "{:?} nodes: `version` and `bin` are for the archive node api",
+                    group.role
+                );
             }
             for _ in 0..group.count {
                 let prefix = group.role.default_name();
@@ -288,13 +316,20 @@ impl NetworkSpec {
                     workers,
                     fee: group.fee.clone(),
                     graphql_node: None,
+                    version: group.version.clone(),
+                    bin: group.bin.clone(),
                 });
             }
         }
 
         // rosetta reads the archive database and a daemon's GraphQL API
-        if count(Role::Rosetta) > 0 && count(Role::Archive) == 0 {
-            bail!("rosetta needs an archive node; add a node with role = \"archive\"");
+        for role in [Role::Rosetta, Role::ArchiveNodeApi] {
+            if count(role) > 0 && count(Role::Archive) == 0 {
+                bail!(
+                    "{} needs an archive node; add a node with role = \"archive\"",
+                    role.default_name()
+                );
+            }
         }
         let groups = self
             .nodes
@@ -466,6 +501,38 @@ mod tests {
             "{base}[[nodes]]\nrole = \"plain\"\nnode = \"seed-1\""
         ))
         .contains("`node` is for rosetta"));
+    }
+
+    #[test]
+    fn archive_node_api_is_a_service_with_a_version() {
+        let s = spec(
+            r#"
+            [[nodes]]
+            role = "seed"
+            [[nodes]]
+            role = "archive"
+            [[nodes]]
+            role = "archive-node-api"
+            [[nodes]]
+            role = "archive-node-api"
+            name = "ana-own"
+            version = "1.0.0"
+            bin = "/opt/ana/index.js"
+            "#,
+        );
+        let plan = s.plan().unwrap();
+        assert_eq!(plan[2].name, "archive-node-api-1");
+        assert_eq!(plan[2].version, None);
+        assert_eq!(plan[3].version.as_deref(), Some("1.0.0"));
+        assert!(!plan[2].is_daemon() && !plan[2].needs_key());
+
+        let err = |toml: &str| spec(toml).plan().unwrap_err().to_string();
+        assert!(
+            err("[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"archive-node-api\"")
+                .contains("archive-node-api needs an archive node")
+        );
+        assert!(err("[[nodes]]\nrole = \"seed\"\nversion = \"2\"")
+            .contains("are for the archive node api"));
     }
 
     #[test]

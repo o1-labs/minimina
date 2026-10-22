@@ -239,10 +239,12 @@ impl ServiceConfig {
     pub fn to_node_info(&self) -> node::Info {
         let is_rosetta = self.service_type == ServiceType::Rosetta;
         node::Info {
-            graphql_uri: self
-                .client_port
-                .filter(|_| !is_rosetta)
-                .map(|port| format!("http://localhost:{}/graphql", port + 1)),
+            graphql_uri: self.client_port.and_then(|port| match self.service_type {
+                ServiceType::Rosetta => None,
+                // GraphQL at `/` on its only port
+                ServiceType::ArchiveNodeApi => Some(format!("http://localhost:{port}/")),
+                _ => Some(format!("http://localhost:{}/graphql", port + 1)),
+            }),
             private_key: self.private_key.clone(),
             node_type: self.service_type,
             rosetta_uri: self
@@ -336,6 +338,14 @@ mod tests {
             rosetta.rosetta_uri.as_deref(),
             Some("http://localhost:3087")
         );
+        let api = ServiceConfig {
+            service_type: ServiceType::ArchiveNodeApi,
+            client_port: Some(8080),
+            ..Default::default()
+        }
+        .to_node_info();
+        assert_eq!(api.graphql_uri.as_deref(), Some("http://localhost:8080/"));
+        assert_eq!(api.rosetta_uri, None);
 
         let bp_info = node::Info {
             graphql_uri: Some(format!(

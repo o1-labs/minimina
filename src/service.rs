@@ -30,6 +30,9 @@ pub enum ServiceType {
     /// `mina-rosetta`: the Rosetta API on top of a daemon and the archive database.
     #[serde(rename = "Rosetta")]
     Rosetta,
+    /// Archive Node API: GraphQL over the archive database (events, actions).
+    #[serde(rename = "Archive_node_api")]
+    ArchiveNodeApi,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -73,13 +76,65 @@ pub struct ServiceConfig {
     /// GraphQL (REST) port of that daemon.
     pub rosetta_graphql_port: Option<u16>,
 
+    //archive node api specific: PORT is client_port
+    pub archive_node_api_version: Option<String>,
+    /// Native mode: the server's executable, resolved (and installed) at create.
+    pub archive_node_api_bin: Option<PathBuf>,
+
     //uptime service backend specific
     pub uptime_service_backend_app_config: Option<PathBuf>,
     pub uptime_service_backend_minasheets: Option<PathBuf>,
     pub uptime_service_other_config_files: Option<Vec<PathBuf>>,
 }
 
+/// A service config that does not fit what is asked of it.
+#[derive(Debug, thiserror::Error)]
+pub enum ServiceError {
+    #[error("'{service}' has no {field}")]
+    MissingField {
+        service: String,
+        field: &'static str,
+    },
+    #[error("'{service}' is not a daemon")]
+    NotADaemon { service: String },
+}
+
+impl From<ServiceError> for std::io::Error {
+    fn from(e: ServiceError) -> Self {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
+    }
+}
+
+/// A field of a service config, or [`ServiceError::MissingField`] naming the
+/// service and the field: `require!(service, archive_port)`.
+#[macro_export]
+macro_rules! require {
+    ($service:expr, $field:ident) => {{
+        let service = &$service;
+        service.require(&service.$field, stringify!($field))
+    }};
+}
+
 impl ServiceConfig {
+    /// `value`, a field of this service called `field`, or an error naming both.
+    /// Use [`require!`](crate::require), which takes the name from the field.
+    pub fn require<'a, T>(
+        &self,
+        value: &'a Option<T>,
+        field: &'static str,
+    ) -> Result<&'a T, ServiceError> {
+        value.as_ref().ok_or_else(|| ServiceError::MissingField {
+            service: self.service_name.clone(),
+            field,
+        })
+    }
+
+    pub fn not_a_daemon(&self) -> ServiceError {
+        ServiceError::NotADaemon {
+            service: self.service_name.clone(),
+        }
+    }
+
     /// libp2p address of a seed: its compose service name in docker mode,
     /// localhost in native mode (every node shares the host).
     pub fn generate_peer(

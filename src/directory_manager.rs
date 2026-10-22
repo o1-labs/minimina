@@ -25,6 +25,9 @@ use std::{
 };
 
 pub const NETWORK_KEYPAIRS: &str = "network-keypairs";
+/// Tools minimina installs for itself (`~/.minimina/.tools`). Hidden, so that it
+/// is never listed as a network; network ids cannot start with a dot.
+const TOOLS_DIR: &str = ".tools";
 pub const LIBP2P_KEYPAIRS: &str = "libp2p-keypairs";
 const MINIMINA_HOME: &str = "MINIMINA_HOME";
 
@@ -62,6 +65,11 @@ impl DirectoryManager {
 
     pub fn _base_path(&self) -> &PathBuf {
         &self.base_path
+    }
+
+    /// Where minimina installs the tools it runs (see [`crate::install`]).
+    pub fn tools_root(&self) -> PathBuf {
+        self.base_path.join(TOOLS_DIR)
     }
 
     // return path to network directory
@@ -123,7 +131,10 @@ impl DirectoryManager {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
                 if let Some(network_id) = entry.file_name().to_str() {
-                    networks.push(network_id.to_string());
+                    // hidden directories hold minimina's own files
+                    if !network_id.starts_with('.') {
+                        networks.push(network_id.to_string());
+                    }
                 }
             }
         }
