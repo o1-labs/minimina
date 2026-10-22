@@ -110,6 +110,21 @@ pub mod network {
             self.docker_compose_file = config_files;
         }
 
+        /// Adds what each running node reports about the chain, by node name;
+        /// docker service ids are `<node>-<network>`.
+        pub fn update_health(
+            &mut self,
+            mut health: std::collections::BTreeMap<String, crate::node_client::Health>,
+        ) {
+            let suffix = format!("-{}", self.network_id);
+            for service in &mut self.services {
+                let name = service.id.strip_suffix(&suffix).unwrap_or(&service.id);
+                if service.state == ContainerState::Running {
+                    service.health = health.remove(name);
+                }
+            }
+        }
+
         /// Fill the status from the native process table
         pub fn update_from_processes(
             &mut self,
@@ -133,6 +148,7 @@ pub mod network {
                     },
                     status: format!("pid {}", p.pid),
                     docker_image: String::new(),
+                    health: None,
                 })
                 .collect();
         }
@@ -151,6 +167,7 @@ pub mod network {
                     status,
                     // command,
                     docker_image,
+                    health: None,
                 });
             });
         }
@@ -186,6 +203,9 @@ pub mod node {
         pub status: String,
         // pub command: String,
         pub docker_image: String,
+        /// What the running node reports about the chain (GraphQL).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub health: Option<crate::node_client::Health>,
     }
 
     #[derive(Debug, Serialize, PartialEq)]
@@ -293,6 +313,52 @@ impl_display!(node::PrecomputedBlocks);
 impl_display!(node::ReplayerLogs);
 impl_display!(node::Status);
 impl_display!(Error);
+
+#[cfg(test)]
+mod health_tests {
+    use super::network::Status;
+    use super::node;
+    use crate::docker::manager::ContainerState;
+    use crate::node_client::Health;
+
+    #[test]
+    fn health_goes_to_running_services_by_node_name() {
+        let entry = |id: &str, state| node::Status {
+            id: id.into(),
+            state,
+            status: String::new(),
+            docker_image: String::new(),
+            health: None,
+        };
+        let mut status = Status::new("hf");
+        status.services = vec![
+            entry("seed-1-hf", ContainerState::Running),
+            entry("bp-1", ContainerState::Running),
+            entry("bp-2", ContainerState::Exited),
+        ];
+        let synced = Health {
+            sync_status: Some("SYNCED".into()),
+            height: Some(4),
+            ..Default::default()
+        };
+        status.update_health(
+            [
+                ("seed-1".to_string(), synced.clone()),
+                ("bp-1".to_string(), synced.clone()),
+                ("bp-2".to_string(), synced.clone()),
+            ]
+            .into(),
+        );
+        assert_eq!(status.services[0].health.as_ref(), Some(&synced));
+        assert_eq!(status.services[1].health.as_ref(), Some(&synced));
+        // a stopped node reports nothing
+        assert_eq!(status.services[2].health, None);
+        let json = serde_json::to_value(&status.services[0]).unwrap();
+        assert_eq!(json["health"]["sync_status"], "SYNCED");
+        assert_eq!(json["health"]["height"], 4);
+        assert!(json["health"].get("error").is_none());
+    }
+}
 
 #[cfg(test)]
 mod tests {

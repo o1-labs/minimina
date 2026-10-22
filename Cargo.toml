@@ -23,10 +23,18 @@ serde_norway = "0.9"
 anyhow = "1.0.103"
 toml = "0.8"
 thiserror = "2"
+mina-sdk = "=0.4.0-rc.2"
+mina-archive-sdk = "=2.0.0"
+tokio = { version = "1", features = ["rt", "time"] }
+# The SDKs turn on reqwest's default native-tls. Link OpenSSL statically, so the
+# package does not depend on the libssl of one codename (focal 1.1, noble 3).
+# Remove when the SDKs use rustls.
+openssl-sys = { version = "0.9", features = ["vendored"] }
 
 [dev-dependencies]
 assert_cmd = "2"
 tempfile = "3"
+md-5 = "0.10"
 
 [package.metadata.deb]
 maintainer = "Piotr Stachyra <piotr.stachyra@minaprotocol.com>"

@@ -8,6 +8,7 @@ use crate::{
     genesis_ledger::default,
     native::{self, manager::NativeManager, mina_locator},
     network_meta::NetworkMeta,
+    node_client,
     output::{self, network},
     runner::check,
     service::{ServiceConfig, ServiceType},
@@ -93,8 +94,11 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             let mut status = network::Status::new(&network_id);
             status.network_dir = network_path.to_string_lossy().into_owned();
 
+            // without services.json there is nothing to ask
+            let services = ctx.dirs.get_services_info(&network_id).unwrap_or_default();
             if ctx.mode == ExecutionMode::Native {
                 status.update_from_processes(&ctx.native(&network_id)?.status()?);
+                status.update_health(node_client::health(&services)?);
                 println!("{status}");
                 return Ok(());
             }
@@ -110,6 +114,7 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             let compose_file_path = docker.compose_path.to_string_lossy();
             status.update_from_compose_ls(ls_out, &compose_file_path);
             status.update_from_compose_ps(ps_out);
+            status.update_health(node_client::health(&services)?);
 
             println!("{status}");
             Ok(())
@@ -184,6 +189,15 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
                         )
                         .with_context(|| format!("Failed to start network '{network_id}'"))?;
                 }
+            }
+            if cmd.wait_synced {
+                let services = ctx.dirs.get_services_info(&network_id)?;
+                node_client::wait_synced(
+                    &services,
+                    std::time::Duration::from_secs(cmd.sync_timeout),
+                    std::time::Duration::from_secs(10),
+                )
+                .with_context(|| format!("Network '{network_id}' started but is not ready"))?;
             }
             println!("{}", network::Start { network_id });
             Ok(())
