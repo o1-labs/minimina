@@ -200,29 +200,78 @@ pub fn wait_for_graphql(uri: &str, timeout: Duration) -> Result<()> {
     })
 }
 
-/// Turns on the daemon's filtered log for the structured events the
-/// integration tests read (`startFilteredLog`).
-pub fn start_filtered_log(uri: &str) -> Result<()> {
-    const EVENT_IDS: &[&str] = &[
+/// Structured log events that the integration tests read, as
+/// `(event path, id)`. The list follows Lucy's
+/// `src/lib/testing/integration_test_lib/event_type.ml` in mina.
+///
+/// mina names an event by `MD5("<source file>.<modules>.<Constructor>")`
+/// (`src/lib/ppx_register_event`), so the id changes when mina moves the file
+/// or the module of the event. The daemon ignores unknown ids, so a stale id
+/// only loses that event, with no error.
+const FILTERED_EVENTS: &[(&str, &str)] = &[
+    (
+        "src/lib/transition_router/transition_router.ml.Starting_transition_frontier_controller",
         "21ccae8c619bc2666474085272d5fe1d",
+    ),
+    (
+        "src/lib/transition_frontier/transition_frontier.ml.Applying_diffs",
         "ef1182dc30f3e0aa9f6bf11c0ab90ba6",
+    ),
+    (
+        "src/lib/block_producer/block_producer.ml.Block_produced",
         "64e2d3e86c37c09b15efdaf7470ce879",
+    ),
+    (
+        "src/lib/transition_frontier/transition_frontier.ml.Added_breadcrumb_user_commands",
         "db06cb5030f39e86e84b30d033f3bc5c",
+    ),
+    (
+        "src/lib/transition_handler/block_sink.ml.Block_received",
         "60076de624bf0c5fc0843b875001cf84",
+    ),
+    (
+        "src/lib/network_pool/snark_pool_diff.ml.Make.Snark_work_received",
         "27953f46376ba8abc0c61400e2c38f8b",
+    ),
+    (
+        "src/lib/network_pool/transaction_pool.ml.Make0.Resource_pool.Diff.Transactions_received",
         "b4b5f5b1d1a0c457cbd13a35d1c8b57b",
-        "0fc65f5594c5e9ee0b6f0ddde747c758",
+    ),
+    (
+        "src/lib/snark_worker/events.ml.Generating_snark_work_failed",
+        "b7aa566605a5380907caba07282b7a44",
+    ),
+    (
+        "src/lib/transition_frontier/transition_frontier.ml.Transition_frontier_loaded_from_persistence",
         "b5a89d6d616a35fb6f73d1eaad6b2dbd",
+    ),
+    (
+        "src/lib/transition_frontier/transition_frontier.ml.Persisted_frontier_loaded",
         "1c4150aa7058a3058c4d20ae90ff7ec3",
+    ),
+    (
+        "src/lib/transition_frontier/transition_frontier.ml.Persisted_frontier_fresh_boot",
         "f7254e63ad51092a0bd3078580ef9ce3",
+    ),
+    (
+        "src/lib/transition_frontier/transition_frontier.ml.Persisted_frontier_dropped",
         "74a81f1e2f8d548e4550faa136c68160",
+    ),
+    (
+        "src/lib/transition_frontier/transition_frontier.ml.Bootstrap_required",
         "30fe76cee159ea215fc05549e861501e",
-    ];
+    ),
+];
+
+/// Turns on the daemon's filtered log for [`FILTERED_EVENTS`]
+/// (`startFilteredLog`).
+pub fn start_filtered_log(uri: &str) -> Result<()> {
+    let ids: Vec<&str> = FILTERED_EVENTS.iter().map(|(_, id)| *id).collect();
     let client = daemon_client(uri);
     let response = runtime()?.block_on(
         client
             .query("mutation ($filter: [String!]!) { startFilteredLog(filter: $filter) }")
-            .variables(serde_json::json!({ "filter": EVENT_IDS }))
+            .variables(serde_json::json!({ "filter": ids }))
             .name("startFilteredLog")
             .send(),
     )?;
@@ -240,6 +289,18 @@ mod tests {
             service_name: name.into(),
             client_port: Some(port),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn filtered_event_ids_match_their_paths() {
+        use md5::{Digest, Md5};
+        for (path, id) in FILTERED_EVENTS {
+            let digest: String = Md5::digest(path.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            assert_eq!(&digest, id, "{path}");
         }
     }
 
