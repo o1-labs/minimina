@@ -18,7 +18,7 @@ use crate::{
     docker::compose::DockerCompose,
     docker::compose::CONFIG_DIRECTORY,
     runner::Runner,
-    service::ServiceConfig,
+    service::typed::{Docker, Service},
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -112,12 +112,12 @@ impl DockerManager {
 
     pub fn compose_generate_file(
         &self,
-        configs: &[ServiceConfig],
+        services: &[Service<Docker>],
         features: DaemonFeatures,
     ) -> Result<()> {
         let mut file = File::create(&self.compose_path)?;
         let contents =
-            DockerCompose::generate(configs, &self.network_path, self.profile, features)?;
+            DockerCompose::generate(services, &self.network_path, self.profile, features)?;
         file.write_all(contents.as_bytes())?;
         Ok(())
     }

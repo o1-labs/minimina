@@ -1,7 +1,6 @@
 //! Port checks for native networks, where every node shares the host's ports.
 
-use crate::require;
-use crate::service::{ServiceConfig, ServiceType};
+use crate::service::typed::{Kind, Native, Role, Service};
 use std::collections::HashMap;
 use std::io;
 use std::net::TcpListener;
@@ -38,48 +37,40 @@ pub fn check_ports_available(ports: &[PortUse]) -> io::Result<()> {
 }
 
 /// Ports used by `services`: five per daemon (client, REST, external, metrics,
-/// libp2p metrics) and the archive server port.
-pub fn collect_all_ports(services: &[ServiceConfig]) -> io::Result<Vec<PortUse>> {
+/// libp2p metrics), the archive server port, and the API port of rosetta and
+/// the archive node api.
+pub fn collect_all_ports(services: &[Service<Native>]) -> Vec<PortUse> {
     let mut ports = Vec::new();
     for service in services {
         let mut add = |port: u16| {
             ports.push(PortUse {
                 port,
-                service: service.service_name.clone(),
+                service: service.name.clone(),
             })
         };
-        match service.service_type {
-            ServiceType::SnarkWorker | ServiceType::UptimeServiceBackend => {}
-            // one port: the API
-            ServiceType::Rosetta | ServiceType::ArchiveNodeApi => {
-                add(*require!(service, client_port)?)
-            }
-            _ => {
-                let client_port = *require!(service, client_port)?;
+        match &service.kind {
+            Kind::SnarkWorker(_) | Kind::UptimeServiceBackend(_) => {}
+            Kind::Rosetta(rosetta) => add(rosetta.port),
+            Kind::ArchiveNodeApi(api) => add(api.port),
+            Kind::Daemon(daemon) => {
+                // typed::check keeps all five below 65536
                 for offset in 0..5 {
-                    let port = client_port.checked_add(offset).ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!(
-                                "client_port {client_port} of '{}' leaves no room for 5 ports",
-                                service.service_name
-                            ),
-                        )
-                    })?;
+                    add(daemon.client_port + offset);
+                }
+                if let Role::Archive { port, .. } = daemon.role {
                     add(port);
                 }
             }
         }
-        if let Some(archive_port) = service.archive_port {
-            add(archive_port);
-        }
     }
-    Ok(ports)
+    ports
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::typed::check;
+    use crate::service::{ServiceConfig, ServiceType};
 
     fn svc(name: &str, ty: ServiceType, client: Option<u16>) -> ServiceConfig {
         ServiceConfig {
@@ -98,12 +89,9 @@ mod tests {
     fn collects_daemon_and_archive_ports() {
         let mut archive = svc("arch", ServiceType::ArchiveNode, Some(5000));
         archive.archive_port = Some(3086);
-        let services = vec![
-            svc("seed", ServiceType::Seed, Some(3100)),
-            archive,
-            svc("w", ServiceType::SnarkWorker, None),
-        ];
-        let uses = collect_all_ports(&services).unwrap();
+        let services =
+            check::<Native>(&[svc("seed", ServiceType::Seed, Some(3100)), archive]).unwrap();
+        let uses = collect_all_ports(&services);
         assert_eq!(
             ports(&uses),
             vec![3100, 3101, 3102, 3103, 3104, 5000, 5001, 5002, 5003, 5004, 3086]
@@ -112,21 +100,13 @@ mod tests {
     }
 
     #[test]
-    fn daemon_without_client_port_is_rejected() {
-        let err = collect_all_ports(&[svc("bp", ServiceType::BlockProducer, None)]).unwrap_err();
-        assert!(err.to_string().contains("'bp' has no client_port"));
-        let err =
-            collect_all_ports(&[svc("bp", ServiceType::BlockProducer, Some(65534))]).unwrap_err();
-        assert!(err.to_string().contains("no room"));
-    }
-
-    #[test]
     fn overlapping_services_are_rejected() {
-        let services = vec![
+        let services = check::<Native>(&[
             svc("a", ServiceType::Seed, Some(40000)),
             svc("b", ServiceType::BlockProducer, Some(40003)),
-        ];
-        let err = check_ports_available(&collect_all_ports(&services).unwrap()).unwrap_err();
+        ])
+        .unwrap();
+        let err = check_ports_available(&collect_all_ports(&services)).unwrap_err();
         assert_eq!(err.to_string(), "Port 40003 is used by both 'a' and 'b'");
     }
 

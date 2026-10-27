@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use crate::cli::ExecutionMode;
 use crate::topology::GitBuild;
 
+pub mod typed;
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, Default)]
 pub enum ServiceType {
     #[serde(rename = "Seed_node")]
@@ -87,7 +89,7 @@ pub struct ServiceConfig {
     pub uptime_service_other_config_files: Option<Vec<PathBuf>>,
 }
 
-/// A service config that does not fit what is asked of it.
+/// A problem of one service of a network, found by [`typed::check`].
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
     #[error("'{service}' has no {field}")]
@@ -95,46 +97,27 @@ pub enum ServiceError {
         service: String,
         field: &'static str,
     },
-    #[error("'{service}' is not a daemon")]
-    NotADaemon { service: String },
-}
-
-impl From<ServiceError> for std::io::Error {
-    fn from(e: ServiceError) -> Self {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
-    }
-}
-
-/// A field of a service config, or [`ServiceError::MissingField`] naming the
-/// service and the field: `require!(service, archive_port)`.
-#[macro_export]
-macro_rules! require {
-    ($service:expr, $field:ident) => {{
-        let service = &$service;
-        service.require(&service.$field, stringify!($field))
-    }};
+    #[error("'{service}': client_port {port} leaves no room for its 5 ports")]
+    PortRange { service: String, port: u16 },
+    #[error("two services are called '{service}'")]
+    Duplicate { service: String },
+    #[error("{} {kind}s: {}; a network has one at most", services.len(), services.join(", "))]
+    TooMany {
+        kind: &'static str,
+        services: Vec<String>,
+    },
+    #[error("'{service}': {field} '{target}' is not a {what} of the network")]
+    NotFound {
+        service: String,
+        field: &'static str,
+        target: String,
+        what: &'static str,
+    },
+    #[error("'{service}' needs an archive node")]
+    NeedsArchive { service: String },
 }
 
 impl ServiceConfig {
-    /// `value`, a field of this service called `field`, or an error naming both.
-    /// Use [`require!`](crate::require), which takes the name from the field.
-    pub fn require<'a, T>(
-        &self,
-        value: &'a Option<T>,
-        field: &'static str,
-    ) -> Result<&'a T, ServiceError> {
-        value.as_ref().ok_or_else(|| ServiceError::MissingField {
-            service: self.service_name.clone(),
-            field,
-        })
-    }
-
-    pub fn not_a_daemon(&self) -> ServiceError {
-        ServiceError::NotADaemon {
-            service: self.service_name.clone(),
-        }
-    }
-
     /// libp2p address of a seed: its compose service name in docker mode,
     /// localhost in native mode (every node shares the host).
     pub fn generate_peer(
@@ -158,31 +141,17 @@ impl ServiceConfig {
             .collect()
     }
 
+    /// The first archive node; [`typed::check`] reports a second one.
     pub fn get_archive_node(services: &[Self]) -> Option<&Self> {
-        let mut archive_nodes = services
+        services
             .iter()
-            .filter(|s| s.service_type == ServiceType::ArchiveNode);
-
-        let first_node = archive_nodes.next();
-
-        if archive_nodes.next().is_some() {
-            panic!("There can only be one archive node in topology");
-        }
-
-        first_node
+            .find(|s| s.service_type == ServiceType::ArchiveNode)
     }
 
+    /// The first uptime service backend; [`typed::check`] reports a second one.
     pub fn get_uptime_service_backend(services: &[Self]) -> Option<&Self> {
-        let mut uptime_service_backends = services
+        services
             .iter()
-            .filter(|s| s.service_type == ServiceType::UptimeServiceBackend);
-
-        let first_backend = uptime_service_backends.next();
-
-        if uptime_service_backends.next().is_some() {
-            panic!("There can only be one uptime service backend in topology");
-        }
-
-        first_backend
+            .find(|s| s.service_type == ServiceType::UptimeServiceBackend)
     }
 }

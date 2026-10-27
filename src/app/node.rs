@@ -11,7 +11,7 @@ use crate::{
     native, node_client,
     output::{self, node},
     runner::check,
-    service::ServiceConfig,
+    service::{typed::Native, ServiceConfig},
     utils::TIMEOUT_IN_SECS,
 };
 use anyhow::{bail, Context as _, Result};
@@ -325,10 +325,10 @@ fn start_native(
     network_id: &str,
 ) -> Result<()> {
     ctx.ensure_network_exists(network_id)?;
-    let services = ctx.dirs.get_services_info(network_id)?;
+    let services = ctx.services::<Native>(network_id)?;
     let service = services
         .iter()
-        .find(|s| s.service_name == node_id)
+        .find(|s| s.name == node_id)
         .with_context(|| format!("Node '{node_id}' does not exist in network '{network_id}'."))?;
     let native = ctx.native(network_id)?;
 

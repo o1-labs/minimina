@@ -2,13 +2,10 @@
 //! tells them apart (a running service is `AlreadyExists`, a missing one
 //! `NotFound`), so `?` keeps working through the `io::Result` API.
 
-use crate::service::ServiceError;
 use std::{io, path::PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum NativeError {
-    #[error(transparent)]
-    Service(#[from] ServiceError),
     #[error("'{name}' is already running (pid {pid})")]
     AlreadyRunning { name: String, pid: u32 },
     #[error("'{name}' is running (pid {pid}); stop it first")]
@@ -44,7 +41,7 @@ impl From<NativeError> for io::Error {
     fn from(e: NativeError) -> Self {
         use io::ErrorKind::*;
         let kind = match &e {
-            NativeError::Service(_) | NativeError::NotUtf8(_) => InvalidInput,
+            NativeError::NotUtf8(_) => InvalidInput,
             NativeError::AlreadyRunning { .. }
             | NativeError::RunningDuringReset { .. }
             | NativeError::NetworkRunning(_) => AlreadyExists,
@@ -77,13 +74,6 @@ mod tests {
             io(NativeError::NotRunning("a".into())).kind(),
             io::ErrorKind::NotFound
         );
-        let missing = io(ServiceError::MissingField {
-            service: "bp".into(),
-            field: "client_port",
-        }
-        .into());
-        assert_eq!(missing.kind(), io::ErrorKind::InvalidInput);
-        assert_eq!(missing.to_string(), "'bp' has no client_port");
         let spawn = io(NativeError::Spawn {
             name: "a".into(),
             binary: "/x/mina".into(),
