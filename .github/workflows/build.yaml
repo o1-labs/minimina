@@ -133,10 +133,10 @@ jobs:
   package:
     needs: build
     runs-on: ubuntu-latest
-    # oldest glibc of the supported codenames (bullseye, focal: 2.31); with rustls
-    # the binary needs nothing else, so this one package serves all of them.
-    # focal, not bullseye: the bullseye-security pool no longer serves its packages
-    container: ubuntu:focal
+    # oldest glibc (2.35) and OpenSSL (3.0.2) of the supported codenames, so this
+    # one package serves all of them: its `libssl3 (>= 3.0.2)` is met by jammy and
+    # bookworm, and on noble by libssl3t64, which provides libssl3
+    container: ubuntu:jammy
     env:
       DEBIAN_FRONTEND: noninteractive
       # explicit: rustup refuses $HOME=/github/home while running as root
@@ -146,14 +146,13 @@ jobs:
     - name: 🧰 Build tools
       run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git gcc libc6-dev make perl
+          apt-get install -y --no-install-recommends ca-certificates curl git gcc libc6-dev pkg-config libssl-dev
           curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
 
     - name: 📥 Checkout
       uses: actions/checkout@v4
 
-    # prebuilt cargo-deb needs glibc 2.34; focal has 2.31
     - name: 🧰 cargo-deb
       run: cargo install cargo-deb --locked
 
@@ -184,7 +183,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [debian:bullseye, debian:bookworm, ubuntu:focal, ubuntu:jammy, ubuntu:noble]
+        image: [debian:bookworm, ubuntu:jammy, ubuntu:noble]
     container: ${{ matrix.image }}
     env:
       DEBIAN_FRONTEND: noninteractive
@@ -250,7 +249,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y rubygems
           sudo gem install deb-s3
-          for codename in bullseye bookworm focal jammy noble; do
+          for codename in bookworm jammy noble; do
             deb-s3 upload --s3-region=us-west-2 --bucket packages.o1test.net --lock --preserve-versions \
               --access-key-id="$ACCESS_KEY_ID" --secret-access-key="$SECRET_ACCESS_KEY" \
               --cache-control=max-age=120 --component stable --codename "$codename" ./minimina_*.deb
