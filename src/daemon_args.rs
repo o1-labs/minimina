@@ -7,11 +7,11 @@
 use crate::cli::ExecutionMode;
 use crate::directory_manager::{LIBP2P_KEYPAIRS, NETWORK_KEYPAIRS};
 use crate::genesis_ledger::GENESIS_LEDGER_JSON;
-use crate::require;
-use crate::service::{ServiceConfig, ServiceType};
+use crate::service::typed::{
+    BlockProducerKey, Daemon, Libp2pKeypair, Mode, Peers, Role, Rosetta, SnarkWorker,
+};
 use log::warn;
 use serde::{Deserialize, Serialize};
-use std::io;
 
 /// Precomputed blocks directory inside a daemon's config directory.
 pub const PRECOMPUTED_BLOCKS_DIR: &str = "precomputed_blocks";
@@ -64,59 +64,46 @@ impl Layout<'_> {
         }
     }
 
-    fn add_peers(&self, service: &ServiceConfig, args: &mut Vec<String>) {
-        if service.peer_list_file.is_some() {
-            arg(
+    fn add_peers(&self, name: &str, peers: &Peers, args: &mut Vec<String>) {
+        match peers {
+            Peers::ListFile => arg(
                 args,
                 "-peer-list-file",
                 format!("{}/peer_list_file.txt", self.network_dir),
-            );
-        } else if let Some(peers) = &service.peers {
-            for peer in peers {
-                arg(args, "-peer", peer.clone());
+            ),
+            Peers::List(peers) => {
+                for peer in peers {
+                    arg(args, "-peer", peer.clone());
+                }
             }
-        } else {
-            warn!("No peers for node '{}'.", service.service_name);
+            Peers::None => warn!("No peers for node '{name}'."),
         }
     }
 
-    fn add_libp2p_keypair(&self, service: &ServiceConfig, args: &mut Vec<String>) {
-        if service.libp2p_keypair_path.is_some() {
-            arg(
+    fn add_libp2p_keypair<M: Mode>(&self, name: &str, daemon: &Daemon<M>, args: &mut Vec<String>) {
+        match &daemon.libp2p_keypair {
+            Some(Libp2pKeypair::File) => arg(
                 args,
                 "-libp2p-keypair",
-                format!(
-                    "{}/{LIBP2P_KEYPAIRS}/{}.json",
-                    self.network_dir, service.service_name
-                ),
-            );
-        } else if let Some(keypair) = &service.libp2p_keypair {
-            arg(args, "-libp2p-keypair", keypair.clone());
-        } else {
-            warn!("No libp2p keypair for node '{}'.", service.service_name);
+                format!("{}/{LIBP2P_KEYPAIRS}/{name}.json", self.network_dir),
+            ),
+            Some(Libp2pKeypair::Path(path)) => arg(args, "-libp2p-keypair", path.clone()),
+            None => warn!("No libp2p keypair for node '{name}'."),
         }
     }
 
-    /// Block producer key: topology keys are copied to `<name>.json`; generated
-    /// keys of the default network stay where key generation put them.
-    fn block_producer_key(&self, service: &ServiceConfig) -> Option<String> {
-        if service.private_key_path.is_some() {
-            Some(format!(
-                "{}/{NETWORK_KEYPAIRS}/{}.json",
-                self.network_dir, service.service_name
-            ))
-        } else {
-            service.public_key_path.clone()
+    fn block_producer_key(&self, name: &str, key: &BlockProducerKey) -> String {
+        match key {
+            BlockProducerKey::File => {
+                format!("{}/{NETWORK_KEYPAIRS}/{name}.json", self.network_dir)
+            }
+            BlockProducerKey::Path(path) => path.clone(),
         }
     }
 
-    fn daemon(&self, service: &ServiceConfig) -> io::Result<Vec<String>> {
-        let client_port = match (service.client_port, self.mode) {
-            (Some(port), _) => port,
-            // every container has its own ports
-            (None, ExecutionMode::Docker) => 3100,
-            (None, ExecutionMode::Native) => *require!(service, client_port)?,
-        };
+    /// Arguments of `mina` for the daemon `name`.
+    pub fn daemon<M: Mode>(&self, name: &str, daemon: &Daemon<M>) -> Vec<String> {
+        let client_port = daemon.client_port;
         let mut args = vec!["daemon".to_string()];
         arg(&mut args, "-client-port", client_port.to_string());
         arg(&mut args, "-rest-port", (client_port + 1).to_string());
@@ -160,93 +147,64 @@ impl Layout<'_> {
         // no -proof-level: the profile's compiled level (or `proof.level` in the
         // runtime config) applies; `full` is fatal for binaries compiled for less
 
-        match service.service_type {
-            ServiceType::Seed => args.push("-seed".to_string()),
-            ServiceType::BlockProducer => {
-                self.add_peers(service, &mut args);
+        match &daemon.role {
+            Role::Seed => args.push("-seed".to_string()),
+            Role::BlockProducer { key } => {
+                self.add_peers(name, &daemon.peers, &mut args);
                 let uptime_url = self
                     .uptime_service
                     .map(|host| format!("http://{host}:8080/v1/submit"));
                 if let Some(url) = &uptime_url {
                     arg(&mut args, "-uptime-url", url.clone());
                 }
-                match self.block_producer_key(service) {
+                match key {
                     Some(key) => {
+                        let key = self.block_producer_key(name, key);
                         if uptime_url.is_some() {
                             arg(&mut args, "-uptime-submitter-key", key.clone());
                         }
                         arg(&mut args, "-block-producer-key", key);
                     }
-                    None => warn!(
-                        "Block producer '{}' has no key: it will not produce blocks.",
-                        service.service_name
-                    ),
+                    None => {
+                        warn!("Block producer '{name}' has no key: it will not produce blocks.")
+                    }
                 }
             }
-            ServiceType::PlainNode => self.add_peers(service, &mut args),
-            ServiceType::SnarkCoordinator => {
+            Role::Plain => self.add_peers(name, &daemon.peers, &mut args),
+            Role::SnarkCoordinator { fee, public_key } => {
                 arg(&mut args, "-work-selection", "seq");
-                self.add_peers(service, &mut args);
-                match &service.snark_coordinator_fees {
-                    Some(fee) => arg(&mut args, "-snark-worker-fee", fee.clone()),
-                    None => warn!(
-                        "No snark worker fee for snark coordinator '{}'.",
-                        service.service_name
-                    ),
-                }
-                match &service.public_key {
-                    Some(pk) => arg(&mut args, "-run-snark-coordinator", pk.clone()),
-                    None => warn!(
-                        "No public key for snark coordinator '{}'.",
-                        service.service_name
-                    ),
-                }
+                self.add_peers(name, &daemon.peers, &mut args);
+                arg(&mut args, "-snark-worker-fee", fee.clone());
+                arg(&mut args, "-run-snark-coordinator", public_key.clone());
             }
-            ServiceType::ArchiveNode => {
-                self.add_peers(service, &mut args);
-                match service.archive_port {
-                    Some(port) => arg(
-                        &mut args,
-                        "-archive-address",
-                        format!(
-                            "{}:{port}",
-                            self.host(&format!("{}-service", service.service_name))
-                        ),
-                    ),
-                    None => warn!(
-                        "No archive port for archive node '{}'.",
-                        service.service_name
-                    ),
-                }
+            Role::Archive { port, .. } => {
+                self.add_peers(name, &daemon.peers, &mut args);
+                arg(
+                    &mut args,
+                    "-archive-address",
+                    format!("{}:{port}", self.host(&format!("{name}-service"))),
+                );
             }
-            ServiceType::SnarkWorker
-            | ServiceType::UptimeServiceBackend
-            | ServiceType::Rosetta
-            | ServiceType::ArchiveNodeApi => return Err(service.not_a_daemon().into()),
         }
-        self.add_libp2p_keypair(service, &mut args);
-        Ok(args)
+        self.add_libp2p_keypair(name, daemon, &mut args);
+        args
     }
 
-    fn snark_worker(&self, service: &ServiceConfig) -> Vec<String> {
+    /// Arguments of `mina` for a snark worker.
+    pub fn snark_worker<M: Mode>(&self, worker: &SnarkWorker<M>) -> Vec<String> {
         let mut args = vec!["internal".to_string(), "snark-worker".to_string()];
         arg(&mut args, "-shutdown-on-disconnect", "false");
         arg(&mut args, "-config-directory", self.config_dir);
-        match (
-            &service.snark_coordinator_host,
-            service.snark_coordinator_port,
-        ) {
-            (Some(host), Some(port)) => arg(
-                &mut args,
-                "-daemon-address",
-                format!("{}:{port}", self.host(host)),
+        arg(
+            &mut args,
+            "-daemon-address",
+            format!(
+                "{}:{}",
+                self.host(&worker.coordinator),
+                worker.coordinator_port
             ),
-            _ => warn!(
-                "No snark coordinator for snark worker '{}'.",
-                service.service_name
-            ),
-        }
-        if let Some(proof_level) = &service.snark_worker_proof_level {
+        );
+        if let Some(proof_level) = &worker.proof_level {
             arg(&mut args, "-proof-level", proof_level.clone());
         }
         args
@@ -258,35 +216,28 @@ impl Layout<'_> {
 /// connections, shared with the archive.
 pub const ROSETTA_ENV: &[(&str, &str)] = &[("MINA_ROSETTA_MAX_DB_POOL_SIZE", "16")];
 
-/// Arguments of `mina-rosetta`: the API on `client_port`, data from the archive
-/// database `archive_uri` and from the GraphQL API of `rosetta_graphql_node`.
-pub fn rosetta_args(
-    service: &ServiceConfig,
+/// Arguments of `mina-rosetta`: the API on its port, data from the archive
+/// database `archive_uri` and from the GraphQL API of its daemon.
+pub fn rosetta_args<M: Mode>(
+    rosetta: &Rosetta<M>,
     layout: &Layout,
     archive_uri: &str,
-) -> io::Result<Vec<String>> {
-    let port = require!(service, client_port)?;
-    let node = require!(service, rosetta_graphql_node)?;
-    let graphql_port = require!(service, rosetta_graphql_port)?;
+) -> Vec<String> {
     let mut args = Vec::new();
-    arg(&mut args, "--port", port.to_string());
+    arg(&mut args, "--port", rosetta.port.to_string());
     arg(&mut args, "--archive-uri", archive_uri);
     arg(
         &mut args,
         "--graphql-uri",
-        format!("http://{}:{graphql_port}/graphql", layout.host(node)),
+        format!(
+            "http://{}:{}/graphql",
+            layout.host(&rosetta.graphql_node),
+            rosetta.graphql_port
+        ),
     );
     args.push("--log-json".to_string());
     arg(&mut args, "--log-level", "Info");
-    Ok(args)
-}
-
-/// Arguments of `mina` for a daemon service or snark worker.
-pub fn mina_args(service: &ServiceConfig, layout: &Layout) -> io::Result<Vec<String>> {
-    match service.service_type {
-        ServiceType::SnarkWorker => Ok(layout.snark_worker(service)),
-        _ => layout.daemon(service),
-    }
+    args
 }
 
 /// Orders precomputed block file names (`<network>-<height>-<state_hash>.json`)
@@ -299,6 +250,7 @@ pub fn sort_precomputed_block_files(names: &mut [String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::typed::{Kind, Native, Service};
 
     fn layout(mode: ExecutionMode) -> Layout<'static> {
         Layout {
@@ -316,24 +268,43 @@ mod tests {
         args.get(i + 1).map(String::as_str)
     }
 
-    fn service(service_type: ServiceType, name: &str) -> ServiceConfig {
-        ServiceConfig {
-            service_type,
-            service_name: name.into(),
-            client_port: Some(4000),
-            libp2p_keypair: Some("kp".into()),
-            peers: Some(vec!["/ip4/127.0.0.1/tcp/3102/p2p/x".into()]),
-            ..Default::default()
+    fn daemon(role: Role<Native>) -> Daemon<Native> {
+        Daemon {
+            image: (),
+            client_port: 4000,
+            published: true,
+            peers: Peers::List(vec!["/ip4/127.0.0.1/tcp/3102/p2p/x".into()]),
+            libp2p_keypair: Some(Libp2pKeypair::Path("kp".into())),
+            role,
         }
+    }
+
+    fn service(name: &str, kind: Kind<Native>) -> Service<Native> {
+        Service {
+            name: name.into(),
+            kind,
+        }
+    }
+
+    fn node(name: &str, role: Role<Native>) -> Service<Native> {
+        service(name, Kind::Daemon(daemon(role)))
+    }
+
+    fn args_in(service: &Service<Native>, layout: &Layout) -> Vec<String> {
+        match &service.kind {
+            Kind::Daemon(daemon) => layout.daemon(&service.name, daemon),
+            Kind::SnarkWorker(worker) => layout.snark_worker(worker),
+            other => panic!("not run by mina: {other:?}"),
+        }
+    }
+
+    fn args(service: &Service<Native>, mode: ExecutionMode) -> Vec<String> {
+        args_in(service, &layout(mode))
     }
 
     #[test]
     fn ports_follow_the_client_port() {
-        let args = mina_args(
-            &service(ServiceType::Seed, "seed"),
-            &layout(ExecutionMode::Docker),
-        )
-        .unwrap();
+        let args = args(&node("seed", Role::Seed), ExecutionMode::Docker);
         for (flag, port) in [
             ("-client-port", "4000"),
             ("-rest-port", "4001"),
@@ -355,24 +326,24 @@ mod tests {
 
     #[test]
     fn native_daemons_advertise_localhost() {
-        let bp = service(ServiceType::BlockProducer, "bp");
-        let native = mina_args(&bp, &layout(ExecutionMode::Native)).unwrap();
+        let bp = node("bp", Role::BlockProducer { key: None });
+        let native = args(&bp, ExecutionMode::Native);
         assert_eq!(value_of(&native, "-external-ip"), Some("127.0.0.1"));
-        let docker = mina_args(&bp, &layout(ExecutionMode::Docker)).unwrap();
+        let docker = args(&bp, ExecutionMode::Docker);
         assert_eq!(value_of(&docker, "-external-ip"), None);
     }
 
     #[test]
     fn precomputed_blocks_go_to_a_directory_when_the_daemon_has_it() {
-        let seed = service(ServiceType::Seed, "seed");
-        let old = mina_args(&seed, &layout(ExecutionMode::Native)).unwrap();
+        let seed = node("seed", Role::Seed);
+        let old = args(&seed, ExecutionMode::Native);
         assert_eq!(
             value_of(&old, "-precomputed-blocks-file"),
             Some("/c/precomputed_blocks.log")
         );
         let mut new_layout = layout(ExecutionMode::Native);
         new_layout.features.precomputed_blocks_dir = true;
-        let new = mina_args(&seed, &new_layout).unwrap();
+        let new = args_in(&seed, &new_layout);
         assert_eq!(
             value_of(&new, "-precomputed-blocks-dir"),
             Some("/c/precomputed_blocks")
@@ -383,100 +354,108 @@ mod tests {
 
     #[test]
     fn block_producer_keys() {
-        let mut bp = service(ServiceType::BlockProducer, "bp");
-        let args = mina_args(&bp, &layout(ExecutionMode::Native)).unwrap();
-        assert_eq!(value_of(&args, "-block-producer-key"), None);
+        let bp = |key| node("bp", Role::BlockProducer { key });
+        let no_key = args(&bp(None), ExecutionMode::Native);
+        assert_eq!(value_of(&no_key, "-block-producer-key"), None);
 
-        bp.public_key_path = Some("/n/network-keypairs/bp".into());
-        let args = mina_args(&bp, &layout(ExecutionMode::Native)).unwrap();
+        let generated = args(
+            &bp(Some(BlockProducerKey::Path(
+                "/n/network-keypairs/bp".into(),
+            ))),
+            ExecutionMode::Native,
+        );
         assert_eq!(
-            value_of(&args, "-block-producer-key"),
+            value_of(&generated, "-block-producer-key"),
             Some("/n/network-keypairs/bp")
         );
 
-        bp.private_key_path = Some("topology/bp.json".into());
         let mut with_uptime = layout(ExecutionMode::Docker);
         with_uptime.uptime_service = Some("uptime-net");
-        let args = mina_args(&bp, &with_uptime).unwrap();
+        let copied = args_in(&bp(Some(BlockProducerKey::File)), &with_uptime);
         assert_eq!(
-            value_of(&args, "-block-producer-key"),
+            value_of(&copied, "-block-producer-key"),
             Some("/n/network-keypairs/bp.json")
         );
         assert_eq!(
-            value_of(&args, "-uptime-submitter-key"),
+            value_of(&copied, "-uptime-submitter-key"),
             Some("/n/network-keypairs/bp.json")
         );
         assert_eq!(
-            value_of(&args, "-uptime-url"),
+            value_of(&copied, "-uptime-url"),
             Some("http://uptime-net:8080/v1/submit")
         );
     }
 
     #[test]
+    fn snark_coordinator_gets_its_fee_and_key() {
+        let coordinator = node(
+            "coord",
+            Role::SnarkCoordinator {
+                fee: "0.001".into(),
+                public_key: "B62".into(),
+            },
+        );
+        let args = args(&coordinator, ExecutionMode::Native);
+        assert_eq!(value_of(&args, "-snark-worker-fee"), Some("0.001"));
+        assert_eq!(value_of(&args, "-run-snark-coordinator"), Some("B62"));
+        assert_eq!(value_of(&args, "-work-selection"), Some("seq"));
+    }
+
+    #[test]
     fn services_are_reached_by_compose_name_or_localhost() {
-        let mut archive = service(ServiceType::ArchiveNode, "archive");
-        archive.archive_port = Some(3086);
-        let docker = mina_args(&archive, &layout(ExecutionMode::Docker)).unwrap();
+        let archive = node(
+            "archive",
+            Role::Archive {
+                port: 3086,
+                image: (),
+            },
+        );
         assert_eq!(
-            value_of(&docker, "-archive-address"),
+            value_of(&args(&archive, ExecutionMode::Docker), "-archive-address"),
             Some("archive-service-net:3086")
         );
-        let native = mina_args(&archive, &layout(ExecutionMode::Native)).unwrap();
         assert_eq!(
-            value_of(&native, "-archive-address"),
+            value_of(&args(&archive, ExecutionMode::Native), "-archive-address"),
             Some("127.0.0.1:3086")
         );
 
-        let mut worker = service(ServiceType::SnarkWorker, "w");
-        worker.snark_coordinator_host = Some("coord".into());
-        worker.snark_coordinator_port = Some(7000);
-        worker.snark_worker_proof_level = Some("none".into());
-        let docker = mina_args(&worker, &layout(ExecutionMode::Docker)).unwrap();
+        let worker = service(
+            "w",
+            Kind::SnarkWorker(SnarkWorker {
+                image: (),
+                coordinator: "coord".into(),
+                coordinator_port: 7000,
+                proof_level: Some("none".into()),
+            }),
+        );
+        let docker = args(&worker, ExecutionMode::Docker);
         assert_eq!(docker[..2], ["internal", "snark-worker"]);
         assert_eq!(value_of(&docker, "-daemon-address"), Some("coord-net:7000"));
         assert_eq!(value_of(&docker, "-proof-level"), Some("none"));
-        let native = mina_args(&worker, &layout(ExecutionMode::Native)).unwrap();
+        let native = args(&worker, ExecutionMode::Native);
         assert_eq!(value_of(&native, "-daemon-address"), Some("127.0.0.1:7000"));
     }
 
     #[test]
     fn rosetta_reads_the_archive_and_a_daemon() {
-        let rosetta = ServiceConfig {
-            service_type: ServiceType::Rosetta,
-            service_name: "rosetta".into(),
-            client_port: Some(3087),
-            rosetta_graphql_node: Some("archive".into()),
-            rosetta_graphql_port: Some(3141),
-            ..Default::default()
+        let rosetta = Rosetta::<Native> {
+            image: (),
+            port: 3087,
+            graphql_node: "archive".into(),
+            graphql_port: 3141,
         };
-        let native =
-            rosetta_args(&rosetta, &layout(ExecutionMode::Native), "postgres://db/a").unwrap();
+        let native = rosetta_args(&rosetta, &layout(ExecutionMode::Native), "postgres://db/a");
         assert_eq!(value_of(&native, "--port"), Some("3087"));
         assert_eq!(value_of(&native, "--archive-uri"), Some("postgres://db/a"));
         assert_eq!(
             value_of(&native, "--graphql-uri"),
             Some("http://127.0.0.1:3141/graphql")
         );
-        let docker = rosetta_args(&rosetta, &layout(ExecutionMode::Docker), "pg").unwrap();
+        let docker = rosetta_args(&rosetta, &layout(ExecutionMode::Docker), "pg");
         assert_eq!(
             value_of(&docker, "--graphql-uri"),
             Some("http://archive-net:3141/graphql")
         );
-        // not a daemon
-        assert!(mina_args(&rosetta, &layout(ExecutionMode::Native)).is_err());
-
-        let mut lost = rosetta.clone();
-        lost.rosetta_graphql_node = None;
-        let err = rosetta_args(&lost, &layout(ExecutionMode::Native), "pg").unwrap_err();
-        assert!(err.to_string().contains("no rosetta_graphql_node"));
-    }
-
-    #[test]
-    fn daemon_needs_a_client_port() {
-        let mut seed = service(ServiceType::Seed, "seed");
-        seed.client_port = None;
-        let err = mina_args(&seed, &layout(ExecutionMode::Native)).unwrap_err();
-        assert!(err.to_string().contains("'seed' has no client_port"));
     }
 
     #[test]

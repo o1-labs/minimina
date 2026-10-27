@@ -7,15 +7,15 @@
 use crate::archive_node_api;
 use crate::cli::{ExecutionMode, Profile};
 use crate::daemon_args::{
-    mina_args, rosetta_args, sort_precomputed_block_files, DaemonFeatures, Layout,
-    PRECOMPUTED_BLOCKS_DIR, PRECOMPUTED_BLOCKS_FILE, ROSETTA_ENV,
+    rosetta_args, sort_precomputed_block_files, DaemonFeatures, Layout, PRECOMPUTED_BLOCKS_DIR,
+    PRECOMPUTED_BLOCKS_FILE, ROSETTA_ENV,
 };
 use crate::docker::compose::CONFIG_DIRECTORY;
 use crate::native::error::NativeError;
 use crate::native::port_manager;
 use crate::native::process_tracker::{proc_stat, ProcessRecord, ProcessTracker, Records};
-use crate::require;
-use crate::service::{ServiceConfig, ServiceType};
+use crate::service::typed::{Kind, Native, Role, Service};
+use crate::service::ServiceConfig;
 use chrono::Local;
 use log::{info, warn};
 use nix::sys::signal::{self, Signal};
@@ -149,7 +149,7 @@ impl NativeManager {
     /// only once every seed accepts libp2p connections, or `seed_timeout` passes.
     pub fn start_all(
         &self,
-        services: &[ServiceConfig],
+        services: &[Service<Native>],
         network_id: &str,
         seed_timeout: Duration,
     ) -> Result<()> {
@@ -162,31 +162,27 @@ impl NativeManager {
         if !running.is_empty() {
             return Err(NativeError::NetworkRunning(running).into());
         }
-        port_manager::check_ports_available(&port_manager::collect_all_ports(services)?)?;
+        port_manager::check_ports_available(&port_manager::collect_all_ports(services))?;
 
-        let (seeds, others): (Vec<&ServiceConfig>, Vec<&ServiceConfig>) = services
+        let (seeds, others): (Vec<&Service<Native>>, Vec<&Service<Native>>) = services
             .iter()
             .filter(|s| {
-                let skip = s.service_type == ServiceType::UptimeServiceBackend;
+                let skip = matches!(s.kind, Kind::UptimeServiceBackend(_));
                 if skip {
                     warn!(
                         "Skipping uptime service backend '{}' in native mode",
-                        s.service_name
+                        s.name
                     );
                 }
                 !skip
             })
-            .partition(|s| s.service_type == ServiceType::Seed);
+            .partition(|s| s.is_seed());
 
         // rosetta and the archive node api read a daemon and the archive
         // database, so they come last
-        let (apis, others): (Vec<&ServiceConfig>, Vec<&ServiceConfig>) =
-            others.into_iter().partition(|s| {
-                matches!(
-                    s.service_type,
-                    ServiceType::Rosetta | ServiceType::ArchiveNodeApi
-                )
-            });
+        let (apis, others): (Vec<&Service<Native>>, Vec<&Service<Native>>) = others
+            .into_iter()
+            .partition(|s| matches!(s.kind, Kind::Rosetta(_) | Kind::ArchiveNodeApi(_)));
 
         let result = seeds
             .iter()
@@ -210,27 +206,27 @@ impl NativeManager {
     }
 
     /// Waits until every seed accepts TCP connections on its libp2p (external) port.
-    fn wait_for_seeds(&self, seeds: &[&ServiceConfig], timeout: Duration) -> Result<()> {
+    fn wait_for_seeds(&self, seeds: &[&Service<Native>], timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
-        for seed in seeds {
-            let port = require!(seed, client_port)? + 2;
+        for (seed, daemon) in seeds.iter().filter_map(|s| Some((s, s.daemon()?))) {
+            let port = daemon.client_port + 2;
             info!(
                 "Waiting for seed '{}' to accept connections on port {port}",
-                seed.service_name
+                seed.name
             );
             let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
             while std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_err() {
-                let record = self.tracker().get(&seed.service_name)?;
+                let record = self.tracker().get(&seed.name)?;
                 if !record.as_ref().is_some_and(ProcessRecord::is_alive) {
                     return Err(NativeError::SeedExited {
-                        seed: seed.service_name.clone(),
-                        log: self.logs_dir().join(format!("{}.log", seed.service_name)),
+                        seed: seed.name.clone(),
+                        log: self.logs_dir().join(format!("{}.log", seed.name)),
                     }
                     .into());
                 }
                 if Instant::now() >= deadline {
                     return Err(NativeError::SeedTimeout {
-                        seed: seed.service_name.clone(),
+                        seed: seed.name.clone(),
                         port,
                         secs: timeout.as_secs(),
                     }
@@ -243,8 +239,8 @@ impl NativeManager {
     }
 
     /// Starts one service; fails if it is running or one of its ports is taken.
-    pub fn start_service(&self, service: &ServiceConfig, network_id: &str) -> Result<()> {
-        if service.service_type == ServiceType::UptimeServiceBackend {
+    pub fn start_service(&self, service: &Service<Native>, network_id: &str) -> Result<()> {
+        if matches!(service.kind, Kind::UptimeServiceBackend(_)) {
             return Err(NativeError::UptimeServiceUnsupported.into());
         }
         let names = process_names(service);
@@ -261,71 +257,72 @@ impl NativeManager {
         }
         port_manager::check_ports_available(&port_manager::collect_all_ports(
             std::slice::from_ref(service),
-        )?)?;
+        ))?;
         self.spawn_service(service, network_id)
     }
 
-    fn spawn_service(&self, service: &ServiceConfig, network_id: &str) -> Result<()> {
-        if service.service_type == ServiceType::ArchiveNodeApi {
-            // set by `network create`, which installs the server
-            let bin = require!(service, archive_node_api_bin)?;
-            let port = *require!(service, client_port)?;
-            let env = archive_node_api::env(&self.archive_db_uri(), port);
-            let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-            return self.spawn_with_env(&service.service_name, bin, &[], &env);
-        }
-        if service.service_type == ServiceType::Rosetta {
-            let layout = Layout {
+    fn spawn_service(&self, service: &Service<Native>, network_id: &str) -> Result<()> {
+        let layout = |config_dir| -> Result<Layout> {
+            Ok(Layout {
                 mode: ExecutionMode::Native,
                 network: network_id,
                 network_dir: utf8(&self.network_path)?,
-                config_dir: "",
+                config_dir,
                 uptime_service: None,
                 features: self.features,
-            };
-            let args = rosetta_args(service, &layout, &self.archive_db_uri())?;
-            return self.spawn_with_env(
-                &service.service_name,
-                &self.bin_path.join("mina-rosetta"),
-                &args,
-                ROSETTA_ENV,
-            );
+            })
+        };
+        let name = &service.name;
+        match &service.kind {
+            Kind::ArchiveNodeApi(api) => {
+                let env = archive_node_api::env(&self.archive_db_uri(), api.port);
+                let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                self.spawn_with_env(name, &api.server, &[], &env)
+            }
+            Kind::Rosetta(rosetta) => {
+                let args = rosetta_args(rosetta, &layout("")?, &self.archive_db_uri());
+                let rosetta = self.bin_path.join("mina-rosetta");
+                self.spawn_with_env(name, &rosetta, &args, ROSETTA_ENV)
+            }
+            Kind::UptimeServiceBackend(_) => Err(NativeError::UptimeServiceUnsupported.into()),
+            Kind::Daemon(daemon) => {
+                // the archive daemon pushes blocks to mina-archive, so that comes up first
+                if let Role::Archive { port, .. } = daemon.role {
+                    let archive = self.bin_path.join("mina-archive");
+                    let args = self.archive_args(port);
+                    self.spawn(&format!("{name}{ARCHIVE_SUFFIX}"), &archive, &args)?;
+                }
+                let config_dir = self.mina_config_dir(name)?;
+                let args = layout(utf8(&config_dir)?)?.daemon(name, daemon);
+                self.spawn(name, &self.bin_path.join("mina"), &args)
+            }
+            Kind::SnarkWorker(worker) => {
+                let config_dir = self.mina_config_dir(name)?;
+                let args = layout(utf8(&config_dir)?)?.snark_worker(worker);
+                self.spawn(name, &self.bin_path.join("mina"), &args)
+            }
         }
+    }
 
-        // the archive daemon pushes blocks to mina-archive, so that comes up first
-        if service.service_type == ServiceType::ArchiveNode {
-            let name = format!("{}{ARCHIVE_SUFFIX}", service.service_name);
-            let (binary, args) = self.archive_process_command(service)?;
-            self.spawn(&name, &binary, &args)?;
-        }
-
-        let config_dir = self.config_dir_for_service(&service.service_name);
+    /// The config directory of a `mina` process, created.
+    fn mina_config_dir(&self, name: &str) -> Result<PathBuf> {
+        let config_dir = self.config_dir_for_service(name);
         fs::create_dir_all(&config_dir)?;
         if self.features.precomputed_blocks_dir {
             // the daemon refuses a -precomputed-blocks-dir that does not exist
             fs::create_dir_all(config_dir.join(PRECOMPUTED_BLOCKS_DIR))?;
         }
-        let (binary, args) = self.build_command(
-            service,
-            network_id,
-            utf8(&self.network_path)?,
-            utf8(&config_dir)?,
-        )?;
-        self.spawn(&service.service_name, &binary, &args)
+        Ok(config_dir)
     }
 
-    fn archive_process_command(&self, service: &ServiceConfig) -> Result<(PathBuf, Vec<String>)> {
-        let port = require!(service, archive_port)?;
-        Ok((
-            self.bin_path.join("mina-archive"),
-            vec![
-                "run".into(),
-                "--postgres-uri".into(),
-                self.archive_db_uri(),
-                "--server-port".into(),
-                port.to_string(),
-            ],
-        ))
+    fn archive_args(&self, port: u16) -> Vec<String> {
+        vec![
+            "run".into(),
+            "--postgres-uri".into(),
+            self.archive_db_uri(),
+            "--server-port".into(),
+            port.to_string(),
+        ]
     }
 
     fn spawn(&self, name: &str, binary: &Path, args: &[String]) -> Result<()> {
@@ -384,24 +381,6 @@ impl NativeManager {
         })?;
         info!("Service '{name}' started with PID {pid}");
         Ok(())
-    }
-
-    fn build_command(
-        &self,
-        service: &ServiceConfig,
-        network_id: &str,
-        network_path: &str,
-        config_dir: &str,
-    ) -> Result<(PathBuf, Vec<String>)> {
-        let layout = Layout {
-            mode: ExecutionMode::Native,
-            network: network_id,
-            network_dir: network_path,
-            config_dir,
-            uptime_service: None,
-            features: self.features,
-        };
-        Ok((self.bin_path.join("mina"), mina_args(service, &layout)?))
     }
 
     /// Stops every tracked process: SIGTERM to all groups, then SIGKILL after `timeout`.
@@ -498,10 +477,10 @@ impl NativeManager {
 }
 
 /// Process names minimina tracks for `service`.
-fn process_names(service: &ServiceConfig) -> Vec<String> {
-    let mut names = vec![service.service_name.clone()];
-    if service.service_type == ServiceType::ArchiveNode {
-        names.push(format!("{}{ARCHIVE_SUFFIX}", service.service_name));
+fn process_names(service: &Service<Native>) -> Vec<String> {
+    let mut names = vec![service.name.clone()];
+    if service.is_archive() {
+        names.push(format!("{}{ARCHIVE_SUFFIX}", service.name));
     }
     names
 }
@@ -560,21 +539,27 @@ fn wait_until_dead(records: &[ProcessRecord], timeout: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::typed::{self, ArchiveNodeApi, Daemon, Peers, Rosetta};
+    use crate::service::ServiceType;
     use std::io;
 
-    fn manager() -> NativeManager {
-        NativeManager::new(
-            Path::new("/net"),
-            Path::new("/opt/mina"),
-            DEFAULT_POSTGRES_URI,
-            Profile::Devnet,
-        )
-    }
-
-    fn args_for(service: &ServiceConfig) -> (PathBuf, Vec<String>) {
-        manager()
-            .build_command(service, "net", "/net", "/net/config-directory/x")
-            .unwrap()
+    /// `mina` arguments of the service `name` of a checked network.
+    fn args_for(configs: &[ServiceConfig], name: &str) -> Vec<String> {
+        let services = typed::check::<Native>(configs).unwrap();
+        let service = services.iter().find(|s| s.name == name).unwrap();
+        let layout = Layout {
+            mode: ExecutionMode::Native,
+            network: "net",
+            network_dir: "/net",
+            config_dir: "/net/config-directory/x",
+            uptime_service: None,
+            features: DaemonFeatures::default(),
+        };
+        match &service.kind {
+            Kind::Daemon(daemon) => layout.daemon(name, daemon),
+            Kind::SnarkWorker(worker) => layout.snark_worker(worker),
+            other => panic!("not run by mina: {other:?}"),
+        }
     }
 
     fn value_of<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
@@ -593,8 +578,7 @@ mod tests {
             libp2p_keypair_path: Some("k".into()),
             ..Default::default()
         };
-        let (bin, args) = args_for(&seed);
-        assert_eq!(bin, Path::new("/opt/mina/mina"));
+        let args = args_for(&[seed], "seed");
         assert_eq!(args[0], "daemon");
         assert!(args.contains(&"-seed".to_string()));
         for (flag, port) in [
@@ -627,7 +611,7 @@ mod tests {
             public_key_path: Some("/net/network-keypairs/mina-bp-1".into()),
             ..Default::default()
         };
-        let (_, args) = args_for(&bp);
+        let args = args_for(&[bp], "mina-bp-1");
         assert_eq!(
             value_of(&args, "-block-producer-key"),
             Some("/net/network-keypairs/mina-bp-1")
@@ -645,7 +629,7 @@ mod tests {
             libp2p_keypair: Some("inline".into()),
             ..Default::default()
         };
-        let (_, args) = args_for(&bp);
+        let args = args_for(&[bp], "bp");
         assert_eq!(
             value_of(&args, "-peer-list-file"),
             Some("/net/peer_list_file.txt")
@@ -669,7 +653,7 @@ mod tests {
             peers: Some(vec!["/ip4/1/tcp/2/p2p/x".into()]),
             ..Default::default()
         };
-        let (_, args) = args_for(&coordinator);
+        let args = args_for(std::slice::from_ref(&coordinator), "coord");
         assert_eq!(value_of(&args, "-run-snark-coordinator"), Some("B62q"));
         assert_eq!(value_of(&args, "-snark-worker-fee"), Some("0.001"));
         assert_eq!(value_of(&args, "-work-selection"), Some("seq"));
@@ -683,7 +667,7 @@ mod tests {
             snark_worker_proof_level: Some("none".into()),
             ..Default::default()
         };
-        let (_, args) = args_for(&worker);
+        let args = args_for(&[coordinator, worker], "w");
         assert_eq!(args[..2], ["internal", "snark-worker"]);
         assert_eq!(value_of(&args, "-daemon-address"), Some("127.0.0.1:7000"));
         assert_eq!(value_of(&args, "-proof-level"), Some("none"));
@@ -698,21 +682,8 @@ mod tests {
             archive_port: Some(3086),
             ..Default::default()
         };
-        let (_, args) = args_for(&archive);
+        let args = args_for(&[archive], "arch");
         assert_eq!(value_of(&args, "-archive-address"), Some("127.0.0.1:3086"));
-    }
-
-    #[test]
-    fn daemon_without_client_port_is_rejected() {
-        let bp = ServiceConfig {
-            service_type: ServiceType::BlockProducer,
-            service_name: "bp".into(),
-            ..Default::default()
-        };
-        let err = manager()
-            .build_command(&bp, "net", "/net", "/c")
-            .unwrap_err();
-        assert!(err.to_string().contains("'bp' has no client_port"));
     }
 
     #[test]
@@ -809,20 +780,30 @@ exec sleep 300"#
 
     const SEED_WAIT: Duration = Duration::from_secs(20);
 
-    fn producer(name: &str) -> ServiceConfig {
-        ServiceConfig {
-            service_type: ServiceType::BlockProducer,
-            ..seed(name)
+    fn daemon(name: &str, role: Role<Native>) -> Service<Native> {
+        Service {
+            name: name.into(),
+            kind: Kind::Daemon(Daemon {
+                image: (),
+                client_port: free_port(),
+                published: true,
+                peers: Peers::None,
+                libp2p_keypair: None,
+                role,
+            }),
         }
     }
 
-    fn seed(name: &str) -> ServiceConfig {
-        ServiceConfig {
-            service_type: ServiceType::Seed,
-            service_name: name.into(),
-            client_port: Some(free_port()),
-            ..Default::default()
-        }
+    fn producer(name: &str) -> Service<Native> {
+        daemon(name, Role::BlockProducer { key: None })
+    }
+
+    fn seed(name: &str) -> Service<Native> {
+        daemon(name, Role::Seed)
+    }
+
+    fn archive(name: &str, port: u16) -> Service<Native> {
+        daemon(name, Role::Archive { port, image: () })
     }
 
     /// Waits until the service has logged `needle` `count` times.
@@ -907,12 +888,9 @@ exec sleep 300"#
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
         let native = sandbox.manager();
         let port = free_port();
-        let api = ServiceConfig {
-            service_type: ServiceType::ArchiveNodeApi,
-            service_name: "ana".into(),
-            client_port: Some(port),
-            archive_node_api_bin: Some(bin),
-            ..Default::default()
+        let api = Service {
+            name: "ana".into(),
+            kind: Kind::ArchiveNodeApi(ArchiveNodeApi { server: bin, port }),
         };
         native.start_service(&api, "net").unwrap();
         let db = native.archive_db_uri();
@@ -926,13 +904,14 @@ exec sleep 300"#
             "echo \"$(basename $0) pool=$MINA_ROSETTA_MAX_DB_POOL_SIZE $*\"; exec sleep 300",
         );
         let native = sandbox.manager();
-        let rosetta = ServiceConfig {
-            service_type: ServiceType::Rosetta,
-            service_name: "r".into(),
-            client_port: Some(free_port()),
-            rosetta_graphql_node: Some("archive".into()),
-            rosetta_graphql_port: Some(3141),
-            ..Default::default()
+        let rosetta = Service {
+            name: "r".into(),
+            kind: Kind::Rosetta(Rosetta {
+                image: (),
+                port: free_port(),
+                graphql_node: "archive".into(),
+                graphql_port: 3141,
+            }),
         };
         native.start_service(&rosetta, "net").unwrap();
         wait_for_log(&native, "r", "mina-rosetta pool=16 --port", 1);
@@ -976,9 +955,7 @@ exec sleep 300"#
         let sandbox = Sandbox::new(&listening_daemon(0));
         fs::remove_file(sandbox.bin.path().join("mina-archive")).unwrap();
         let native = sandbox.manager();
-        let mut archive = seed("arch");
-        archive.service_type = ServiceType::ArchiveNode;
-        archive.archive_port = Some(free_port());
+        let archive = archive("arch", free_port());
 
         let err = native
             .start_all(&[seed("a"), archive], "net", SEED_WAIT)
@@ -1033,10 +1010,8 @@ exec sleep 300"#
     fn archive_node_runs_mina_archive_first() {
         let sandbox = Sandbox::new("echo \"$0 $*\"; exec sleep 300");
         let native = sandbox.manager();
-        let mut archive = seed("arch");
-        archive.service_type = ServiceType::ArchiveNode;
         let archive_port = free_port();
-        archive.archive_port = Some(archive_port);
+        let archive = archive("arch", archive_port);
 
         native.start_service(&archive, "net").unwrap();
         assert_eq!(alive(&native), vec!["arch", "arch-archive"]);

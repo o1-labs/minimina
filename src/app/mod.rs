@@ -16,6 +16,7 @@ use crate::{
     native::manager::{NativeManager, DEFAULT_POSTGRES_URI, DEFAULT_SHUTDOWN_TIMEOUT},
     network_meta::NetworkMeta,
     runner::{Runner, SystemRunner},
+    service::typed::{self, Mode, Service},
 };
 use anyhow::{bail, Context as _, Result};
 use std::{
@@ -98,6 +99,16 @@ impl Context {
             self.profile,
         )
         .with_features(self.features))
+    }
+
+    /// The services of a network from its `services.json`, checked for mode `M`.
+    pub fn services<M: Mode>(&self, network_id: &str) -> Result<Vec<Service<M>>> {
+        let path = self.dirs.services_file_path(network_id);
+        let configs = self
+            .dirs
+            .get_services_info(network_id)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        typed::check(&configs).with_context(|| format!("{} is not valid", path.display()))
     }
 
     pub fn ensure_network_exists(&self, network_id: &str) -> Result<()> {

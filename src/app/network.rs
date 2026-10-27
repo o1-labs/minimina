@@ -11,7 +11,10 @@ use crate::{
     node_client,
     output::{self, network},
     runner::check,
-    service::{ServiceConfig, ServiceType},
+    service::{
+        typed::{self, Docker, Native},
+        ServiceConfig, ServiceType,
+    },
     utils::{self, fetch_schema, is_remote_schema, TIMEOUT_IN_SECS},
 };
 use anyhow::{bail, Context as _, Result};
@@ -59,14 +62,18 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             meta.save(&ctx.dirs.network_path(&network_id))
                 .context("Failed to record daemon features")?;
 
+            // every problem of every service, before anything runs
+            let invalid = || format!("The services of network '{network_id}' are not valid");
             match ctx.mode {
                 ExecutionMode::Docker => {
+                    let typed = typed::check::<Docker>(&services).with_context(invalid)?;
                     docker
-                        .compose_generate_file(&services, features)
+                        .compose_generate_file(&typed, features)
                         .context("Failed to generate docker-compose.yaml")?;
                     create_network(ctx, &docker, &network_id, &services)
                 }
                 ExecutionMode::Native => {
+                    typed::check::<Native>(&services).with_context(invalid)?;
                     let native = ctx.native(&network_id)?;
                     native
                         .generate_config(&services)
@@ -180,7 +187,7 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
                     }
                 }
                 ExecutionMode::Native => {
-                    let services = ctx.dirs.get_services_info(&network_id)?;
+                    let services = ctx.services::<Native>(&network_id)?;
                     ctx.native(&network_id)?
                         .start_all(
                             &services,

@@ -6,10 +6,9 @@
 use crate::archive_node_api;
 use crate::cli::{ExecutionMode, Profile};
 use crate::daemon_args::{
-    mina_args, rosetta_args, DaemonFeatures, Layout, PRECOMPUTED_BLOCKS_DIR, ROSETTA_ENV,
+    rosetta_args, DaemonFeatures, Layout, PRECOMPUTED_BLOCKS_DIR, ROSETTA_ENV,
 };
-use crate::require;
-use crate::service::{ServiceConfig, ServiceError, ServiceType};
+use crate::service::typed::{self, Daemon, Docker, Kind, Role};
 use log::debug;
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
@@ -26,7 +25,7 @@ pub(crate) struct DockerCompose {
     )]
     x_defaults: Defaults,
     volumes: HashMap<String, Option<String>>,
-    services: HashMap<String, Service>,
+    services: HashMap<String, ComposeService>,
 }
 
 fn serialize_defaults_with_anchor<S>(defaults: &Defaults, s: S) -> Result<S::Ok, S::Error>
@@ -59,7 +58,7 @@ struct Environment {
 }
 
 #[derive(Default, Serialize)]
-struct Service {
+struct ComposeService {
     #[serde(rename = "<<", skip_serializing_if = "Option::is_none")]
     merge: Option<&'static str>,
     container_name: String,
@@ -88,7 +87,7 @@ const RAYON_NUM_THREADS: u32 = 2;
 
 impl DockerCompose {
     pub fn generate(
-        configs: &[ServiceConfig],
+        services: &[typed::Service<Docker>],
         network_path: &Path,
         profile: Profile,
         features: DaemonFeatures,
@@ -124,309 +123,185 @@ impl DockerCompose {
             volumes
         };
         let config_dir = format!("/{CONFIG_DIRECTORY}");
-        let command = |config: &ServiceConfig, uptime_service: Option<&str>| {
-            let layout = Layout {
-                mode: ExecutionMode::Docker,
-                network: network_name,
-                network_dir: "/local-network",
-                config_dir: &config_dir,
-                uptime_service,
-                features,
-            };
-            mina_args(config, &layout).map(|args| args.join(" "))
+        let full_name = |name: &str| format!("{name}-{network_name}");
+        let uptime_service =
+            typed::uptime_service_backend(services).map(|(s, _)| full_name(&s.name));
+        let layout = |uptime_service| Layout {
+            mode: ExecutionMode::Docker,
+            network: network_name,
+            network_dir: "/local-network",
+            config_dir: &config_dir,
+            uptime_service,
+            features,
         };
-
-        //insert volumes for each service
-        let mut volumes = configs
-            .iter()
-            .filter(|c| {
-                !matches!(
-                    c.service_type,
-                    ServiceType::Rosetta | ServiceType::ArchiveNodeApi
-                )
+        // client (GraphQL is client + 1) and external ports, when published
+        let daemon_ports = |daemon: &Daemon<Docker>| {
+            daemon.published.then(|| {
+                let port = daemon.client_port;
+                vec![
+                    format!("{}:{}", port + 1, port + 1),
+                    port.to_string(),
+                    (port + 2).to_string(),
+                ]
             })
-            .fold(HashMap::new(), |mut acc, config| {
-                let service_name = format!("{}-{network_name}", config.service_name.clone());
-                if let Some(volume) = blocks_volume(&service_name) {
-                    acc.insert(volume, None);
-                }
-                acc.insert(service_name, None);
-                acc
-            });
-
-        let uptime_service_hostname = if let Some(uptime_service_backend) =
-            ServiceConfig::get_uptime_service_backend(configs)
-        {
-            let uptime_service_name = format!(
-                "{}-{network_name}",
-                uptime_service_backend.service_name.clone()
-            );
-            Some(uptime_service_name)
-        } else {
-            None
         };
+        let mina_service = |name: &str, image: &str, args: Vec<String>| ComposeService {
+            merge: Some("*default-attributes"),
+            container_name: name.to_string(),
+            entrypoint: Some(vec!["mina".to_string()]),
+            volumes: Some(daemon_volumes(name)),
+            image: image.to_string(),
+            command: Some(args.join(" ")),
+            ..Default::default()
+        };
+        let archive = typed::archive_node(services);
+        let postgres_name = format!("postgres-{network_name}");
+        let archive_uri = format!("postgres://postgres:postgres@{postgres_name}:5432/archive");
 
-        let mut services: HashMap<String, Service> = configs
-            .iter()
-            .filter_map(|config| {
-                match config.service_type {
-                    // We'll handle ArchiveNode outside of this map operation
-                    // because it requires adding additional services: postgres, mina-archive-service
-                    ServiceType::ArchiveNode => None,
-                    // We'll handle UptimeServiceBackend outside of this map operation
-                    // because it has different shape than other daemon services
-                    ServiceType::UptimeServiceBackend => None,
-                    // not daemons: added with the archive database below
-                    ServiceType::Rosetta | ServiceType::ArchiveNodeApi => None,
-                    _ => {
-                        let service_name =
-                            format!("{}-{network_name}", config.service_name.clone());
-                        let service = Service {
-                            merge: Some("*default-attributes"),
-                            container_name: service_name.clone(),
-                            entrypoint: Some(vec!["mina".to_string()]),
-                            volumes: Some(daemon_volumes(&service_name)),
-                            image: match owned(require!(config, docker_image)) {
-                                Ok(image) => image,
-                                Err(e) => return Some(Err(e)),
-                            },
-                            command: Some(
-                                match command(config, uptime_service_hostname.as_deref()) {
-                                    Ok(command) => command,
-                                    Err(e) => return Some(Err(e)),
-                                },
-                            ),
-                            ports: match config.client_port {
-                                Some(port) => {
-                                    let gql_port = port + 1;
-                                    let external_port = port + 2;
-                                    Some(vec![
-                                        format!("{}:{}", gql_port, gql_port),
-                                        port.to_string(),
-                                        external_port.to_string(),
-                                    ])
-                                }
-                                None => None,
-                            },
-                            ..Default::default()
-                        };
-                        Some(Ok((
-                            format!("{}-{network_name}", config.service_name.clone()),
-                            service,
-                        )))
-                    }
+        let mut volumes = HashMap::new();
+        let mut compose_services = HashMap::new();
+        for service in services {
+            let name = full_name(&service.name);
+            if !matches!(service.kind, Kind::Rosetta(_) | Kind::ArchiveNodeApi(_)) {
+                if let Some(volume) = blocks_volume(&name) {
+                    volumes.insert(volume, None);
                 }
-            })
-            .collect::<io::Result<_>>()?;
-
-        // Add ArchiveNode service bits
-        if let Some(archive_config) = ServiceConfig::get_archive_node(configs) {
-            // Add postgres service
-            volumes.insert(POSTGRES_DATA.to_string(), None);
-            let mut postgres_environment = HashMap::new();
-            postgres_environment.insert("POSTGRES_PASSWORD".to_string(), "postgres".to_string());
-            let postgres_name = format!("postgres-{network_name}");
-            services.insert(
-                postgres_name.clone(),
-                Service {
-                    container_name: postgres_name.clone(),
-                    image: POSTGRES_IMAGE.to_string(),
-                    environment: Some(postgres_environment),
-                    volumes: Some(vec![format!("{}:/var/lib/postgresql/data", POSTGRES_DATA)]),
-                    ports: Some(vec!["5432".to_string()]),
-                    ..Default::default()
-                },
-            );
-
-            // Add archive service
-            let archive_node_name =
-                format!("{}-{network_name}", archive_config.service_name.clone());
-            let archive_service_name = format!(
-                "{}-service-{network_name}",
-                archive_config.service_name.clone()
-            );
-            let archive_port = archive_config.archive_port.unwrap_or(3086);
-            let archive_command = format!(
-                "mina-archive run --postgres-uri postgres://postgres:postgres@{}:5432/archive \
-                --server-port {}",
-                postgres_name, archive_port
-            );
-            services.insert(
-                archive_service_name.clone(),
-                Service {
-                    container_name: archive_service_name.clone(),
-                    image: owned(require!(archive_config, archive_docker_image))?,
-                    command: Some(archive_command),
-                    volumes: Some(vec![
-                        format!("{}:/data", archive_node_name),
-                        format!("{}:/local-network", network_path_string),
-                    ]),
-                    ports: Some(vec![archive_port.to_string()]),
-                    depends_on: Some(vec![postgres_name]),
-                    ..Default::default()
-                },
-            );
-
-            // Add archive node
-            let archive_command = command(archive_config, None)?;
-            services.insert(
-                archive_node_name.clone(),
-                Service {
-                    merge: Some("*default-attributes"),
-                    container_name: archive_node_name.clone(),
-                    entrypoint: Some(vec!["mina".to_string()]),
-                    volumes: Some(daemon_volumes(&archive_node_name)),
-                    image: owned(require!(archive_config, docker_image))?,
-                    command: Some(archive_command),
-                    ports: match archive_config.client_port {
-                        Some(port) => {
-                            let gql_port = port + 1;
-                            let external_port = port + 2;
-                            Some(vec![
-                                format!("{}:{}", gql_port, gql_port),
-                                port.to_string(),
-                                external_port.to_string(),
-                            ])
-                        }
-                        None => None,
-                    },
-                    depends_on: Some(vec![archive_service_name]),
-                    ..Default::default()
-                },
-            );
-        }
-
-        // Add UptimeServiceBackend service
-        if let Some(uptime_service_backend) = ServiceConfig::get_uptime_service_backend(configs) {
-            let uptime_service_name = format!(
-                "{}-{network_name}",
-                uptime_service_backend.service_name.clone()
-            );
-            let mut uptime_service_env = HashMap::new();
-            let app_config = Self::get_filename(
-                owned(require!(
-                    uptime_service_backend,
-                    uptime_service_backend_app_config
-                ))?
-                .as_path(),
-            )?;
-            let minasheets_config = Self::get_filename(
-                owned(require!(
-                    uptime_service_backend,
-                    uptime_service_backend_minasheets
-                ))?
-                .as_path(),
-            )?;
-            uptime_service_env.insert(
-                "CONFIG_FILE".to_string(),
-                format!("/local-network/uptime_service_config/{app_config}"),
-            );
-            uptime_service_env.insert(
-                "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
-                format!("/local-network/uptime_service_config/{minasheets_config}"),
-            );
-
-            services.insert(
-                uptime_service_name.clone(),
-                Service {
-                    container_name: uptime_service_name.clone(),
-                    volumes: Some(vec![
-                        format!("{network_path_string}:/local-network"),
-                        format!("{network_path_string}/uptime-storage:/uptime-storage"),
-                    ]),
-                    environment: Some(uptime_service_env),
-                    image: owned(require!(uptime_service_backend, docker_image))?,
-                    ports: Some(vec!["8080:8080".to_string()]),
-                    ..Default::default()
-                },
-            );
-        }
-
-        for rosetta in configs
-            .iter()
-            .filter(|c| c.service_type == ServiceType::Rosetta)
-        {
-            let archive = ServiceConfig::get_archive_node(configs).ok_or_else(|| {
-                invalid(format!(
-                    "rosetta '{}' needs an archive node",
-                    rosetta.service_name
-                ))
-            })?;
-            let layout = Layout {
-                mode: ExecutionMode::Docker,
-                network: network_name,
-                network_dir: "/local-network",
-                config_dir: &config_dir,
-                uptime_service: None,
-                features,
-            };
-            let archive_uri =
-                format!("postgres://postgres:postgres@postgres-{network_name}:5432/archive");
-            let args = rosetta_args(rosetta, &layout, &archive_uri)?;
-            let port = owned(require!(rosetta, client_port))?;
-            let name = format!("{}-{network_name}", rosetta.service_name);
-            let mut depends_on = vec![format!("{}-{network_name}", archive.service_name)];
-            if let Some(node) = &rosetta.rosetta_graphql_node {
-                depends_on.push(format!("{node}-{network_name}"));
+                volumes.insert(name.clone(), None);
             }
-            depends_on.dedup();
-            // a service's own `environment` replaces the merged default one
-            let environment = ROSETTA_ENV
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .chain([(Profile::ENV.to_string(), profile.to_string())])
-                .collect();
-            services.insert(
-                name.clone(),
-                Service {
-                    // MINA_PROFILE and the restart policy of the daemons
-                    merge: Some("*default-attributes"),
-                    container_name: name,
-                    image: owned(require!(rosetta, docker_image))?,
-                    // the image's own entrypoint starts a whole stack (daemon, postgres)
-                    entrypoint: Some(vec!["mina-rosetta".to_string()]),
-                    command: Some(args.join(" ")),
-                    environment: Some(environment),
-                    ports: Some(vec![format!("{port}:{port}")]),
-                    depends_on: Some(depends_on),
-                    ..Default::default()
-                },
-            );
-        }
-
-        for api in configs
-            .iter()
-            .filter(|c| c.service_type == ServiceType::ArchiveNodeApi)
-        {
-            let archive = ServiceConfig::get_archive_node(configs).ok_or_else(|| {
-                invalid(format!(
-                    "archive node api '{}' needs an archive node",
-                    api.service_name
-                ))
-            })?;
-            let port = owned(require!(api, client_port))?;
-            let pg_conn =
-                format!("postgres://postgres:postgres@postgres-{network_name}:5432/archive");
-            let name = format!("{}-{network_name}", api.service_name);
-            services.insert(
-                name.clone(),
-                Service {
-                    container_name: name,
-                    image: owned(require!(api, docker_image))?,
-                    environment: Some(
-                        archive_node_api::env(&pg_conn, port)
-                            .into_iter()
-                            .map(|(k, v)| (k.to_string(), v))
-                            .collect(),
-                    ),
-                    ports: Some(vec![format!("{port}:{port}")]),
-                    depends_on: Some(vec![
-                        format!("postgres-{network_name}"),
-                        format!("{}-{network_name}", archive.service_name),
-                    ]),
-                    ..Default::default()
-                },
-            );
+            match &service.kind {
+                Kind::Daemon(daemon) => {
+                    let args = layout(uptime_service.as_deref()).daemon(&service.name, daemon);
+                    let mut node = ComposeService {
+                        ports: daemon_ports(daemon),
+                        ..mina_service(&name, &daemon.image, args)
+                    };
+                    if let Role::Archive { port, image } = &daemon.role {
+                        // the daemon pushes blocks to mina-archive, which writes to postgres
+                        volumes.insert(POSTGRES_DATA.to_string(), None);
+                        compose_services.insert(
+                            postgres_name.clone(),
+                            ComposeService {
+                                container_name: postgres_name.clone(),
+                                image: POSTGRES_IMAGE.to_string(),
+                                environment: Some(HashMap::from([(
+                                    "POSTGRES_PASSWORD".to_string(),
+                                    "postgres".to_string(),
+                                )])),
+                                volumes: Some(vec![format!(
+                                    "{POSTGRES_DATA}:/var/lib/postgresql/data"
+                                )]),
+                                ports: Some(vec!["5432".to_string()]),
+                                ..Default::default()
+                            },
+                        );
+                        let archive_service = full_name(&format!("{}-service", service.name));
+                        compose_services.insert(
+                            archive_service.clone(),
+                            ComposeService {
+                                container_name: archive_service.clone(),
+                                image: image.clone(),
+                                command: Some(format!(
+                                    "mina-archive run --postgres-uri {archive_uri} --server-port {port}"
+                                )),
+                                volumes: Some(vec![
+                                    format!("{name}:/data"),
+                                    format!("{network_path_string}:/local-network"),
+                                ]),
+                                ports: Some(vec![port.to_string()]),
+                                depends_on: Some(vec![postgres_name.clone()]),
+                                ..Default::default()
+                            },
+                        );
+                        // the archive daemon has no uptime service
+                        node.command = Some(layout(None).daemon(&service.name, daemon).join(" "));
+                        node.depends_on = Some(vec![archive_service]);
+                    }
+                    compose_services.insert(name, node);
+                }
+                Kind::SnarkWorker(worker) => {
+                    let args = layout(uptime_service.as_deref()).snark_worker(worker);
+                    compose_services.insert(name.clone(), mina_service(&name, &worker.image, args));
+                }
+                Kind::UptimeServiceBackend(backend) => {
+                    let config_file = |path: &Path| -> io::Result<String> {
+                        Ok(format!(
+                            "/local-network/uptime_service_config/{}",
+                            Self::get_filename(path)?
+                        ))
+                    };
+                    compose_services.insert(
+                        name.clone(),
+                        ComposeService {
+                            container_name: name,
+                            volumes: Some(vec![
+                                format!("{network_path_string}:/local-network"),
+                                format!("{network_path_string}/uptime-storage:/uptime-storage"),
+                            ]),
+                            environment: Some(HashMap::from([
+                                ("CONFIG_FILE".to_string(), config_file(&backend.app_config)?),
+                                (
+                                    "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
+                                    config_file(&backend.minasheets)?,
+                                ),
+                            ])),
+                            image: backend.image.clone(),
+                            ports: Some(vec!["8080:8080".to_string()]),
+                            ..Default::default()
+                        },
+                    );
+                }
+                Kind::Rosetta(rosetta) => {
+                    let args = rosetta_args(rosetta, &layout(None), &archive_uri);
+                    let mut depends_on: Vec<String> =
+                        archive.map(|a| full_name(&a.name)).into_iter().collect();
+                    depends_on.push(full_name(&rosetta.graphql_node));
+                    depends_on.dedup();
+                    // a service's own `environment` replaces the merged default one
+                    let environment = ROSETTA_ENV
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .chain([(Profile::ENV.to_string(), profile.to_string())])
+                        .collect();
+                    let port = rosetta.port;
+                    compose_services.insert(
+                        name.clone(),
+                        ComposeService {
+                            // MINA_PROFILE and the restart policy of the daemons
+                            merge: Some("*default-attributes"),
+                            container_name: name,
+                            image: rosetta.image.clone(),
+                            // the image's own entrypoint starts a whole stack (daemon, postgres)
+                            entrypoint: Some(vec!["mina-rosetta".to_string()]),
+                            command: Some(args.join(" ")),
+                            environment: Some(environment),
+                            ports: Some(vec![format!("{port}:{port}")]),
+                            depends_on: Some(depends_on),
+                            ..Default::default()
+                        },
+                    );
+                }
+                Kind::ArchiveNodeApi(api) => {
+                    let port = api.port;
+                    let mut depends_on = vec![postgres_name.clone()];
+                    depends_on.extend(archive.map(|a| full_name(&a.name)));
+                    compose_services.insert(
+                        name.clone(),
+                        ComposeService {
+                            container_name: name,
+                            image: api.server.clone(),
+                            environment: Some(
+                                archive_node_api::env(&archive_uri, port)
+                                    .into_iter()
+                                    .map(|(k, v)| (k.to_string(), v))
+                                    .collect(),
+                            ),
+                            ports: Some(vec![format!("{port}:{port}")]),
+                            depends_on: Some(depends_on),
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
         }
 
         let compose = DockerCompose {
@@ -436,20 +311,16 @@ impl DockerCompose {
                 environment: Environment {
                     mina_privkey_pass: "naughty blue worm".to_string(),
                     mina_libp2p_pass: "naughty blue worm".to_string(),
-                    uptime_privkey_pass: if ServiceConfig::get_uptime_service_backend(configs)
+                    uptime_privkey_pass: uptime_service
                         .is_some()
-                    {
-                        Some("naughty blue worm".to_string())
-                    } else {
-                        None
-                    },
+                        .then(|| "naughty blue worm".to_string()),
                     mina_client_trustlist: "0.0.0.0/0".to_string(),
                     rayon_num_threads: RAYON_NUM_THREADS,
                     mina_profile: profile,
                 },
             },
             volumes,
-            services,
+            services: compose_services,
         };
 
         let yaml_output = serde_norway::to_string(&compose).map_err(Error::other)?;
@@ -491,15 +362,21 @@ fn path_str(path: &Path) -> io::Result<&str> {
         .ok_or_else(|| invalid(format!("path '{}' is not valid UTF-8", path.display())))
 }
 
-/// A field the compose file needs, owned (from [`require!`]).
-fn owned<T: Clone>(field: Result<&T, ServiceError>) -> io::Result<T> {
-    Ok(field?.clone())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::ServiceType;
+    use crate::service::{ServiceConfig, ServiceType};
+
+    /// The compose file of `configs`, checked as `network create` does.
+    fn generate(
+        configs: &[ServiceConfig],
+        network_path: &Path,
+        profile: Profile,
+        features: DaemonFeatures,
+    ) -> io::Result<String> {
+        let services = typed::check::<Docker>(configs)?;
+        DockerCompose::generate(&services, network_path, profile, features)
+    }
 
     #[test]
     fn test_generate() {
@@ -523,13 +400,15 @@ mod tests {
                 service_type: ServiceType::SnarkCoordinator,
                 docker_image: Some("snark-image".into()),
                 client_port: Some(8302),
+                snark_coordinator_fees: Some("0.001".into()),
+                public_key: Some("B62".into()),
                 ..Default::default()
             },
             ServiceConfig {
                 service_name: "snark-worker".to_string(),
                 service_type: ServiceType::SnarkWorker,
                 docker_image: Some("worker-image".into()),
-                client_port: Some(8303),
+                snark_coordinator_host: Some("snark-coordinator".into()),
                 ..Default::default()
             },
             ServiceConfig {
@@ -542,7 +421,7 @@ mod tests {
             },
         ];
         let network_path = Path::new("/not-a-real-path");
-        let docker_compose = DockerCompose::generate(
+        let docker_compose = generate(
             &configs,
             network_path,
             Profile::Devnet,
@@ -586,7 +465,7 @@ mod tests {
             },
         ];
         let network_path = Path::new("/not-a-real-path");
-        let docker_compose = DockerCompose::generate(
+        let docker_compose = generate(
             &configs,
             network_path,
             Profile::Devnet,
@@ -632,7 +511,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let yaml = DockerCompose::generate(
+        let yaml = generate(
             &configs,
             Path::new("/net/hf"),
             Profile::Devnet,
@@ -664,7 +543,7 @@ mod tests {
         // no config volume for rosetta
         assert!(compose["volumes"].get("rosetta-hf").is_none());
 
-        let without_archive = DockerCompose::generate(
+        let without_archive = generate(
             &[configs[0].clone(), configs[2].clone()],
             Path::new("/net/hf"),
             Profile::Devnet,
@@ -703,7 +582,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let yaml = DockerCompose::generate(
+        let yaml = generate(
             &configs,
             Path::new("/net/hf"),
             Profile::Devnet,
@@ -746,7 +625,7 @@ mod tests {
         let topology: Topology = serde_json::from_str(&contents)?;
         let peers_file = dir_manager.peer_list_file(network_id);
         let services = topology.services(&peers_file);
-        let compose_contents = DockerCompose::generate(
+        let compose_contents = generate(
             &services,
             &network_path,
             Profile::Devnet,
@@ -782,7 +661,7 @@ mod tests {
             ..Default::default()
         }];
         let network_path = Path::new("/not-a-real-path/network-id");
-        let docker_compose = DockerCompose::generate(
+        let docker_compose = generate(
             &configs,
             network_path,
             Profile::Devnet,
