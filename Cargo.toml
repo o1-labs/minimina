@@ -23,8 +23,8 @@ serde_norway = "0.9"
 anyhow = "1.0.103"
 toml = "0.8"
 thiserror = "2"
-mina-sdk = "=0.4.0-rc.2"
-mina-archive-sdk = "=2.0.0"
+mina-sdk = { version = "=0.4.0-rc.3", default-features = false, features = ["rustls-tls"] }
+mina-archive-sdk = { version = "=2.1.0", default-features = false, features = ["rustls-tls"] }
 tokio = { version = "1", features = ["rt", "time"] }
 
 [dev-dependencies]
