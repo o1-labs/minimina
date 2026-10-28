@@ -26,7 +26,7 @@ sudo apt-get update
 sudo apt-get install -y minimina
 ```
 
-Releases are published from `v*` tags. The package depends on libc and OpenSSL 3 (`libssl3`, which the Mina SDKs use), so the same binary is built once on the oldest supported codename (jammy) and published for every codename. Focal and bullseye are not supported: Mina 4.x has no packages for them, and their standard support has ended.
+Releases are published from `v*` tags. The package depends only on libc (TLS is rustls, so it does not need OpenSSL), so the same binary is built once on the oldest supported codename (jammy) and published for every codename. Focal and bullseye are not supported: Mina 4.x has no packages for them, and their standard support has ended.
 
 To build the package locally: `scripts/deb-changelog.sh && cargo deb`.
 
