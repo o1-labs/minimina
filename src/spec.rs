@@ -27,9 +27,14 @@
 //!
 //! [runtime_config]                # merged into the genesis runtime config
 //! proof = { block_window_duration_ms = 30000 }
+//!
+//! [hardfork]                      # optional; see crate::hardfork
+//! mode = "manual"
+//! at = { slot = 42 }
+//! postfork = { bin_path = "/opt/mina-postfork/bin" }
 //! ```
 
-use crate::cli::Profile;
+use crate::{cli::Profile, hardfork::HardforkSpec};
 use anyhow::{bail, Context as _, Result};
 use serde::Deserialize;
 use std::{collections::BTreeSet, path::Path};
@@ -53,6 +58,8 @@ pub struct NetworkSpec {
     pub runtime_config: Option<toml::Table>,
     #[serde(default)]
     pub docker: DockerSpec,
+    /// A fork of the network to postfork binaries (see [`crate::hardfork`]).
+    pub hardfork: Option<HardforkSpec>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -206,6 +213,7 @@ impl NetworkSpec {
             ledger: LedgerSpec::default(),
             runtime_config: None,
             docker: DockerSpec::default(),
+            hardfork: None,
         }
     }
 

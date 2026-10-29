@@ -1,11 +1,14 @@
 //! `minimina network ...` handlers.
 
-use super::{setup, shutdown_timeout, Context};
+use super::{hardfork, setup, shutdown_timeout, Context};
 use crate::{
-    cli::{CommandWithNetworkId, ExecutionMode, NetworkCommand, Profile, ShutdownTimeout},
+    cli::{
+        CommandWithNetworkId, ExecutionMode, HardforkCommand, NetworkCommand, Profile,
+        ShutdownTimeout,
+    },
     daemon_args::DaemonFeatures,
     docker::manager::{ContainerState, DockerManager},
-    genesis_ledger::default,
+    genesis_ledger::{self, default},
     native::{self, manager::NativeManager, mina_locator},
     network_meta::NetworkMeta,
     node_client,
@@ -39,13 +42,25 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
                 _ => {}
             }
 
+            // a bad [hardfork] stops create before the old network is gone
+            let hardfork = hardfork::check_create(ctx, &cmd)?;
             check_setup_network(ctx, &docker, &network_id)?;
-            ctx.meta()
-                .save(&ctx.dirs.network_path(&network_id))
+            let network_path = ctx.dirs.network_path(&network_id);
+            let mut meta = ctx.meta();
+            meta.genesis_pending = true;
+            meta.hardfork = hardfork.as_ref().map(|(h, _)| h.clone());
+            meta.save(&network_path)
                 .context("Failed to record network mode")?;
 
             // consume the genesis ledger (and generate keys for the default network)
             let keys = setup::handle_genesis_ledger(ctx, &cmd, &network_id)?;
+            if let Some((_, schedule)) = &hardfork {
+                genesis_ledger::update(
+                    &network_path,
+                    &serde_json::json!({ "daemon": schedule.daemon_json() }),
+                )
+                .context("Failed to write the fork schedule")?;
+            }
 
             // build services from topology file
             let mut services = setup::handle_topology(ctx, &cmd, &network_id, keys)?;
@@ -57,9 +72,8 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
                 .context("Failed to copy keys")?;
 
             let features = probe_daemon_features(ctx, &services);
-            let mut meta = ctx.meta();
             meta.features = features;
-            meta.save(&ctx.dirs.network_path(&network_id))
+            meta.save(&network_path)
                 .context("Failed to record daemon features")?;
 
             // every problem of every service, before anything runs
@@ -170,6 +184,7 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
         NetworkCommand::Start(cmd) => {
             let network_id = cmd.network_id().to_string();
             ctx.ensure_network_exists(&network_id)?;
+            hardfork::set_genesis(ctx, &network_id)?;
             if let Err(e) = ctx.dirs.check_genesis_timestamp(&network_id) {
                 warn!("{e} In case network is unstable consider updating by running 'network create' again.");
             }
@@ -207,6 +222,15 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
                 .with_context(|| format!("Network '{network_id}' started but is not ready"))?;
             }
             println!("{}", network::Start { network_id });
+            Ok(())
+        }
+
+        NetworkCommand::Hardfork(HardforkCommand::Status(cmd)) => {
+            ctx.ensure_network_exists(&cmd.network_id)?;
+            println!(
+                "{}",
+                hardfork::status(ctx, &cmd.network_id, chrono::Utc::now())?
+            );
             Ok(())
         }
 

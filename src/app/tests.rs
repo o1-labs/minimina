@@ -782,3 +782,192 @@ fn docker_archive_create_fails_when_createdb_fails() {
         .contains("creating the archive database failed"));
     assert!(err.to_string().contains("container is not running"));
 }
+
+/// A seed and an archive, with a fork at slot 42 to the binaries in `postfork`.
+fn hardfork_spec(dir: &Path, postfork: &Path, hardfork: &str) -> std::path::PathBuf {
+    let spec = dir.join("hf.toml");
+    std::fs::write(
+        &spec,
+        format!(
+            r#"
+            [[nodes]]
+            role = "seed"
+            [[nodes]]
+            role = "archive"
+            [runtime_config]
+            genesis = {{ k = 10 }}
+            proof = {{ block_window_duration_ms = 30000 }}
+            [hardfork]
+            {hardfork}
+            postfork = {{ bin_path = "{}" }}
+            "#,
+            postfork.display()
+        ),
+    )
+    .unwrap();
+    spec
+}
+
+/// Queues the replies of creating [`hardfork_spec`]: the postfork probe, then
+/// the libp2p keys of the seed and the archive.
+fn queue_hardfork_create(h: &Harness) {
+    h.fake.reply(0, "Commit 33a46fb\n", "");
+    for i in 0..2 {
+        h.fake
+            .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");
+    }
+}
+
+fn postfork_dir(files: &[&str]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for file in files {
+        std::fs::write(dir.path().join(file), "").unwrap();
+    }
+    dir
+}
+
+#[test]
+fn hardfork_network_gets_its_schedule_and_status() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let post = postfork_dir(&["mina", "mina-archive", "mina-create-genesis"]);
+    let dir = tempfile::tempdir().unwrap();
+    let spec = hardfork_spec(
+        dir.path(),
+        post.path(),
+        "mode = \"manual\"\nat = { slot = 42 }",
+    );
+    queue_hardfork_create(&h);
+    h.run(&native_args(
+        &bin,
+        &["network", "create", "-n", "hf", "--spec", path_arg(&spec)],
+    ))
+    .unwrap();
+
+    let post_mina = format!("{}/mina version", post.path().display());
+    assert_eq!(h.fake.lines()[0], post_mina);
+    let net = h.dirs.network_path("hf");
+    let meta = NetworkMeta::load(&net).unwrap().unwrap();
+    assert!(meta.genesis_pending);
+    let hf = meta.hardfork.unwrap();
+    assert_eq!(hf.postfork_bin_path, post.path());
+    assert_eq!(hf.method, Some(crate::hardfork::ForkMethod::Legacy));
+    let ledger = crate::genesis_ledger::read(&net).unwrap();
+    assert_eq!(
+        ledger["daemon"],
+        serde_json::json!({"slot_tx_end": 30, "slot_chain_end": 42, "hard_fork_genesis_slot_delta": 10})
+    );
+
+    let ctx_status = |now| {
+        let ctx = super::Context {
+            dirs: h.dirs.clone(),
+            mode: crate::cli::ExecutionMode::Native,
+            bin_path: Some(bin.path().into()),
+            postgres_uri: String::new(),
+            profile: Profile::Devnet,
+            features: Default::default(),
+            runner: h.fake.clone(),
+        };
+        if let Some(now) = now {
+            super::hardfork::set_genesis(&ctx, "hf").unwrap();
+            return super::hardfork::status(&ctx, "hf", now).unwrap();
+        }
+        super::hardfork::status(&ctx, "hf", chrono::Utc::now()).unwrap()
+    };
+    let before = ctx_status(None);
+    assert_eq!(before.phase, crate::hardfork::Phase::NotStarted);
+    assert_eq!(before.slot_chain_end.slot, 42);
+    assert_eq!(before.fork_genesis.slot, 52);
+    assert!(before.slot_chain_end.time.is_none());
+
+    // the first start sets the genesis; 16 min 15 s later it is past slot_tx_end
+    let started = chrono::Utc::now() + chrono::Duration::seconds(16 * 60 + 15);
+    let status = ctx_status(Some(started));
+    assert_eq!(status.phase, crate::hardfork::Phase::TxEnd);
+    assert_eq!(status.slot, Some(32));
+    let next = status.next.unwrap();
+    assert_eq!(next.phase, crate::hardfork::Phase::ChainEnd);
+    assert!(
+        (280..=285).contains(&next.in_seconds),
+        "{}",
+        next.in_seconds
+    );
+    assert!(!NetworkMeta::load(&net).unwrap().unwrap().genesis_pending);
+}
+
+#[test]
+fn invalid_hardfork_is_refused_before_the_old_network_goes() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let ok_post = postfork_dir(&["mina", "mina-archive", "mina-create-genesis"]);
+    let spec = hardfork_spec(
+        dir.path(),
+        ok_post.path(),
+        "mode = \"manual\"\nat = { slot = 42 }",
+    );
+    queue_hardfork_create(&h);
+    h.run(&native_args(
+        &bin,
+        &["network", "create", "-n", "hf", "--spec", path_arg(&spec)],
+    ))
+    .unwrap();
+    let calls = h.fake.lines().len();
+
+    let post = postfork_dir(&["mina"]);
+    let spec = hardfork_spec(
+        dir.path(),
+        post.path(),
+        "mode = \"auto\"\nat = { slot = 20 }\nmethod = \"advanced\"",
+    );
+    h.fake
+        .reply(1, "", "libssl.so.3: cannot open shared object file\n");
+    let err = h
+        .run(&native_args(
+            &bin,
+            &["network", "create", "-n", "hf", "--spec", path_arg(&spec)],
+        ))
+        .unwrap_err()
+        .to_string();
+    for part in [
+        "method is for mode = \"manual\"",
+        "slot_tx_end 8 is 240 s after the genesis",
+        "has no mina-archive",
+        "does not run: libssl.so.3",
+        "needs a prefork daemon with --hardfork-handling",
+    ] {
+        assert!(err.contains(part), "no '{part}' in:\n{err}");
+    }
+    // only the two probes ran, and the old network is still there
+    assert_eq!(h.fake.lines().len(), calls + 2, "{:?}", h.fake.lines());
+    assert!(NetworkMeta::load(&h.dirs.network_path("hf"))
+        .unwrap()
+        .unwrap()
+        .hardfork
+        .is_some());
+}
+
+#[test]
+fn hardfork_needs_postfork_binaries_and_native_mode() {
+    let h = Harness::new();
+    h.docker_ok();
+    let dir = tempfile::tempdir().unwrap();
+    let spec = dir.path().join("hf.toml");
+    std::fs::write(
+        &spec,
+        "[[nodes]]\nrole = \"seed\"\n[hardfork]\nmode = \"manual\"\nat = { slot = 42 }",
+    )
+    .unwrap();
+    let err = h
+        .run(&["network", "create", "-n", "hf", "--spec", path_arg(&spec)])
+        .unwrap_err()
+        .to_string();
+    for part in [
+        "runs in native mode only",
+        "set [runtime_config] genesis.k",
+        "[hardfork.postfork] bin_path is missing",
+    ] {
+        assert!(err.contains(part), "no '{part}' in:\n{err}");
+    }
+    assert!(!h.dirs.network_path_exists("hf"));
+}

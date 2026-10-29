@@ -4,6 +4,7 @@
 //! JSON `{"error_message": ...}` object and a non-zero exit code.
 
 mod env;
+mod hardfork;
 mod network;
 mod node;
 mod setup;
@@ -65,6 +66,8 @@ impl Context {
                 postgres_uri: None,
                 profile: self.profile,
                 features: self.features,
+                genesis_pending: false,
+                hardfork: None,
             },
             ExecutionMode::Native => NetworkMeta {
                 mode: self.mode,
@@ -72,6 +75,8 @@ impl Context {
                 postgres_uri: Some(self.postgres_uri.clone()),
                 profile: self.profile,
                 features: self.features,
+                genesis_pending: false,
+                hardfork: None,
             },
         }
     }
@@ -167,10 +172,12 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
         .or_else(|| std::env::var(POSTGRES_URI_ENV).ok())
         .unwrap_or_else(|| DEFAULT_POSTGRES_URI.to_string());
 
-    // list and info only read ~/.minimina
+    // list, info and hardfork status only read ~/.minimina
     let reads_files_only = matches!(
         cli.command,
-        Command::Network(NetworkCommand::List | NetworkCommand::Info(_))
+        Command::Network(
+            NetworkCommand::List | NetworkCommand::Info(_) | NetworkCommand::Hardfork(_)
+        )
     );
     if !reads_files_only {
         env::check_execution_environment(&mode, runner.as_ref())?;

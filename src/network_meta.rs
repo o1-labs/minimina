@@ -2,6 +2,7 @@
 
 use crate::cli::{ExecutionMode, Profile};
 use crate::daemon_args::DaemonFeatures;
+use crate::hardfork::{ForkMethod, HardforkMode};
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
@@ -26,6 +27,23 @@ pub struct NetworkMeta {
     /// Version-dependent daemon flags, probed at create.
     #[serde(default)]
     pub features: DaemonFeatures,
+    /// The first `network start` sets the genesis timestamp, so that the
+    /// first slots are not gone before the daemons run.
+    #[serde(default)]
+    pub genesis_pending: bool,
+    /// The `[hardfork]` of the spec, checked at create.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardfork: Option<HardforkMeta>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct HardforkMeta {
+    pub mode: HardforkMode,
+    /// Manual mode only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<ForkMethod>,
+    /// Directory of the postfork binaries.
+    pub postfork_bin_path: PathBuf,
 }
 
 impl NetworkMeta {
@@ -66,7 +84,14 @@ mod tests {
             profile: Profile::Lightnet,
             features: DaemonFeatures {
                 precomputed_blocks_dir: true,
+                hardfork_handling: false,
             },
+            genesis_pending: true,
+            hardfork: Some(HardforkMeta {
+                mode: HardforkMode::Manual,
+                method: Some(ForkMethod::Legacy),
+                postfork_bin_path: "/opt/post".into(),
+            }),
         };
         meta.save(dir.path()).unwrap();
         assert_eq!(NetworkMeta::load(dir.path()).unwrap(), Some(meta));
