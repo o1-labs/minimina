@@ -16,6 +16,7 @@ pub mod network_meta;
 pub mod node_client;
 pub mod output;
 pub mod runner;
+pub mod runtime_config;
 pub mod service;
 pub mod spec;
 pub mod topology;

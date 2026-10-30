@@ -474,7 +474,7 @@ fn native_spec_network() {
     let net = h.dirs.network_path("spec");
     let meta = NetworkMeta::load(&net).unwrap().unwrap();
     assert_eq!(meta.profile, Profile::Lightnet);
-    assert!(net.join("network.toml").exists());
+    assert!(h.dirs.spec_path("spec").exists());
     assert!(h.fake.calls.borrow()[0]
         .envs
         .contains(&("MINA_PROFILE".into(), "lightnet".into())));

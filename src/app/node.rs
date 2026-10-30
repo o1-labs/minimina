@@ -8,7 +8,8 @@ use crate::{
     directory_manager::NETWORK_KEYPAIRS,
     docker::manager::ContainerState,
     genesis_ledger::{self, REPLAYER_INPUT_JSON},
-    native, node_client,
+    native::{self, binary::Binary},
+    node_client,
     output::{self, node},
     runner::check,
     service::{typed::Native, ServiceConfig},
@@ -339,7 +340,7 @@ fn start_native(
 
     if cmd.import_accounts {
         warn!("Importing accounts for node '{node_id}' in network '{network_id}'. This can take a moment...");
-        let mina = native.bin_path.join("mina");
+        let mina = Binary::Mina.path(&native.bin_path);
         let keys_dir = ctx.dirs.network_path(network_id).join(NETWORK_KEYPAIRS);
         let config_dir = native.config_dir_for_service(node_id);
         let mina_env = native::mina_env(&native.bin_path, ctx.profile);

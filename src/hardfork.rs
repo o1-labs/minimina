@@ -17,16 +17,11 @@
 //! changed to a slot from the genesis timestamp, so it is placed again when
 //! the first `network start` sets the genesis timestamp.
 
+use crate::runtime_config::{self, RuntimeConfig};
 use chrono::{DateTime, Duration, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Daemon keys of the runtime config that the schedule sets.
-pub const SCHEDULE_KEYS: [&str; 3] = [
-    "slot_tx_end",
-    "slot_chain_end",
-    "hard_fork_genesis_slot_delta",
-];
 /// Time from the genesis to `slot_tx_end` that a network needs: the daemons
 /// start their provers and sync before they produce blocks (about 12 minutes
 /// for 5 nodes with 30 s slots).
@@ -99,27 +94,20 @@ pub struct Constants {
 
 impl Constants {
     /// `genesis.k` and `proof.block_window_duration_ms` of a runtime config.
-    pub fn from_runtime_config(config: &serde_json::Value) -> Result<Self, Vec<String>> {
-        let get = |path: &str| {
-            config
-                .pointer(path)
-                .and_then(serde_json::Value::as_u64)
-                .filter(|v| *v > 0)
-        };
-        match (get("/genesis/k"), get("/proof/block_window_duration_ms")) {
-            (Some(k), Some(slot_ms)) => Ok(Constants {
-                k: u32::try_from(k).map_err(|_| vec![format!("genesis.k {k} is too large")])?,
-                slot_ms,
-            }),
-            (k, slot) => Err([
-                k.is_none()
-                    .then(|| "set [runtime_config] genesis.k".to_string()),
-                slot.is_none()
-                    .then(|| "set [runtime_config] proof.block_window_duration_ms".to_string()),
+    pub fn from_runtime_config(config: &RuntimeConfig) -> Result<Self, Vec<String>> {
+        let k = config.genesis.k.filter(|k| *k > 0);
+        let slot_ms = config.proof.block_window_duration_ms.filter(|ms| *ms > 0);
+        match (k, slot_ms) {
+            (Some(k), Some(slot_ms)) => Ok(Constants { k, slot_ms }),
+            _ => Err([
+                k.is_none().then_some("genesis.k"),
+                slot_ms
+                    .is_none()
+                    .then_some("proof.block_window_duration_ms"),
             ]
             .into_iter()
             .flatten()
-            .map(|e| format!("{e}: the fork schedule depends on it"))
+            .map(|key| format!("set [runtime_config] {key}: the fork schedule depends on it"))
             .collect()),
         }
     }
@@ -139,28 +127,23 @@ impl Schedule {
         self.slot_chain_end + self.genesis_slot_delta
     }
 
-    /// The `daemon` object of the runtime config.
-    pub fn daemon_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "slot_tx_end": self.slot_tx_end,
-            "slot_chain_end": self.slot_chain_end,
-            "hard_fork_genesis_slot_delta": self.genesis_slot_delta,
+    /// The schedule in the `daemon` keys of a runtime config, if they are all set.
+    pub fn from_daemon(daemon: &runtime_config::Daemon) -> Option<Self> {
+        Some(Schedule {
+            slot_tx_end: daemon.slot_tx_end?,
+            slot_chain_end: daemon.slot_chain_end?,
+            genesis_slot_delta: daemon.hard_fork_genesis_slot_delta?,
         })
     }
+}
 
-    /// The schedule in the `daemon` object of a runtime config, if it is complete.
-    pub fn from_runtime_config(config: &serde_json::Value) -> Option<Self> {
-        let get = |key: &str| {
-            config
-                .pointer(&format!("/daemon/{key}"))
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|v| u32::try_from(v).ok())
-        };
-        Some(Schedule {
-            slot_tx_end: get("slot_tx_end")?,
-            slot_chain_end: get("slot_chain_end")?,
-            genesis_slot_delta: get("hard_fork_genesis_slot_delta")?,
-        })
+impl From<Schedule> for runtime_config::Daemon {
+    fn from(s: Schedule) -> Self {
+        runtime_config::Daemon {
+            slot_tx_end: Some(s.slot_tx_end),
+            slot_chain_end: Some(s.slot_chain_end),
+            hard_fork_genesis_slot_delta: Some(s.genesis_slot_delta),
+        }
     }
 }
 
@@ -171,22 +154,21 @@ pub fn slot_time(genesis: DateTime<FixedOffset>, c: Constants, slot: u32) -> Dat
 
 impl HardforkSpec {
     /// The fork slots for a chain that begins at `genesis`, or every problem
-    /// of the section. `runtime_daemon` is the `daemon` object the spec's
-    /// `[runtime_config]` sets.
+    /// of the section. `runtime_daemon` holds the fork keys that the spec's
+    /// `[runtime_config]` sets itself.
     pub fn schedule(
         &self,
         genesis: DateTime<FixedOffset>,
         c: Constants,
-        runtime_daemon: Option<&serde_json::Value>,
+        runtime_daemon: &runtime_config::Daemon,
     ) -> Result<Schedule, Vec<String>> {
-        let mut problems = Vec::new();
-        for key in SCHEDULE_KEYS {
-            if runtime_daemon.and_then(|d| d.get(key)).is_some() {
-                problems.push(format!(
-                    "[runtime_config] daemon.{key} conflicts with [hardfork]: remove it"
-                ));
-            }
-        }
+        let mut problems: Vec<String> = runtime_daemon
+            .keys()
+            .into_iter()
+            .map(|key| {
+                format!("[runtime_config] daemon.{key} conflicts with [hardfork]: remove it")
+            })
+            .collect();
         if self.mode == HardforkMode::Auto && self.method.is_some() {
             problems.push(
                 "[hardfork] method is for mode = \"manual\": in auto mode the daemons \
@@ -338,7 +320,7 @@ mod tests {
     #[test]
     fn slot_gives_the_schedule_with_defaults() {
         let h = hardfork("mode = \"manual\"\nat = { slot = 42 }\n[postfork]\nbin_path = \"/b\"");
-        let s = h.schedule(genesis(), C, None).unwrap();
+        let s = h.schedule(genesis(), C, &Default::default()).unwrap();
         assert_eq!(
             s,
             Schedule {
@@ -348,17 +330,14 @@ mod tests {
             }
         );
         assert_eq!(s.fork_genesis_slot(), 52);
-        assert_eq!(
-            Schedule::from_runtime_config(&serde_json::json!({"daemon": s.daemon_json()})),
-            Some(s)
-        );
+        assert_eq!(Schedule::from_daemon(&s.into()), Some(s));
     }
 
     #[test]
     fn date_is_the_first_slot_at_or_after_it() {
         // 21 min 10 s after the genesis: slot 42.33 -> 43
         let h = hardfork("mode = \"auto\"\nat = \"2026-10-29T11:21:10Z\"");
-        let s = h.schedule(genesis(), C, None).unwrap();
+        let s = h.schedule(genesis(), C, &Default::default()).unwrap();
         assert_eq!((s.slot_tx_end, s.slot_chain_end), (31, 43));
     }
 
@@ -367,8 +346,11 @@ mod tests {
         let h = hardfork(
             "mode = \"auto\"\nat = { slot = 15 }\ntx_end_before = 10\ngenesis_slot_delta = 0\nmethod = \"legacy\"",
         );
-        let daemon = serde_json::json!({"slot_chain_end": 1});
-        let problems = h.schedule(genesis(), C, Some(&daemon)).unwrap_err();
+        let daemon = runtime_config::Daemon {
+            slot_chain_end: Some(1),
+            ..Default::default()
+        };
+        let problems = h.schedule(genesis(), C, &daemon).unwrap_err();
         let text = problems.join("\n");
         for part in [
             "daemon.slot_chain_end conflicts",
@@ -386,7 +368,7 @@ mod tests {
     fn bad_dates_are_explained() {
         let err = |at: &str| {
             hardfork(&format!("mode = \"auto\"\nat = \"{at}\""))
-                .schedule(genesis(), C, None)
+                .schedule(genesis(), C, &Default::default())
                 .unwrap_err()
                 .join("\n")
         };
@@ -397,13 +379,15 @@ mod tests {
 
     #[test]
     fn constants_must_be_set() {
+        let config = |json| RuntimeConfig::from_json(&json).unwrap();
         let err =
-            Constants::from_runtime_config(&serde_json::json!({"genesis": {"k": 10}})).unwrap_err();
+            Constants::from_runtime_config(&config(serde_json::json!({"genesis": {"k": 10}})))
+                .unwrap_err();
         assert_eq!(err.len(), 1);
         assert!(err[0].contains("proof.block_window_duration_ms"));
-        let c = Constants::from_runtime_config(&serde_json::json!({
+        let c = Constants::from_runtime_config(&config(serde_json::json!({
             "genesis": {"k": 10}, "proof": {"block_window_duration_ms": 30000}
-        }))
+        })))
         .unwrap();
         assert_eq!(c, C);
     }

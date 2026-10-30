@@ -9,11 +9,12 @@ use crate::{
     daemon_args::DaemonFeatures,
     docker::manager::{ContainerState, DockerManager},
     genesis_ledger::{self, default},
-    native::{self, manager::NativeManager, mina_locator},
+    native::{self, binary::Binary, manager::NativeManager, mina_locator},
     network_meta::NetworkMeta,
     node_client,
     output::{self, network},
     runner::check,
+    runtime_config,
     service::{
         typed::{self, Docker, Native},
         ServiceConfig, ServiceType,
@@ -57,7 +58,7 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             if let Some((_, schedule)) = &hardfork {
                 genesis_ledger::update(
                     &network_path,
-                    &serde_json::json!({ "daemon": schedule.daemon_json() }),
+                    &runtime_config::Daemon::from(*schedule).to_json(),
                 )
                 .context("Failed to write the fork schedule")?;
             }
@@ -363,7 +364,7 @@ fn probe_daemon_features(ctx: &Context, services: &[ServiceConfig]) -> DaemonFea
             let mina_env = native::mina_env(bin, ctx.profile);
             ctx.runner
                 .run(
-                    bin.join("mina").as_os_str(),
+                    Binary::Mina.path(bin).as_os_str(),
                     &["daemon", "-help"],
                     &native::env_refs(&[], &mina_env),
                 )

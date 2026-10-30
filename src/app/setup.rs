@@ -61,7 +61,7 @@ pub fn handle_genesis_ledger(
         None => {
             let network_path = dirs.network_path(network_id);
             if let Some(spec_path) = &cmd.spec {
-                std::fs::copy(spec_path, network_path.join("network.toml"))
+                std::fs::copy(spec_path, dirs.spec_path(network_id))
                     .with_context(|| format!("copying {}", spec_path.display()))?;
             }
             generate_from_spec(ctx, &network_path, create_spec(cmd)?).map(Some)

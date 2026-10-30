@@ -4,10 +4,12 @@
 use super::Context;
 use crate::{
     cli::{CreateNetworkArgs, ExecutionMode},
+    daemon_args::DaemonFeatures,
     genesis_ledger,
     hardfork::{self, Constants, ForkAt, ForkMethod, HardforkMode, Schedule},
-    native,
+    native::{self, binary::Binary},
     network_meta::{HardforkMeta, NetworkMeta},
+    runtime_config::{self, RuntimeConfig},
     spec::{NetworkSpec, Role},
 };
 use anyhow::{bail, Context as _, Result};
@@ -15,9 +17,6 @@ use chrono::{DateTime, FixedOffset, Local, Utc};
 use log::info;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-
-/// The spec copy in the network directory.
-const SPEC_FILE: &str = "network.toml";
 
 /// Checks the `[hardfork]` of the spec of `create`, with every problem in one
 /// error, before anything is changed. The schedule is placed from a genesis
@@ -39,10 +38,15 @@ pub fn check_create(
             .push("a network with [hardfork] runs in native mode only: add --mode native".into());
     }
 
-    let runtime_config = spec.runtime_config_json()?.unwrap_or_default();
+    let runtime_config = spec
+        .runtime_config_json()?
+        .map(|json| RuntimeConfig::from_json(&json))
+        .transpose()
+        .context("[runtime_config] is not a valid runtime config")?
+        .unwrap_or_default();
     let schedule = match Constants::from_runtime_config(&runtime_config) {
         Ok(c) => h
-            .schedule(Local::now().fixed_offset(), c, runtime_config.get("daemon"))
+            .schedule(Local::now().fixed_offset(), c, &runtime_config.daemon)
             .map_err(|p| problems.extend(p))
             .ok(),
         Err(p) => {
@@ -76,10 +80,10 @@ pub fn check_create(
 
     if ctx.mode == ExecutionMode::Native && h.mode == HardforkMode::Auto {
         let bin = ctx.bin_path()?;
-        if !daemon_help(ctx, bin).contains("-hardfork-handling") {
+        if !DaemonFeatures::from_daemon_help(&daemon_help(ctx, bin)).hardfork_handling {
             problems.push(format!(
                 "mode = \"auto\" needs a prefork daemon with --hardfork-handling; {} has none",
-                bin.join("mina").display()
+                Binary::Mina.path(bin).display()
             ));
         }
     }
@@ -109,21 +113,20 @@ fn check_postfork(
     dir: &Path,
 ) -> Vec<String> {
     let has = |role| spec.nodes.iter().any(|g| g.role == role);
-    let mut needed = vec!["mina"];
+    let mut needed = vec![Binary::Mina];
     if has(Role::Archive) {
-        needed.push("mina-archive");
+        needed.push(Binary::Archive);
     }
     if has(Role::Rosetta) {
-        needed.push("mina-rosetta");
+        needed.push(Binary::Rosetta);
     }
     if method == Some(ForkMethod::Legacy) {
         // makes the postfork genesis ledgers from the fork config
-        needed.push("mina-create-genesis");
+        needed.push(Binary::CreateGenesis);
     }
-    let missing: Vec<_> = needed
-        .iter()
-        .filter(|name| !dir.join(name).exists())
-        .copied()
+    let missing: Vec<Binary> = needed
+        .into_iter()
+        .filter(|binary| !binary.path(dir).exists())
         .collect();
     if !dir.is_dir() {
         return vec![format!(
@@ -136,12 +139,16 @@ fn check_postfork(
         problems.push(format!(
             "postfork bin_path {} has no {}",
             dir.display(),
-            missing.join(", ")
+            missing
+                .iter()
+                .map(|b| b.file_name())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
-    if !missing.contains(&"mina") {
+    if !missing.contains(&Binary::Mina) {
         let mina_env = native::mina_env(dir, ctx.profile);
-        let mina = dir.join("mina");
+        let mina = Binary::Mina.path(dir);
         match ctx.runner.run(
             mina.as_os_str(),
             &["version"],
@@ -166,7 +173,7 @@ fn daemon_help(ctx: &Context, bin: &Path) -> String {
     let mina_env = native::mina_env(bin, ctx.profile);
     ctx.runner
         .run(
-            bin.join("mina").as_os_str(),
+            Binary::Mina.path(bin).as_os_str(),
             &["daemon", "-help"],
             &native::env_refs(&[], &mina_env),
         )
@@ -192,28 +199,29 @@ pub fn set_genesis(ctx: &Context, network_id: &str) -> Result<()> {
         "genesis": { "genesis_state_timestamp": genesis_ledger::format_timestamp(now) }
     });
     if meta.hardfork.is_some() {
-        let spec = NetworkSpec::load(&network_path.join(SPEC_FILE))?;
+        let spec_path = ctx.dirs.spec_path(network_id);
+        let spec = NetworkSpec::load(&spec_path)?;
         if let Some(h) = spec
             .hardfork
             .as_ref()
             .filter(|h| matches!(h.at, ForkAt::Date(_)))
         {
-            let config = genesis_ledger::read(&network_path)?;
-            let c = Constants::from_runtime_config(&config)
+            let c = Constants::from_runtime_config(&read_runtime_config(&network_path)?)
                 .map_err(|p| anyhow::anyhow!(p.join("; ")))?;
-            let schedule = h.schedule(now, c, None).map_err(|p| {
+            // the fork keys in the genesis ledger are the ones placed at create
+            let schedule = h.schedule(now, c, &Default::default()).map_err(|p| {
                 anyhow::anyhow!(
                     "the fork date of network '{network_id}' does not fit a genesis of now:\n  - {}\n\
                      Change [hardfork] at in {} and create the network again",
                     p.join("\n  - "),
-                    network_path.join(SPEC_FILE).display()
+                    spec_path.display()
                 )
             })?;
             info!(
                 "Fork at slot_chain_end {} (slot_tx_end {}).",
                 schedule.slot_chain_end, schedule.slot_tx_end
             );
-            overrides["daemon"] = schedule.daemon_json();
+            overrides["daemon"] = serde_json::to_value(runtime_config::Daemon::from(schedule))?;
         }
     }
     genesis_ledger::update(&network_path, &overrides)
@@ -277,13 +285,13 @@ pub fn status(ctx: &Context, network_id: &str, now: DateTime<Utc>) -> Result<Sta
     let h = meta.hardfork.with_context(|| {
         format!("network '{network_id}' has no hardfork: add [hardfork] to its spec and create it again")
     })?;
-    let config = genesis_ledger::read(&network_path)?;
+    let config = read_runtime_config(&network_path)?;
     let c = Constants::from_runtime_config(&config).map_err(|p| anyhow::anyhow!(p.join("; ")))?;
-    let schedule = Schedule::from_runtime_config(&config).with_context(|| {
-        format!("the genesis ledger of '{network_id}' has no daemon.slot_tx_end, slot_chain_end and hard_fork_genesis_slot_delta")
+    let schedule = Schedule::from_daemon(&config.daemon).with_context(|| {
+        format!("the genesis ledger of '{network_id}' has no complete fork schedule in `daemon`")
     })?;
     let genesis = (!meta.genesis_pending)
-        .then(|| config.pointer("/genesis/genesis_state_timestamp")?.as_str())
+        .then_some(config.genesis.genesis_state_timestamp.as_deref())
         .flatten()
         .map(DateTime::parse_from_rfc3339)
         .transpose()
@@ -318,4 +326,9 @@ pub fn status(ctx: &Context, network_id: &str, now: DateTime<Utc>) -> Result<Sta
         prefork_bin_path: meta.bin_path,
         postfork_bin_path: h.postfork_bin_path,
     })
+}
+
+fn read_runtime_config(network_path: &Path) -> Result<RuntimeConfig> {
+    let json = genesis_ledger::read(network_path)?;
+    RuntimeConfig::from_json(&json).context("the genesis ledger is not a valid runtime config")
 }

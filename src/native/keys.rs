@@ -1,3 +1,4 @@
+use super::binary::Binary;
 use crate::cli::Profile;
 use crate::keys::{parse_libp2p_keypair, parse_public_key, NodeKey};
 use crate::runner::{check, Runner};
@@ -56,7 +57,7 @@ impl NativeKeysManager {
         std::fs::create_dir_all(&keypair_dir)?;
 
         let privkey_path = keypair_dir.join(service_name);
-        let mina_bin = self.bin_path.join("mina");
+        let mina_bin = Binary::Mina.path(&self.bin_path);
         let mina_env = super::mina_env(&self.bin_path, self.profile);
         let output = self
             .runner
@@ -109,7 +110,7 @@ impl NativeKeysManager {
         std::fs::create_dir_all(&keypair_dir)?;
 
         let privkey_path = keypair_dir.join(service_name);
-        let mina_bin = self.bin_path.join("mina");
+        let mina_bin = Binary::Mina.path(&self.bin_path);
         let mina_env = super::mina_env(&self.bin_path, self.profile);
         let output = self
             .runner
