@@ -134,6 +134,19 @@ impl ServiceConfig {
         format!("/{host}/tcp/{external_port}/p2p/{libp2p_peerid}")
     }
 
+    /// Whether the service is a daemon with a chain of its own (a config
+    /// directory with chain state and a GraphQL API).
+    pub fn is_chain_daemon(&self) -> bool {
+        matches!(
+            self.service_type,
+            ServiceType::Seed
+                | ServiceType::BlockProducer
+                | ServiceType::PlainNode
+                | ServiceType::SnarkCoordinator
+                | ServiceType::ArchiveNode
+        )
+    }
+
     pub fn get_seeds(services: &[Self]) -> Vec<&Self> {
         services
             .iter()

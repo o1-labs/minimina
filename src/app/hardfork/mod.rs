@@ -6,17 +6,27 @@ use crate::{
     cli::{CreateNetworkArgs, ExecutionMode},
     daemon_args::DaemonFeatures,
     genesis_ledger,
-    hardfork::{self, Constants, ForkAt, ForkMethod, HardforkMode, Schedule},
+    hardfork::{self, Constants, ForkAt, ForkMethod, HardforkMode, HardforkSpec, Schedule},
     native::{self, binary::Binary},
-    network_meta::{HardforkMeta, NetworkMeta},
+    network_meta::{HardforkMeta, HardforkState, NetworkMeta},
     runtime_config::{self, RuntimeConfig},
     spec::{NetworkSpec, Role},
+    utils,
 };
 use anyhow::{bail, Context as _, Result};
 use chrono::{DateTime, FixedOffset, Local, Utc};
 use log::info;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+
+mod apply;
+mod prepare;
+
+pub use apply::apply;
+pub use prepare::prepare;
+
+/// The archive schema migration of a mina package, in `etc/mina/archive`.
+const ARCHIVE_UPGRADE_SQL: &str = "upgrade.sql";
 
 /// Checks the `[hardfork]` of the spec of `create`, with every problem in one
 /// error, before anything is changed. The schedule is placed from a genesis
@@ -77,6 +87,15 @@ pub fn check_create(
             Some(dir)
         }
     };
+    let archive_upgrade = match (
+        &postfork,
+        spec.nodes.iter().any(|g| g.role == Role::Archive),
+    ) {
+        (Some(postfork), true) => archive_upgrade_script(spec_path, h, postfork)
+            .map_err(|p| problems.push(p))
+            .ok(),
+        _ => None,
+    };
 
     if ctx.mode == ExecutionMode::Native && h.mode == HardforkMode::Auto {
         let bin = ctx.bin_path()?;
@@ -94,6 +113,9 @@ pub fn check_create(
                 mode: h.mode,
                 method,
                 postfork_bin_path,
+                archive_upgrade,
+                state: HardforkState::Planned,
+                prefork_bin_path: None,
             },
             schedule,
         ))),
@@ -102,6 +124,36 @@ pub fn check_create(
             spec_path.display(),
             problems.join("\n  - ")
         ),
+    }
+}
+
+/// The postfork `upgrade.sql` of the archive database: `archive_upgrade` of
+/// the spec, else the one of the postfork package.
+fn archive_upgrade_script(
+    spec_path: &Path,
+    h: &HardforkSpec,
+    postfork: &Path,
+) -> std::result::Result<PathBuf, String> {
+    let given = h.postfork.as_ref().and_then(|p| p.archive_upgrade.as_ref());
+    match given {
+        Some(path) => {
+            let base = spec_path.parent().unwrap_or(Path::new("."));
+            let path = std::path::absolute(base.join(path)).map_err(|e| e.to_string())?;
+            path.is_file().then_some(path.clone()).ok_or_else(|| {
+                format!(
+                    "[hardfork.postfork] archive_upgrade {} is not a file",
+                    path.display()
+                )
+            })
+        }
+        None => utils::packaged_schema(postfork, ARCHIVE_UPGRADE_SQL).ok_or_else(|| {
+            format!(
+                "the archive needs the postfork {ARCHIVE_UPGRADE_SQL}, and {} is not in a package \
+                 directory with {}: set [hardfork.postfork] archive_upgrade",
+                postfork.display(),
+                utils::PACKAGED_SCHEMA_DIR
+            )
+        }),
     }
 }
 
@@ -169,6 +221,7 @@ fn check_postfork(
     problems
 }
 
+/// `mina daemon -help` of the binaries in `bin`, for [`DaemonFeatures`].
 fn daemon_help(ctx: &Context, bin: &Path) -> String {
     let mina_env = native::mina_env(bin, ctx.profile);
     ctx.runner
@@ -233,12 +286,20 @@ pub fn set_genesis(ctx: &Context, network_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether the network runs the postfork binaries after `hardfork apply`.
+pub fn is_applied(ctx: &Context, network_id: &str) -> Result<bool> {
+    Ok(NetworkMeta::load(&ctx.dirs.network_path(network_id))?
+        .and_then(|m| m.hardfork)
+        .is_some_and(|h| h.state == HardforkState::Applied))
+}
+
 #[derive(Debug, Serialize)]
 pub struct Status {
     pub network_id: String,
     pub mode: HardforkMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<ForkMethod>,
+    pub state: HardforkState,
     pub phase: hardfork::Phase,
     /// Global slot now; none before the genesis.
     pub slot: Option<u64>,
@@ -313,6 +374,7 @@ pub fn status(ctx: &Context, network_id: &str, now: DateTime<Utc>) -> Result<Sta
     Ok(Status {
         network_id: network_id.to_string(),
         mode: h.mode,
+        state: h.state,
         method: h.method,
         phase,
         slot,
@@ -328,7 +390,13 @@ pub fn status(ctx: &Context, network_id: &str, now: DateTime<Utc>) -> Result<Sta
     })
 }
 
+/// The prefork genesis runtime config: the one `hardfork apply` kept, else the current one.
 fn read_runtime_config(network_path: &Path) -> Result<RuntimeConfig> {
-    let json = genesis_ledger::read(network_path)?;
+    let prefork = network_path.join(genesis_ledger::PREFORK_GENESIS_LEDGER_JSON);
+    let json = if prefork.exists() {
+        genesis_ledger::read_file(&prefork)?
+    } else {
+        genesis_ledger::read(network_path)?
+    };
     RuntimeConfig::from_json(&json).context("the genesis ledger is not a valid runtime config")
 }

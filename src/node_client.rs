@@ -15,6 +15,8 @@ use std::{
 
 /// A status request to a node that does not answer in this time counts as down.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(3);
+/// The fork config holds every account of the ledgers, so it takes longer.
+const FORK_CONFIG_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What a running node reports about the chain.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -59,13 +61,9 @@ enum Probe {
 fn probe(service: &ServiceConfig) -> Option<Probe> {
     let uri = service.to_node_info().graphql_uri?;
     match service.service_type {
-        ServiceType::Seed
-        | ServiceType::BlockProducer
-        | ServiceType::PlainNode
-        | ServiceType::SnarkCoordinator
-        | ServiceType::ArchiveNode => Some(Probe::Daemon(uri)),
+        _ if service.is_chain_daemon() => Some(Probe::Daemon(uri)),
         ServiceType::ArchiveNodeApi => Some(Probe::ArchiveNodeApi(uri)),
-        ServiceType::SnarkWorker | ServiceType::UptimeServiceBackend | ServiceType::Rosetta => None,
+        _ => None,
     }
 }
 
@@ -138,6 +136,44 @@ pub fn health(services: &[ServiceConfig]) -> Result<BTreeMap<String, Health>> {
             health.insert(name, h);
         }
         Ok(health)
+    })
+}
+
+/// The fork config (GraphQL `fork_config`) of every daemon with a chain, by
+/// service name; all are asked at once. A daemon answers `null` before
+/// `slot_chain_end`, which is an error here.
+pub fn fork_configs(
+    services: &[ServiceConfig],
+) -> Result<BTreeMap<String, std::result::Result<serde_json::Value, String>>> {
+    let daemons: Vec<(String, String)> = services
+        .iter()
+        .filter(|s| s.is_chain_daemon())
+        .filter_map(|s| Some((s.service_name.clone(), s.to_node_info().graphql_uri?)))
+        .collect();
+    runtime()?.block_on(async {
+        let mut tasks = tokio::task::JoinSet::new();
+        for (name, uri) in daemons {
+            tasks.spawn(async move {
+                let client = mina_sdk::MinaClient::with_config(mina_sdk::ClientConfig {
+                    graphql_uri: uri,
+                    retries: 1,
+                    retry_delay: Duration::from_millis(100),
+                    timeout: FORK_CONFIG_TIMEOUT,
+                });
+                let config = match client.get_fork_config().await {
+                    Ok(serde_json::Value::Null) => Err("no fork config yet (null)".to_string()),
+                    Ok(config) => Ok(config),
+                    Err(e) => Err(e.to_string()),
+                };
+                (name, config)
+            });
+        }
+        let mut configs = BTreeMap::new();
+        while let Some(done) = tasks.join_next().await {
+            let (name, config) = done.context("node query task failed")?;
+            configs.insert(name, config);
+        }
+        Ok(configs)
     })
 }
 

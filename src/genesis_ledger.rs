@@ -14,6 +14,8 @@ use std::io::prelude::*;
 use std::path::Path;
 
 pub(crate) const GENESIS_LEDGER_JSON: &str = "genesis_ledger.json";
+/// The prefork genesis runtime config, kept by `hardfork apply`.
+pub(crate) const PREFORK_GENESIS_LEDGER_JSON: &str = "genesis_ledger.prefork.json";
 pub(crate) const REPLAYER_INPUT_JSON: &str = "replayer_input.json";
 
 /// Genesis ledger format
@@ -152,8 +154,12 @@ pub mod default {
 
 /// The network's genesis runtime config.
 pub fn read(network_path: &Path) -> std::io::Result<serde_json::Value> {
-    let path = network_path.join(GENESIS_LEDGER_JSON);
-    serde_json::from_str(&std::fs::read_to_string(&path)?).map_err(|e| {
+    read_file(&network_path.join(GENESIS_LEDGER_JSON))
+}
+
+/// A runtime config file.
+pub fn read_file(path: &Path) -> std::io::Result<serde_json::Value> {
+    serde_json::from_str(&std::fs::read_to_string(path)?).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("{}: {e}", path.display()),

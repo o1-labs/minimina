@@ -50,6 +50,21 @@ pub fn packaged_schema(bin_path: &Path, file_name: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// Copies the directory `from` to `to`, with its subdirectories.
+pub fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
 /// Whether a schema source is downloaded (`http(s)://`) rather than a local file.
 pub fn is_remote_schema(source: &str) -> bool {
     Url::parse(source).is_ok_and(|u| matches!(u.scheme(), "http" | "https"))
