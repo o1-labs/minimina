@@ -25,6 +25,10 @@ pub struct DaemonFeatures {
     /// only have `-precomputed-blocks-file`, which appends to one file.
     #[serde(default)]
     pub precomputed_blocks_dir: bool,
+    /// `--hardfork-handling` (4.0+): `migrate-exit` writes the fork config at
+    /// `slot_chain_end` and exits; needed by an auto hardfork.
+    #[serde(default)]
+    pub hardfork_handling: bool,
 }
 
 impl DaemonFeatures {
@@ -32,6 +36,7 @@ impl DaemonFeatures {
     pub fn from_daemon_help(help: &str) -> Self {
         DaemonFeatures {
             precomputed_blocks_dir: help.contains("-precomputed-blocks-dir"),
+            hardfork_handling: help.contains("-hardfork-handling"),
         }
     }
 }

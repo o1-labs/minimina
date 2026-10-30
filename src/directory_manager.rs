@@ -8,6 +8,7 @@
 //! - `genesis_ledger.json`: Contains the genesis ledger for the network.
 //! - `docker-compose.yml`: Contains the docker compose file for the network.
 //! - `network.json`: Contains the network topology representation in JSON format.
+//! - `network.toml`: A copy of the network spec, for a network made from one.
 //! - `peer_list_file.txt`: Contains the list of libp2p peers for the network.
 
 use crate::cli::ExecutionMode;
@@ -25,6 +26,8 @@ use std::{
 };
 
 pub const NETWORK_KEYPAIRS: &str = "network-keypairs";
+/// The copy of the network spec in the network directory.
+pub const NETWORK_SPEC: &str = "network.toml";
 /// Tools minimina installs for itself (`~/.minimina/.tools`). Hidden, so that it
 /// is never listed as a network; network ids cannot start with a dot.
 const TOOLS_DIR: &str = ".tools";
@@ -389,6 +392,11 @@ impl DirectoryManager {
     /// Returns the genesis ledger path for the given network
     pub fn genesis_ledger_path(&self, network_id: &str) -> PathBuf {
         self.network_path(network_id).join(GENESIS_LEDGER_JSON)
+    }
+
+    /// The copy of the network spec; only a network made from a spec has one.
+    pub fn spec_path(&self, network_id: &str) -> PathBuf {
+        self.network_path(network_id).join(NETWORK_SPEC)
     }
 
     /// Returns the network file path for the given network

@@ -6,6 +6,7 @@
 //!   2. `/usr/bin`       (debian package installs)
 //!   3. first `mina` on `PATH` (via `which mina`)
 
+use super::binary::Binary;
 use crate::cli::Profile;
 use crate::runner::Runner;
 use std::io;
@@ -18,7 +19,7 @@ const DEFAULT_SEARCH_PATHS: &[&str] = &["/usr/local/bin", "/usr/bin"];
 /// `NotFound` error listing what was tried.
 pub fn locate() -> io::Result<PathBuf> {
     for dir in DEFAULT_SEARCH_PATHS {
-        if Path::new(dir).join("mina").exists() {
+        if Binary::Mina.path(Path::new(dir)).exists() {
             return Ok(PathBuf::from(dir));
         }
     }
@@ -38,7 +39,10 @@ pub fn locate() -> io::Result<PathBuf> {
 }
 
 fn which_mina() -> Option<PathBuf> {
-    let output = Command::new("which").arg("mina").output().ok()?;
+    let output = Command::new("which")
+        .arg(Binary::Mina.file_name())
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -81,7 +85,7 @@ pub fn installed_network_config(
     let mina_env = super::mina_env(bin_path, profile);
     let out = runner
         .run(
-            bin_path.join("mina").as_os_str(),
+            Binary::Mina.path(bin_path).as_os_str(),
             &["version"],
             &super::env_refs(&[], &mina_env),
         )

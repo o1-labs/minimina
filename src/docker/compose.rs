@@ -8,6 +8,7 @@ use crate::cli::{ExecutionMode, Profile};
 use crate::daemon_args::{
     rosetta_args, DaemonFeatures, Layout, PRECOMPUTED_BLOCKS_DIR, ROSETTA_ENV,
 };
+use crate::native::binary::Binary;
 use crate::service::typed::{self, Daemon, Docker, Kind, Role};
 use log::debug;
 use serde::ser::{SerializeStruct, Serializer};
@@ -271,7 +272,7 @@ impl DockerCompose {
                             container_name: name,
                             image: rosetta.image.clone(),
                             // the image's own entrypoint starts a whole stack (daemon, postgres)
-                            entrypoint: Some(vec!["mina-rosetta".to_string()]),
+                            entrypoint: Some(vec![Binary::Rosetta.to_string()]),
                             command: Some(args.join(" ")),
                             environment: Some(environment),
                             ports: Some(vec![format!("{port}:{port}")]),

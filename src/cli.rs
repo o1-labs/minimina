@@ -104,6 +104,15 @@ pub enum NetworkCommand {
     Start(StartNetworkArgs),
     /// Stop a local network
     Stop(StopNetworkArgs),
+    /// Hardfork of a network whose spec has [hardfork]
+    #[clap(subcommand)]
+    Hardfork(HardforkCommand),
+}
+
+#[derive(Subcommand)]
+pub enum HardforkCommand {
+    /// The fork schedule and the phase of the network now
+    Status(NetworkId),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -358,7 +367,8 @@ impl Command {
                 NetworkCommand::Stop(args) => Some(args.network_id()),
                 NetworkCommand::Delete(args)
                 | NetworkCommand::Status(args)
-                | NetworkCommand::Info(args) => Some(&args.network_id),
+                | NetworkCommand::Info(args)
+                | NetworkCommand::Hardfork(HardforkCommand::Status(args)) => Some(&args.network_id),
                 NetworkCommand::List => None,
             },
             Command::Node(cmd) => Some(match cmd {

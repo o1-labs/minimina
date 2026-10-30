@@ -3,7 +3,7 @@
 use crate::{
     cli::ExecutionMode,
     install::{require, Tool},
-    native::mina_locator,
+    native::{binary::Binary, mina_locator},
     runner::Runner,
     version::Version,
 };
@@ -53,7 +53,7 @@ pub fn resolve_bin_path(
         (ExecutionMode::Docker, Some(_)) => bail!("--bin-path is only valid in native mode"),
         (ExecutionMode::Docker, None) => Ok(None),
         (ExecutionMode::Native, Some(dir)) => {
-            let mina_bin = dir.join("mina");
+            let mina_bin = Binary::Mina.path(&dir);
             if !mina_bin.exists() {
                 bail!("Mina binary not found at '{}'.", mina_bin.display());
             }

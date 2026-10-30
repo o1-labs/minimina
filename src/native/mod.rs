@@ -1,3 +1,4 @@
+pub mod binary;
 pub mod error;
 pub mod keys;
 pub mod manager;
@@ -6,10 +7,8 @@ pub mod port_manager;
 pub mod process_tracker;
 
 use crate::cli::Profile;
+use binary::Binary;
 use std::path::Path;
-
-/// Name of the libp2p helper in mina packages.
-const LIBP2P_HELPER: &str = "coda-libp2p_helper";
 
 /// Environment every native mina process runs with, on top of its own.
 ///
@@ -20,7 +19,7 @@ const LIBP2P_HELPER: &str = "coda-libp2p_helper";
 ///   libp2p command exit 20 without a message.
 pub fn mina_env(bin_path: &Path, profile: Profile) -> Vec<(&'static str, String)> {
     let mut env = vec![(Profile::ENV, profile.as_str().to_string())];
-    let helper = bin_path.join(LIBP2P_HELPER);
+    let helper = Binary::Libp2pHelper.path(bin_path);
     if helper.exists() {
         env.push((
             "MINA_LIBP2P_HELPER_PATH",
@@ -54,11 +53,11 @@ mod tests {
             vec![("MINA_PROFILE", "dev".to_string())]
         );
 
-        std::fs::write(bin.path().join(LIBP2P_HELPER), "").unwrap();
+        std::fs::write(bin.path().join(Binary::Libp2pHelper.file_name()), "").unwrap();
         let env = mina_env(bin.path(), Profile::Mainnet);
         let helper = bin
             .path()
-            .join(LIBP2P_HELPER)
+            .join(Binary::Libp2pHelper.file_name())
             .to_string_lossy()
             .into_owned();
         assert_eq!(

@@ -188,6 +188,57 @@ the spec; default `devnet`) is recorded in the network and exported as
 fastest for local tests; `devnet` and `mainnet` compile full proofs, so each
 daemon spends 2-3 minutes on start.
 
+### Genesis timestamp
+
+`network create` writes a temporary genesis timestamp. The first
+`network start` sets it to the time of the start, so the first slots of the
+chain are not gone while the daemons start. Later starts keep it.
+
+### Hardfork
+
+A `[hardfork]` section plans a fork of the network to other (postfork)
+binaries. Native mode only.
+
+```toml
+[runtime_config]
+genesis = { k = 10 }
+proof = { block_window_duration_ms = 30000 }
+
+[hardfork]
+mode = "manual"                  # or "auto": the daemons run --hardfork-handling migrate-exit
+at = { slot = 42 }               # slot_chain_end, or an RFC 3339 date: at = "2026-10-29T14:00:00Z"
+# tx_end_before = 12             # slot_tx_end = slot_chain_end - tx_end_before [default: k + 2]
+# genesis_slot_delta = 10        # fork genesis slot = slot_chain_end + genesis_slot_delta
+# method = "legacy"              # manual only: legacy (GraphQL fork_config) | advanced
+
+[hardfork.postfork]
+bin_path = "/opt/mina-postfork/bin"   # relative to the spec file
+```
+
+`network create` writes `daemon.slot_tx_end`, `daemon.slot_chain_end` and
+`daemon.hard_fork_genesis_slot_delta` into the genesis runtime config. It
+refuses the spec, with a list of all problems, before it changes anything, if:
+
+- `genesis.k` or `proof.block_window_duration_ms` is not set;
+- `tx_end_before` is not more than k, or `slot_tx_end` is less than 10 minutes
+  after the genesis (the daemons need this time to start and sync);
+- `[runtime_config]` also sets one of the three `daemon` keys;
+- `bin_path` is missing, does not have `mina` (and `mina-archive`,
+  `mina-rosetta`, `mina-create-genesis` when the network needs them), or its
+  `mina` does not run;
+- `mode = "auto"` and the prefork daemon has no `--hardfork-handling`.
+
+A date is changed to a slot again at the first `network start`, from the real
+genesis timestamp.
+
+```bash
+minimina network hardfork status -n mynet
+```
+
+shows the phase of the network (`not-started`, `before-genesis`, `prefork`,
+`tx-end`, `chain-end`, `fork-genesis`), the slot and time of `slot_tx_end`,
+`slot_chain_end` and the fork genesis, and the time to the next phase.
+
 ---
 
 ## Custom Networks (Lucy-Generated Genesis & Topology)

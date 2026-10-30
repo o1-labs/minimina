@@ -52,3 +52,14 @@ balance = "1000"
 # Merged into the generated genesis runtime config.
 # [runtime_config.genesis]
 # slots_per_epoch = 480
+
+# A fork to postfork binaries (native mode only). Needs genesis.k and
+# proof.block_window_duration_ms in [runtime_config]; see the README.
+# [hardfork]
+# mode = "manual"                # or "auto" (--hardfork-handling migrate-exit)
+# at = { slot = 42 }             # slot_chain_end, or a date: at = "2026-10-29T14:00:00Z"
+# tx_end_before = 12             # default: k + 2
+# genesis_slot_delta = 10
+# method = "legacy"              # manual only: legacy | advanced
+# [hardfork.postfork]
+# bin_path = "/opt/mina-postfork/bin"

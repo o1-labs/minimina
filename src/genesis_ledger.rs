@@ -150,6 +150,27 @@ pub mod default {
     }
 }
 
+/// The network's genesis runtime config.
+pub fn read(network_path: &Path) -> std::io::Result<serde_json::Value> {
+    let path = network_path.join(GENESIS_LEDGER_JSON);
+    serde_json::from_str(&std::fs::read_to_string(&path)?).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{}: {e}", path.display()),
+        )
+    })
+}
+
+/// Merges `overrides` into the network's genesis runtime config.
+pub fn update(network_path: &Path, overrides: &serde_json::Value) -> std::io::Result<()> {
+    let mut config = read(network_path)?;
+    merge_json(&mut config, overrides);
+    std::fs::write(
+        network_path.join(GENESIS_LEDGER_JSON),
+        serde_json::to_string_pretty(&config)?,
+    )
+}
+
 /// Merges `overrides` into `base`: objects key by key, anything else replaced.
 fn merge_json(base: &mut serde_json::Value, overrides: &serde_json::Value) {
     match (base, overrides) {
@@ -166,8 +187,12 @@ fn merge_json(base: &mut serde_json::Value, overrides: &serde_json::Value) {
 }
 
 pub fn current_timestamp() -> String {
-    let datetime = Local::now();
-    datetime.format("%Y-%m-%dT%H:%M:%S%.6f%Z").to_string()
+    format_timestamp(Local::now().fixed_offset())
+}
+
+/// A `genesis_state_timestamp` value.
+pub fn format_timestamp(time: DateTime<FixedOffset>) -> String {
+    time.format("%Y-%m-%dT%H:%M:%S%.6f%Z").to_string()
 }
 
 pub fn set_slot_since_genesis(network_path: &Path, slot_since_genesis: u64) -> std::io::Result<()> {

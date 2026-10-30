@@ -4,6 +4,7 @@
 //! children (libp2p_helper) and a Ctrl-C in the shell that ran
 //! `minimina network start` does not stop the network.
 
+use super::binary::Binary;
 use crate::archive_node_api;
 use crate::cli::{ExecutionMode, Profile};
 use crate::daemon_args::{
@@ -281,25 +282,25 @@ impl NativeManager {
             }
             Kind::Rosetta(rosetta) => {
                 let args = rosetta_args(rosetta, &layout("")?, &self.archive_db_uri());
-                let rosetta = self.bin_path.join("mina-rosetta");
+                let rosetta = Binary::Rosetta.path(&self.bin_path);
                 self.spawn_with_env(name, &rosetta, &args, ROSETTA_ENV)
             }
             Kind::UptimeServiceBackend(_) => Err(NativeError::UptimeServiceUnsupported.into()),
             Kind::Daemon(daemon) => {
                 // the archive daemon pushes blocks to mina-archive, so that comes up first
                 if let Role::Archive { port, .. } = daemon.role {
-                    let archive = self.bin_path.join("mina-archive");
+                    let archive = Binary::Archive.path(&self.bin_path);
                     let args = self.archive_args(port);
                     self.spawn(&format!("{name}{ARCHIVE_SUFFIX}"), &archive, &args)?;
                 }
                 let config_dir = self.mina_config_dir(name)?;
                 let args = layout(utf8(&config_dir)?)?.daemon(name, daemon);
-                self.spawn(name, &self.bin_path.join("mina"), &args)
+                self.spawn(name, &Binary::Mina.path(&self.bin_path), &args)
             }
             Kind::SnarkWorker(worker) => {
                 let config_dir = self.mina_config_dir(name)?;
                 let args = layout(utf8(&config_dir)?)?.snark_worker(worker);
-                self.spawn(name, &self.bin_path.join("mina"), &args)
+                self.spawn(name, &Binary::Mina.path(&self.bin_path), &args)
             }
         }
     }
@@ -727,8 +728,8 @@ mod tests {
                 net: tempfile::tempdir().unwrap(),
                 bin: tempfile::tempdir().unwrap(),
             };
-            for name in ["mina", "mina-archive", "mina-rosetta"] {
-                let path = sandbox.bin.path().join(name);
+            for binary in [Binary::Mina, Binary::Archive, Binary::Rosetta] {
+                let path = binary.path(sandbox.bin.path());
                 fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
             }
