@@ -113,6 +113,40 @@ pub enum NetworkCommand {
 pub enum HardforkCommand {
     /// The fork schedule and the phase of the network now
     Status(NetworkId),
+    /// Manual mode, after slot_chain_end: make the postfork config of every
+    /// daemon from the running network, and check that they agree
+    Prepare(PrepareHardforkArgs),
+    /// Manual mode, after prepare: stop the network, install the postfork
+    /// config, upgrade the archive database, and start the postfork binaries
+    Apply(ApplyHardforkArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PrepareHardforkArgs {
+    #[clap(flatten)]
+    pub network_id: NetworkId,
+
+    /// Wait for slot_chain_end instead of failing before it
+    #[clap(long, default_value_t = false)]
+    pub wait: bool,
+
+    /// Take the fork config of this daemon; other daemons that differ or do
+    /// not answer are only warnings [default: all daemons must agree]
+    #[clap(long)]
+    pub source: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ApplyHardforkArgs {
+    #[clap(flatten)]
+    pub network_id: NetworkId,
+
+    #[clap(flatten)]
+    pub timeout: ShutdownTimeout,
+
+    /// Seconds to wait for the seeds' libp2p ports before starting the other nodes
+    #[clap(long, default_value_t = 900)]
+    pub seed_timeout: u64,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -332,6 +366,8 @@ network_id!(StartNetworkArgs);
 network_id!(CreateNetworkArgs);
 network_id!(NodeCommandArgs);
 network_id!(StopNetworkArgs);
+network_id!(PrepareHardforkArgs);
+network_id!(ApplyHardforkArgs);
 
 node_id!(NodeCommandArgs);
 
@@ -369,6 +405,8 @@ impl Command {
                 | NetworkCommand::Status(args)
                 | NetworkCommand::Info(args)
                 | NetworkCommand::Hardfork(HardforkCommand::Status(args)) => Some(&args.network_id),
+                NetworkCommand::Hardfork(HardforkCommand::Prepare(args)) => Some(args.network_id()),
+                NetworkCommand::Hardfork(HardforkCommand::Apply(args)) => Some(args.network_id()),
                 NetworkCommand::List => None,
             },
             Command::Node(cmd) => Some(match cmd {

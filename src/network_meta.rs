@@ -44,6 +44,27 @@ pub struct HardforkMeta {
     pub method: Option<ForkMethod>,
     /// Directory of the postfork binaries.
     pub postfork_bin_path: PathBuf,
+    /// The postfork `upgrade.sql` of the archive database (networks with an archive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_upgrade: Option<PathBuf>,
+    #[serde(default)]
+    pub state: HardforkState,
+    /// Directory of the prefork binaries, after `hardfork apply` switched `bin_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefork_bin_path: Option<PathBuf>,
+}
+
+/// How far the manual hardfork went.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HardforkState {
+    /// Only the schedule is set.
+    #[default]
+    Planned,
+    /// `hardfork prepare` made and checked the postfork configs.
+    Prepared,
+    /// `hardfork apply` installed them; the network runs the postfork binaries.
+    Applied,
 }
 
 impl NetworkMeta {
@@ -91,6 +112,9 @@ mod tests {
                 mode: HardforkMode::Manual,
                 method: Some(ForkMethod::Legacy),
                 postfork_bin_path: "/opt/post".into(),
+                archive_upgrade: None,
+                state: HardforkState::Prepared,
+                prefork_bin_path: None,
             }),
         };
         meta.save(dir.path()).unwrap();

@@ -186,7 +186,14 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             let network_id = cmd.network_id().to_string();
             ctx.ensure_network_exists(&network_id)?;
             hardfork::set_genesis(ctx, &network_id)?;
-            if let Err(e) = ctx.dirs.check_genesis_timestamp(&network_id) {
+            // after a fork, each daemon's daemon.json has the genesis timestamp
+            let forked = hardfork::is_applied(ctx, &network_id)?;
+            let checked = if forked {
+                Ok(())
+            } else {
+                ctx.dirs.check_genesis_timestamp(&network_id)
+            };
+            if let Err(e) = checked {
                 warn!("{e} In case network is unstable consider updating by running 'network create' again.");
             }
 
@@ -232,6 +239,29 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
                 "{}",
                 hardfork::status(ctx, &cmd.network_id, chrono::Utc::now())?
             );
+            Ok(())
+        }
+
+        NetworkCommand::Hardfork(HardforkCommand::Prepare(cmd)) => {
+            let network_id = cmd.network_id();
+            ctx.ensure_network_exists(network_id)?;
+            println!(
+                "{}",
+                hardfork::prepare(ctx, network_id, cmd.wait, cmd.source.as_deref())?
+            );
+            Ok(())
+        }
+
+        NetworkCommand::Hardfork(HardforkCommand::Apply(cmd)) => {
+            let network_id = cmd.network_id();
+            ctx.ensure_network_exists(network_id)?;
+            let applied = hardfork::apply(
+                ctx,
+                network_id,
+                shutdown_timeout(&cmd.timeout),
+                std::time::Duration::from_secs(cmd.seed_timeout),
+            )?;
+            println!("{applied}");
             Ok(())
         }
 
