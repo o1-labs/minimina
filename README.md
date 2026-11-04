@@ -214,6 +214,7 @@ at = { slot = 42 }               # slot_chain_end, or an RFC 3339 date: at = "20
 [hardfork.postfork]
 bin_path = "/opt/mina-postfork/bin"   # relative to the spec file
 # archive_upgrade = "/opt/mina-postfork/upgrade.sql"   # default: from the package
+# mina_version = "4.0.4"              # or an installed version (minimina mina install)
 ```
 
 `network create` writes `daemon.slot_tx_end`, `daemon.slot_chain_end` and
@@ -224,7 +225,8 @@ refuses the spec, with a list of all problems, before it changes anything, if:
 - `tx_end_before` is not more than k, or `slot_tx_end` is less than 10 minutes
   after the genesis (the daemons need this time to start and sync);
 - `[runtime_config]` also sets one of the three `daemon` keys;
-- `bin_path` is missing, does not have `mina` (and `mina-archive`,
+- neither `bin_path` nor `mina_version` is set, both are, `mina_version` is
+  not installed, or the directory does not have `mina` (and `mina-archive`,
   `mina-rosetta`, `mina-create-genesis` when the network needs them), or its
   `mina` does not run;
 - `mode = "auto"` and the prefork daemon has no `--hardfork-handling`;
@@ -351,13 +353,42 @@ minimina node stop -n local -i seed-0 --timeout 30
 minimina network stop -n local
 ```
 
-- `network create` records the mode, `mina` directory and postgres URI in `<network>/minimina.json`; later commands use them, and a conflicting `--mode` is an error. Networks without the file are treated as docker networks.
+- `network create` records the mode, `mina` directory (and `--mina-version`) and postgres URI in `<network>/minimina.json`; later commands use them, and a conflicting `--mode` is an error. Networks without the file are treated as docker networks.
 - `network start` starts the seeds first and starts the other nodes only when every seed accepts connections on its libp2p port (`--seed-timeout`, default 900 s): a non-seed daemon exits if it finds no peer during its initialization. Seeds are dialled on `127.0.0.1`.
 - Each node is a process group (the daemon and its `libp2p_helper`). `stop` sends SIGTERM to all groups at once and SIGKILL after `--timeout` seconds (default 60). A second `start` of a running node or network is refused.
 - Logs are appended to `<network>/logs/<node>.log`; `node logs`, `node dump-precomputed-blocks`, `node dump-archive-data` and `node run-replayer` work in both modes.
 - Daemons advertise `127.0.0.1` (`-external-ip`). Daemons that have `-precomputed-blocks-dir` (4.0.2+) write one file per block to `config-directory/<node>/precomputed_blocks`; older ones append to `precomputed_blocks.log`.
 - The archive schema comes from the archive package next to `mina` (`<root>/etc/mina/archive/create_schema.sql` for `<root>/usr/local/bin`); minimina downloads it from GitHub only when the package has none.
 - Archive nodes run `mina-archive` (from the same directory as `mina`) against a database `minimina_<network_id>`, recreated on every `network create`. The postgres server is `postgres://postgres:postgres@localhost:5432` unless `MINIMINA_POSTGRES_URI` is set at create time; `psql`, `pg_dump` and `mina-replayer` must be installed.
+
+### mina versions
+
+`minimina mina` downloads the generic packages of a mina version
+(`mina-generic`, `mina-archive-generic`, `mina-rosetta-generic`,
+`mina-logproc`) and unpacks them with `dpkg-deb -x` into
+`~/.minimina/.tools/mina/<version>`, so that versions sit side by side (a
+hardfork test runs two). Nothing is installed system-wide and no root is needed.
+
+```bash
+minimina mina list --available                 # installed versions, and those of the channel
+minimina mina install 4.0.2                    # or 4.0.2-84b8d96, or latest
+minimina mina install latest --channel nightly # stable (default) | unstable | nightly | o1test
+minimina mina upgrade                          # install the newest version of the channel
+minimina mina uninstall 4.0.2                  # refused while a network runs it, unless --force
+
+minimina --mina-version 4.0.2 network create -n local --spec net.toml   # implies --mode native
+```
+
+- The packages come from the repository of the channel for the codename of
+  the host (`VERSION_CODENAME` in `/etc/os-release`; `--codename` overrides).
+  A version that is missing names the codenames that have it.
+- Every deb is checked against the SHA-256 of the repository index. An
+  interrupted install leaves no version behind; the next one starts again.
+- `--mina-version` takes the binaries of the install, as `--bin-path
+  ~/.minimina/.tools/mina/<version>/usr/local/bin` would; the version is
+  recorded with the network. The archive schema comes from the same install.
+- The host must have the libraries the packages depend on (`libssl3`,
+  `libgmp10`, `libjemalloc2`, `libpq`, ...), as for an `apt install`.
 
 ### Integration with Lucy
 

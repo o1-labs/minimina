@@ -17,6 +17,9 @@ pub struct NetworkMeta {
     /// Directory of the `mina` binaries (native mode).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bin_path: Option<PathBuf>,
+    /// The installed mina version `bin_path` belongs to (`--mina-version`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mina_version: Option<String>,
     /// Postgres server URI without database (native archive nodes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub postgres_uri: Option<String>,
@@ -101,6 +104,7 @@ mod tests {
         let meta = NetworkMeta {
             mode: ExecutionMode::Native,
             bin_path: Some("/usr/bin".into()),
+            mina_version: Some("4.0.2-84b8d96".into()),
             postgres_uri: None,
             profile: Profile::Lightnet,
             features: DaemonFeatures {

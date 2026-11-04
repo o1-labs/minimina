@@ -7,6 +7,7 @@ use crate::{
     daemon_args::DaemonFeatures,
     genesis_ledger,
     hardfork::{self, Constants, ForkAt, ForkMethod, HardforkMode, HardforkSpec, Schedule},
+    install,
     native::{self, binary::Binary},
     network_meta::{HardforkMeta, HardforkState, NetworkMeta},
     runtime_config::{self, RuntimeConfig},
@@ -69,23 +70,41 @@ pub fn check_create(
         HardforkMode::Auto => None,
         HardforkMode::Manual => Some(h.method.unwrap_or_default()),
     };
-    let postfork = h.postfork.as_ref().and_then(|p| p.bin_path.as_ref());
-    let postfork = match postfork {
-        None => {
+    let postfork = h
+        .postfork
+        .as_ref()
+        .map(|p| (p.bin_path.as_ref(), p.mina_version.as_deref()));
+    let postfork = match postfork.unwrap_or_default() {
+        (None, None) => {
             problems.push(
                 "[hardfork.postfork] bin_path is missing: minimina must know the binaries \
-                 that the network switches to"
+                 that the network switches to (bin_path, or mina_version of an installed mina)"
                     .into(),
             );
             None
         }
-        Some(path) => {
+        (Some(_), Some(_)) => {
+            problems.push("[hardfork.postfork] has bin_path and mina_version: keep one".into());
+            None
+        }
+        (Some(path), None) => {
             let base = spec_path.parent().unwrap_or(Path::new("."));
             let dir = std::path::absolute(base.join(path))
                 .with_context(|| format!("resolving {}", path.display()))?;
             problems.extend(check_postfork(ctx, &spec, method, &dir));
             Some(dir)
         }
+        (None, Some(version)) => match install::mina::resolve(&ctx.dirs.tools_root(), version) {
+            Ok(installed) => {
+                let dir = installed.bin_path();
+                problems.extend(check_postfork(ctx, &spec, method, &dir));
+                Some(dir)
+            }
+            Err(e) => {
+                problems.push(format!("[hardfork.postfork] {e}"));
+                None
+            }
+        },
     };
     let archive_upgrade = match (
         &postfork,

@@ -1,5 +1,6 @@
 //! # `minimina` Command-Line Interface (CLI)
 
+pub use crate::install::apt::Channel;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -75,6 +76,12 @@ pub struct Cli {
     /// If omitted, minimina searches /usr/local/bin, /usr/bin, and PATH.
     #[clap(long, global = true)]
     pub bin_path: Option<PathBuf>,
+
+    /// Installed mina version to run (`4.0.2`, `4.0.2-84b8d96` or `latest`):
+    /// its binaries, as with --bin-path. Implies --mode native at create.
+    /// See `minimina mina install`
+    #[clap(long, global = true, conflicts_with = "bin_path")]
+    pub mina_version: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -86,6 +93,68 @@ pub enum Command {
     /// Manage a single node
     #[clap(subcommand)]
     Node(NodeCommand),
+
+    /// Manage mina versions for native mode
+    #[clap(subcommand)]
+    Mina(MinaCommand),
+}
+
+#[derive(Subcommand)]
+pub enum MinaCommand {
+    /// Download the generic packages of a mina version and unpack them into
+    /// ~/.minimina/.tools/mina/<version>
+    Install(MinaInstallArgs),
+    /// Installed mina versions; with --available, those of the channel too
+    List(MinaListArgs),
+    /// Remove an installed mina version
+    Uninstall(MinaUninstallArgs),
+    /// Install the newest version of the channel
+    Upgrade(MinaSourceArgs),
+}
+
+/// Where mina packages come from.
+#[derive(Args, Debug, Clone)]
+pub struct MinaSourceArgs {
+    /// Package repository
+    #[clap(long, value_enum, default_value_t)]
+    pub channel: Channel,
+
+    /// Distribution the packages are built for (noble, jammy, bookworm)
+    /// [default: VERSION_CODENAME of /etc/os-release]
+    #[clap(long)]
+    pub codename: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct MinaInstallArgs {
+    /// Version: `4.0.2`, `4.0.2-84b8d96` or `latest`
+    // `version` is the id of --version
+    #[clap(id = "release", value_name = "VERSION")]
+    pub version: String,
+
+    #[clap(flatten)]
+    pub source: MinaSourceArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct MinaListArgs {
+    /// Also list the versions the channel has
+    #[clap(long)]
+    pub available: bool,
+
+    #[clap(flatten)]
+    pub source: MinaSourceArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct MinaUninstallArgs {
+    /// Installed version: `4.0.2` or `4.0.2-84b8d96`
+    #[clap(id = "release", value_name = "VERSION")]
+    pub version: String,
+
+    /// Remove it even when networks run it
+    #[clap(long)]
+    pub force: bool,
 }
 
 #[derive(Subcommand)]
@@ -389,12 +458,15 @@ impl DefaultLogLevel for Command {
                 NodeCommand::Start(args) => args.node_args.log_level(),
                 NodeCommand::RunReplayer(args) => args.node_args.log_level(),
             },
+            // downloads report their progress
+            Command::Mina(MinaCommand::Install(_) | MinaCommand::Upgrade(_)) => "info",
+            Command::Mina(_) => "warn",
         }
     }
 }
 
 impl Command {
-    /// Network the command operates on; `None` for `network list`.
+    /// Network the command operates on; `None` for `network list` and `mina`.
     pub fn network_id(&self) -> Option<&str> {
         match self {
             Command::Network(cmd) => match cmd {
@@ -417,6 +489,7 @@ impl Command {
                 | NodeCommand::DumpPrecomputedBlocks(args)
                 | NodeCommand::DumpArchiveData(args) => args.network_id(),
             }),
+            Command::Mina(_) => None,
         }
     }
 }
@@ -452,6 +525,45 @@ mod tests {
             }
             _ => panic!("not a create"),
         }
+    }
+
+    #[test]
+    fn mina_commands_parse() {
+        let cli = Cli::try_parse_from([
+            "minimina",
+            "mina",
+            "install",
+            "4.0.2",
+            "--channel",
+            "nightly",
+            "--codename",
+            "jammy",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Mina(MinaCommand::Install(args)) => {
+                assert_eq!(args.version, "4.0.2");
+                assert_eq!(args.source.channel, Channel::Nightly);
+                assert_eq!(args.source.codename.as_deref(), Some("jammy"));
+            }
+            _ => panic!("not an install"),
+        }
+        let cli = Cli::try_parse_from(["minimina", "mina", "upgrade"]).unwrap();
+        assert_eq!(cli.command.log_level(), "info");
+        assert_eq!(cli.command.network_id(), None);
+
+        let err = Cli::try_parse_from([
+            "minimina",
+            "--bin-path",
+            "/x",
+            "--mina-version",
+            "4.0.2",
+            "network",
+            "create",
+        ])
+        .err()
+        .unwrap();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

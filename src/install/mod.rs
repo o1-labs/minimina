@@ -2,10 +2,12 @@
 //!
 //! Installed tools live in `<minimina home>/.tools/<tool>/<version>`: one
 //! directory per version, so that versions sit side by side. [`npm`] installs
-//! npm applications (the archive node api); mina itself will come from its
-//! deb packages the same way (#13). [`requirement`] checks programs the host
-//! must provide (Node.js, Docker Compose).
+//! npm applications (the archive node api); [`mina`] unpacks the deb packages
+//! of mina versions, found in the repositories of [`apt`]. [`requirement`]
+//! checks programs the host must provide (Node.js, Docker Compose).
 
+pub mod apt;
+pub mod mina;
 pub mod npm;
 pub mod requirement;
 

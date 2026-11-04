@@ -250,6 +250,77 @@ pub mod node {
     }
 }
 
+pub mod mina {
+    use crate::install::{apt::Channel, mina};
+    use serde::Serialize;
+
+    #[derive(Debug, Serialize, PartialEq)]
+    pub struct Installed {
+        pub version: String,
+        pub channel: Channel,
+        pub codename: String,
+        /// For `--bin-path`; `--mina-version <version>` finds it.
+        pub bin_path: String,
+    }
+
+    impl From<&mina::Installed> for Installed {
+        fn from(i: &mina::Installed) -> Self {
+            Installed {
+                version: i.version.clone(),
+                channel: i.channel,
+                codename: i.codename.clone(),
+                bin_path: i.bin_path().display().to_string(),
+            }
+        }
+    }
+
+    #[derive(Debug, Serialize, PartialEq)]
+    pub struct Install {
+        #[serde(flatten)]
+        pub installed: Installed,
+        /// False when the version was installed already.
+        pub new: bool,
+    }
+
+    impl Install {
+        pub fn new(installed: &mina::Installed, new: bool) -> Self {
+            Install {
+                installed: installed.into(),
+                new,
+            }
+        }
+    }
+
+    #[derive(Debug, Serialize, PartialEq)]
+    pub struct AvailableVersion {
+        pub version: String,
+        pub installed: bool,
+    }
+
+    #[derive(Debug, Serialize, PartialEq)]
+    pub struct Available {
+        pub channel: Channel,
+        pub codename: String,
+        pub versions: Vec<AvailableVersion>,
+    }
+
+    #[derive(Debug, Serialize, PartialEq)]
+    pub struct List {
+        pub installed: Vec<Installed>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub available: Option<Available>,
+    }
+
+    #[derive(Debug, Serialize, PartialEq)]
+    pub struct Uninstall {
+        pub version: String,
+        pub dir: String,
+        /// Networks that ran it (`--force`).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pub used_by: Vec<String>,
+    }
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct Error {
     pub error_message: String,
@@ -312,6 +383,9 @@ impl_display!(node::Logs);
 impl_display!(node::PrecomputedBlocks);
 impl_display!(node::ReplayerLogs);
 impl_display!(node::Status);
+impl_display!(mina::Install);
+impl_display!(mina::List);
+impl_display!(mina::Uninstall);
 impl_display!(Error);
 
 #[cfg(test)]
