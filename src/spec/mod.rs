@@ -39,12 +39,15 @@
 //!
 //! - [`flags`]: the node flags of `network create` and `spec init`, on top
 //!   of a spec.
-//! - [`ledger_file`]: the accounts of `[ledger] file`.
+//! - [`ledger`]: the accounts of `[ledger] file`.
 //! - [`init`]: a spec written as commented TOML (`spec init`).
 
+mod error;
 pub mod flags;
 pub mod init;
-pub mod ledger_file;
+pub mod ledger;
+
+pub use error::{LedgerProblem, SpecError};
 
 use crate::{cli::Profile, hardfork::HardforkSpec};
 use anyhow::{bail, Context as _, Result};
@@ -113,7 +116,7 @@ pub struct NodeGroup {
     pub role: Role,
     /// Name of the node; only for `count = 1`. Default: `<role>-<n>`.
     pub name: Option<String>,
-    #[serde(default = "one")]
+    #[serde(default = "one", skip_serializing_if = "is_one")]
     pub count: u16,
     /// Genesis balance of each node. Block producers default to
     /// [`DEFAULT_BLOCK_PRODUCER_BALANCE`]; other nodes get no account.
@@ -139,13 +142,18 @@ fn one() -> u16 {
     1
 }
 
-impl NodeGroup {
-    /// `count` nodes of `role`, with nothing else set.
-    pub fn new(role: Role, count: u16) -> Self {
+fn is_one(count: &u16) -> bool {
+    *count == 1
+}
+
+/// One seed with nothing else set, as a spec without settings means it; the
+/// base of `NodeGroup { role, ..Default::default() }`.
+impl Default for NodeGroup {
+    fn default() -> Self {
         NodeGroup {
-            role,
+            role: Role::Seed,
             name: None,
-            count,
+            count: 1,
             balance: None,
             client_port: None,
             archive_port: None,
@@ -158,6 +166,17 @@ impl NodeGroup {
     }
 }
 
+impl NodeGroup {
+    /// `count` nodes of `role`, with nothing else set.
+    pub fn new(role: Role, count: u16) -> Self {
+        NodeGroup {
+            role,
+            count,
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LedgerSpec {
@@ -165,7 +184,7 @@ pub struct LedgerSpec {
     #[serde(default)]
     pub accounts: u16,
     pub balance: Option<String>,
-    /// Accounts to start with (see [`ledger_file`]); the generated ones are
+    /// Accounts to start with (see [`ledger`]); the generated ones are
     /// added to them. A relative path is relative to the spec file.
     pub file: Option<PathBuf>,
 }
@@ -272,9 +291,10 @@ impl NetworkSpec {
     /// The network `network create` makes without a spec, flags, topology or ledger.
     pub fn default_network() -> Self {
         let node = |role, name: &str, client_port| NodeGroup {
+            role,
             name: Some(name.into()),
             client_port: Some(client_port),
-            ..NodeGroup::new(role, 1)
+            ..Default::default()
         };
         let mut archive = node(Role::Archive, "mina-archive", 5005);
         archive.archive_port = Some(3086);

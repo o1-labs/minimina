@@ -1,174 +1,137 @@
-//! A spec as commented TOML: what `spec init` writes, for the user to edit
-//! and keep. It reads back as the same spec.
+//! What `spec init` prints: a spec file to start from. The spec is written
+//! as TOML with comments that say what each part does, for the user to edit
+//! and pass to `network create --spec`; without edits it is the same spec.
 
-use super::{NetworkSpec, NodeGroup, Role, DEFAULT_BLOCK_PRODUCER_BALANCE};
-use std::fmt::Write as _;
+use super::{NetworkSpec, Role, DEFAULT_BLOCK_PRODUCER_BALANCE};
+use anyhow::{Context as _, Result};
+use toml_edit::{DocumentMut, Item, Table};
 
-/// What each role is, next to its `role` line.
-fn role_comment(role: Role) -> &'static str {
+/// Column where the comment after a value starts.
+const COMMENT_COLUMN: usize = 30;
+
+/// The top of the file; `{command}` is the command that wrote it.
+const HEADER: &str = "\
+# minimina network spec, written by `{command}`.
+# Create the network: minimina network create -n <network> --spec <this file>
+#
+# minimina generates the keys, ports, peers and genesis ledger. Node names
+# default to <role>-<n> (seed-1, bp-1, node-1, ...); client ports are
+# assigned from 3100 in steps of 10 unless a node sets `client_port`.
+# The build profile of the mina binaries (dev, devnet, lightnet, mainnet;
+# default devnet) is `profile = \"...\"`; --profile overrides it.
+";
+
+/// Before `[ledger]`.
+const LEDGER_COMMENT: &str = "
+# Funded accounts for transactions in tests: account-1 .. account-N, with
+# `balance` each (default \"1000\"); keys are in <network dir>/network-keypairs.
+# `file` gives accounts to start with; the generated ones are added after them:
+#   .json: a runtime config ledger (ledger.accounts), as -g takes it
+#   .csv:  a header line, then public_key,balance[,private_key,delegate] per
+#          line; balances in MINA
+";
+
+/// The end of the file: sections the flags do not make.
+const FOOTER: &str = "
+# Merged into the generated genesis runtime config.
+# [runtime_config.genesis]
+# k = 10
+# [runtime_config.proof]
+# block_window_duration_ms = 30000
+
+# Docker mode images (defaults: the built-in images).
+# [docker]
+# daemon_image = \"minaprotocol/mina-daemon:...\"
+
+# A fork to postfork binaries (native mode only); see the README.
+# [hardfork]
+# mode = \"manual\"
+# at = { slot = 42 }
+# postfork = { mina_version = \"4.0.4\" }
+";
+
+/// What a node of each role does, after its `role`.
+fn role_comment(role: Role) -> String {
     match role {
-        Role::Seed => "peers find each other through the seeds",
-        Role::BlockProducer => "produces blocks with its stake",
-        Role::Plain => "follows the chain, produces no blocks",
-        Role::Archive => "+ mina-archive and a postgres database",
-        Role::SnarkCoordinator => "hands out snark work to its workers",
-        Role::Rosetta => "mina-rosetta: reads the archive database",
-        Role::ArchiveNodeApi => "GraphQL over the archive database (events, actions)",
+        Role::Seed => "peers find each other through the seeds".into(),
+        Role::BlockProducer => {
+            format!("produces blocks; balance default \"{DEFAULT_BLOCK_PRODUCER_BALANCE}\"")
+        }
+        Role::Plain => "follows the chain, produces no blocks".into(),
+        Role::Archive => "+ mina-archive and a postgres database".into(),
+        Role::SnarkCoordinator => "hands out snark work to its workers".into(),
+        Role::Rosetta => "reads the archive and a daemon's GraphQL (node, default: archive)".into(),
+        Role::ArchiveNodeApi => "GraphQL over the archive database (events, actions)".into(),
     }
 }
 
-fn quoted(s: &str) -> String {
-    toml::Value::String(s.to_string()).to_string()
+/// A spec as a TOML document with comments.
+pub struct SpecDocument {
+    doc: DocumentMut,
 }
 
-/// `key = value` with a comment aligned after it.
-fn line(out: &mut String, assignment: &str, comment: &str) {
-    if comment.is_empty() {
-        let _ = writeln!(out, "{assignment}");
-    } else {
-        let _ = writeln!(out, "{assignment:<30}# {comment}");
-    }
-}
-
-fn group(out: &mut String, g: &NodeGroup) {
-    let _ = writeln!(out, "\n[[nodes]]");
-    let role = toml::Value::try_from(g.role)
-        .map(|v| v.to_string())
-        .unwrap_or_default();
-    line(out, &format!("role = {role}"), role_comment(g.role));
-    if g.count != 1 {
-        line(out, &format!("count = {}", g.count), "");
-    }
-    if let Some(name) = &g.name {
-        line(out, &format!("name = {}", quoted(name)), "");
-    }
-    match (&g.balance, g.role) {
-        (Some(balance), _) => line(out, &format!("balance = {}", quoted(balance)), "MINA"),
-        (None, Role::BlockProducer) => line(
-            out,
-            &format!("# balance = {}", quoted(DEFAULT_BLOCK_PRODUCER_BALANCE)),
-            "default",
-        ),
-        _ => {}
-    }
-    if let Some(port) = g.client_port {
-        line(out, &format!("client_port = {port}"), "");
-    }
-    if let Some(port) = g.archive_port {
-        line(out, &format!("archive_port = {port}"), "");
-    }
-    if let Some(workers) = g.workers {
-        line(out, &format!("workers = {workers}"), "");
-    }
-    if let Some(fee) = &g.fee {
-        line(
-            out,
-            &format!("fee = {}", quoted(fee)),
-            "MINA per snark work",
-        );
-    }
-    if let Some(node) = &g.node {
-        line(out, &format!("node = {}", quoted(node)), "");
-    }
-    if g.role == Role::Rosetta && g.node.is_none() {
-        line(
-            out,
-            "# node = \"node-1\"",
-            "the daemon whose GraphQL it reads (default: the archive node)",
-        );
-    }
-    if let Some(version) = &g.version {
-        line(out, &format!("version = {}", quoted(version)), "");
-    }
-    if let Some(bin) = &g.bin {
-        line(
-            out,
-            &format!("bin = {}", quoted(&bin.to_string_lossy())),
-            "",
-        );
-    }
-}
-
-/// `spec` as commented TOML. `command` is the command that made it.
-pub fn render(spec: &NetworkSpec, command: &str) -> String {
-    let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "# minimina network spec, written by `{command}`.\n\
-         # Create the network: minimina network create -n <network> --spec <this file>\n\
-         #\n\
-         # minimina generates the keys, ports, peers and genesis ledger. Node names\n\
-         # default to <role>-<n> (seed-1, bp-1, node-1, ...); client ports are\n\
-         # assigned from 3100 in steps of 10 unless a node sets `client_port`.\n"
-    );
-    let _ = writeln!(
-        out,
-        "# Build profile of the mina binaries: dev, devnet, lightnet, mainnet.\n\
-         # --profile overrides it."
-    );
-    match spec.profile {
-        Some(profile) => line(&mut out, &format!("profile = \"{profile}\""), ""),
-        None => line(&mut out, "# profile = \"devnet\"", "default"),
-    }
-    for g in &spec.nodes {
-        group(&mut out, g);
+impl SpecDocument {
+    /// Writes `spec` as TOML (what `toml` makes of it), then comments it.
+    pub fn new(spec: &NetworkSpec) -> Result<Self> {
+        let doc: DocumentMut = spec
+            .to_toml()?
+            .parse()
+            .context("reading back the spec as TOML")?;
+        let mut document = SpecDocument { doc };
+        document.comment_nodes();
+        document.comment_ledger();
+        Ok(document)
     }
 
-    let _ = writeln!(
-        out,
-        "\n# Funded accounts for transactions in tests: account-1 .. account-N."
-    );
-    let _ = writeln!(out, "# Keys are in <network dir>/network-keypairs.");
-    let _ = writeln!(out, "[ledger]");
-    line(
-        &mut out,
-        &format!("accounts = {}", spec.ledger.accounts),
-        "",
-    );
-    match &spec.ledger.balance {
-        Some(balance) => line(&mut out, &format!("balance = {}", quoted(balance)), "MINA"),
-        None => line(&mut out, "# balance = \"1000\"", "default"),
-    }
-    match &spec.ledger.file {
-        Some(file) => line(
-            &mut out,
-            &format!("file = {}", quoted(&file.to_string_lossy())),
-            "",
-        ),
-        None => {
-            line(
-                &mut out,
-                "# file = \"accounts.csv\"",
-                "accounts to start with; the generated ones are added",
-            );
-            let _ = writeln!(
-                out,
-                "#   .json: a runtime config ledger (ledger.accounts), as -g takes it\n\
-                 #   .csv:  a header line, then public_key,balance[,private_key,delegate]\n\
-                 #          per line; balances in MINA"
-            );
+    fn comment_nodes(&mut self) {
+        let Some(nodes) = self
+            .doc
+            .get_mut("nodes")
+            .and_then(Item::as_array_of_tables_mut)
+        else {
+            return;
+        };
+        for node in nodes.iter_mut() {
+            node.decor_mut().set_prefix("\n");
+            let role = node
+                .get("role")
+                .and_then(|r| r.as_str())
+                .and_then(|r| toml::Value::String(r.into()).try_into::<Role>().ok());
+            if let Some(role) = role {
+                comment_after(node, "role", &role_comment(role));
+            }
+            comment_after(node, "balance", "MINA");
+            comment_after(node, "fee", "MINA per snark work");
         }
     }
 
-    let _ = writeln!(
-        out,
-        "\n# Merged into the generated genesis runtime config.\n\
-         # [runtime_config.genesis]\n\
-         # k = 10\n\
-         # [runtime_config.proof]\n\
-         # block_window_duration_ms = 30000\n\
-         \n\
-         # Docker mode images (defaults: the built-in images).\n\
-         # [docker]\n\
-         # daemon_image = \"minaprotocol/mina-daemon:...\"\n\
-         \n\
-         # A fork to postfork binaries (native mode only); see the README.\n\
-         # [hardfork]\n\
-         # mode = \"manual\"\n\
-         # at = {{ slot = 42 }}\n\
-         # postfork = {{ mina_version = \"4.0.4\" }}"
-    );
-    out
+    fn comment_ledger(&mut self) {
+        if let Some(ledger) = self.doc.get_mut("ledger").and_then(Item::as_table_mut) {
+            ledger.decor_mut().set_prefix(LEDGER_COMMENT);
+        }
+    }
+
+    /// The file: a header naming `command`, the spec, and examples of the
+    /// sections the flags do not make.
+    pub fn render(&self, command: &str) -> String {
+        format!(
+            "{}{}{FOOTER}",
+            HEADER.replace("{command}", command),
+            self.doc
+        )
+    }
+}
+
+/// `# comment` after the value of `key` in `table`, if it has one.
+fn comment_after(table: &mut Table, key: &str, comment: &str) {
+    let Some(value) = table.get_mut(key).and_then(Item::as_value_mut) else {
+        return;
+    };
+    let width = format!("{key} = {value}").trim_end().len();
+    let pad = COMMENT_COLUMN.saturating_sub(width).max(1);
+    value
+        .decor_mut()
+        .set_suffix(format!("{}# {comment}", " ".repeat(pad)));
 }
 
 #[cfg(test)]
@@ -189,22 +152,30 @@ mod tests {
             accounts: Some(4),
         };
         let spec = NetworkSpec::flags_base().with_flags(&flags);
-        let text = render(&spec, "minimina spec init --seeds 2");
+        let text = SpecDocument::new(&spec)
+            .unwrap()
+            .render("minimina spec init --seeds 2");
         assert!(
             text.starts_with("# minimina network spec, written by `minimina spec init --seeds 2`.")
         );
-        assert!(text.contains(
-            "role = \"block-producer\"       # produces blocks with its stake\ncount = 3\n"
-        ));
+        assert!(
+            text.contains(
+                "role = \"block-producer\"      # produces blocks; balance default \"11550000\"\ncount = 3\n"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("fee = \"0.001\"                # MINA per snark work"));
         let back: NetworkSpec = toml::from_str(&text).unwrap();
         assert_eq!(back, spec);
 
-        // set values are written, not commented
+        // set values are written
         let mut spec = NetworkSpec::default_network();
         spec.profile = Some(crate::cli::Profile::Lightnet);
         spec.ledger.balance = Some("5.5".into());
         spec.ledger.file = Some("/tmp/a b.csv".into());
-        let back: NetworkSpec = toml::from_str(&render(&spec, "x")).unwrap();
+        let text = SpecDocument::new(&spec).unwrap().render("x");
+        assert!(text.contains("profile = \"lightnet\""), "{text}");
+        let back: NetworkSpec = toml::from_str(&text).unwrap();
         assert_eq!(back, spec);
     }
 }

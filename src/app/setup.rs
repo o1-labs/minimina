@@ -12,7 +12,7 @@ use crate::{
     keys::{KeysManager, NodeKey},
     native::keys::NativeKeysManager,
     service::{ServiceConfig, ServiceType},
-    spec::{ledger_file, NetworkSpec, PlannedNode, Role},
+    spec::{ledger::LedgerFile, NetworkSpec, PlannedNode, Role, SpecError},
     topology::Topology,
 };
 use anyhow::{bail, Context as _, Result};
@@ -35,11 +35,8 @@ pub struct SpecNetwork {
 /// The spec of `network create`: the node flags on top of `--spec`, else of
 /// [`NetworkSpec::flags_base`]; with neither, the default network.
 pub fn create_spec(cmd: &CreateNetworkArgs) -> Result<NetworkSpec> {
-    if !cmd.nodes.is_empty() && (cmd.topology.is_some() || cmd.genesis_ledger.is_some()) {
-        bail!(
-            "the node flags (--seeds, --block-producers, ...) cannot be combined with \
-             -t/-g, the legacy topology and ledger files; use --spec instead"
-        );
+    if !cmd.nodes.is_empty() && cmd.uses_legacy_files() {
+        return Err(SpecError::FlagsWithLegacyFiles.into());
     }
     let spec = match (&cmd.spec, cmd.nodes.is_empty()) {
         (Some(path), _) => NetworkSpec::load(path)?,
@@ -152,7 +149,11 @@ fn generate_from_spec(
         ledger.push((pk(account)?, account_balance.to_string()));
     }
     let given = match &spec.ledger.file {
-        Some(file) => ledger_file::load(file)?,
+        Some(file) => LedgerFile::load(file)?
+            .accounts
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()?,
         None => vec![],
     };
     default::LedgerGenerator::generate(

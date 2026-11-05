@@ -308,6 +308,15 @@ pub struct CreateNetworkArgs {
     pub nodes: NodeFlags,
 }
 
+impl CreateNetworkArgs {
+    /// `-t/-g`: a Lucy topology and its genesis ledger, the legacy input. They
+    /// bring their own nodes and keys (the topology's keys are the ledger's
+    /// accounts), so nothing generates or changes nodes for them.
+    pub fn uses_legacy_files(&self) -> bool {
+        self.topology.is_some() || self.genesis_ledger.is_some()
+    }
+}
+
 /// The nodes of a network as flags. On top of `--spec`, each one replaces
 /// what the spec says for its role; without `--spec`, they change a network
 /// of one seed and one block producer.

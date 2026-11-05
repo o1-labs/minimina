@@ -2,7 +2,7 @@
 
 use crate::{
     cli::{SpecCommand, SpecInitArgs},
-    spec::{init, NetworkSpec},
+    spec::{init::SpecDocument, NetworkSpec},
 };
 use anyhow::Result;
 
@@ -26,7 +26,7 @@ fn spec_init(args: &SpecInitArgs, command: &str) -> Result<String> {
     spec.profile = args.profile;
     // a spec that `network create` would refuse is not written
     spec.plan()?;
-    Ok(init::render(&spec, command))
+    Ok(SpecDocument::new(&spec)?.render(command))
 }
 
 #[cfg(test)]
