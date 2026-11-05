@@ -7,10 +7,12 @@
 //! layout [`crate::utils::package_root`] expects, so the archive schema of
 //! the package is found next to them.
 
-use super::apt::{self, Channel, Index, Release};
+use super::apt::{self, Channel, Index, PackageVersion, Release, ReleaseInfo, Repository};
+use super::requirement::{require, Tool};
 use crate::native::binary::Binary;
 use crate::runner::Runner;
-use anyhow::{bail, Context as _, Result};
+use crate::version::Version;
+use anyhow::{Context as _, Result};
 use log::info;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -25,8 +27,81 @@ pub const BIN_DIR: &str = "usr/local/bin";
 /// What was installed, in the install directory; a directory without it is
 /// not an install.
 const INSTALL_FILE: &str = "install.json";
-/// Downloads in progress, under `<tools>/mina`.
+/// Debs being downloaded, under `<tools>/mina`.
 const DOWNLOADS: &str = ".downloads";
+/// Name of the directory a version is unpacked into before it is moved to
+/// `<tools>/mina/<version>`, so that an interrupted install is not one.
+fn partial_name(version: &str) -> String {
+    format!(".{version}.partial")
+}
+
+/// `dpkg-deb`, which unpacks the debs.
+const DPKG_DEB: Tool = Tool {
+    name: "dpkg-deb",
+    program: "dpkg-deb",
+    version_args: &["--version"],
+    min: Version(1, 17, 0),
+    install: "Install the dpkg package.",
+};
+
+/// Why a mina version cannot be installed, used or removed.
+#[derive(Debug, thiserror::Error)]
+pub enum MinaError {
+    #[error("mina {wanted} is not installed; run `minimina mina install {wanted}`{}",
+        listed(" (installed: ", .installed, ")"))]
+    NotInstalled {
+        wanted: String,
+        installed: Vec<String>,
+    },
+    #[error("mina {wanted} names several {what}: {}; give the whole version", .versions.join(", "))]
+    Ambiguous {
+        wanted: String,
+        /// `builds` (of the index) or `installs`
+        what: &'static str,
+        versions: Vec<String>,
+    },
+    #[error("mina {wanted} is not in the {channel} channel for {codename}{}{}",
+        listed("; available for: ", .elsewhere, ""),
+        listed(&format!("; {codename} has: "), .recent, ""))]
+    NotAvailable {
+        wanted: String,
+        channel: Channel,
+        codename: String,
+        /// Other codenames whose index has it.
+        elsewhere: Vec<String>,
+        /// The newest versions the index has.
+        recent: Vec<String>,
+    },
+    #[error("{repository} has no channel {channel} for {codename}; channels: {}", .channels.join(", "))]
+    UnknownChannel {
+        repository: Repository,
+        channel: Channel,
+        codename: String,
+        channels: Vec<String>,
+    },
+    #[error("{file} does not match the index: SHA-256 {found}, expected {expected}")]
+    Checksum {
+        file: String,
+        found: String,
+        expected: String,
+    },
+    #[error("the packages of mina {version} have no {BIN_DIR}/mina")]
+    NoBinary { version: String },
+    #[error("mina {version} is used by network(s) {}; delete them first, or pass --force", .networks.join(", "))]
+    InUse {
+        version: String,
+        networks: Vec<String>,
+    },
+}
+
+/// `<before><items joined by ", "><after>`, or nothing without items.
+fn listed(before: &str, items: &[String], after: &str) -> String {
+    if items.is_empty() {
+        String::new()
+    } else {
+        format!("{before}{}{after}", items.join(", "))
+    }
+}
 
 /// How minimina gets files from the package repositories.
 pub trait Fetch {
@@ -93,9 +168,11 @@ impl Fetch for Http {
     }
 }
 
-/// The repository, codename and architecture to install from.
+/// Where to install from: a channel of a repository, for a codename and
+/// architecture.
 #[derive(Debug, Clone)]
 pub struct Source {
+    pub repository: Repository,
     pub channel: Channel,
     pub codename: String,
     pub arch: String,
@@ -103,28 +180,76 @@ pub struct Source {
 
 impl Source {
     pub fn index(&self, fetch: &dyn Fetch) -> Result<Index> {
-        let url = self.channel.index_url(&self.codename, &self.arch);
+        let url = self
+            .repository
+            .index_url(&self.codename, &self.channel, &self.arch);
         match fetch.text(&url) {
             Ok(text) => Ok(Index::parse(&text)),
-            Err(e) => {
-                // say which channels there are when the channel is not one
-                let channels = fetch
-                    .text(&apt::release_url(&self.codename))
-                    .map(|release| apt::channels(&release))
-                    .unwrap_or_default();
-                if !channels.is_empty() && !channels.contains(&self.channel.to_string()) {
-                    bail!(
-                        "{} has no channel {} for {}; channels: {}",
-                        apt::REPOSITORY,
-                        self.channel,
-                        self.codename,
-                        channels.join(", ")
-                    );
-                }
-                Err(e)
-                    .with_context(|| format!("no {} packages for {}", self.channel, self.codename))
-            }
+            Err(e) => match self.unknown_channel(fetch) {
+                Some(unknown) => Err(unknown.into()),
+                None => Err(e)
+                    .with_context(|| format!("no {} packages for {}", self.channel, self.codename)),
+            },
         }
+    }
+
+    /// When the codename has no such channel: the error that says which
+    /// channels it has. `None` when it does, or its `Release` cannot be read.
+    fn unknown_channel(&self, fetch: &dyn Fetch) -> Option<MinaError> {
+        let release = fetch
+            .text(&self.repository.release_url(&self.codename))
+            .ok()?;
+        let channels = ReleaseInfo::parse(&release).channels;
+        let known = channels.is_empty() || channels.contains(&self.channel.to_string());
+        (!known).then(|| MinaError::UnknownChannel {
+            repository: self.repository.clone(),
+            channel: self.channel.clone(),
+            codename: self.codename.clone(),
+            channels,
+        })
+    }
+
+    /// The release `wanted` (`4.0.2`, `4.0.2-84b8d96` or `latest`) names in
+    /// `index`.
+    fn find(&self, fetch: &dyn Fetch, index: &Index, wanted: &str) -> Result<Release> {
+        let mut found = index.select(wanted);
+        match found.len() {
+            1 => Ok(found.remove(0)),
+            0 => Err(MinaError::NotAvailable {
+                wanted: wanted.to_string(),
+                channel: self.channel.clone(),
+                codename: self.codename.clone(),
+                elsewhere: self.codenames_with(fetch, wanted),
+                recent: index.versions().into_iter().rev().take(5).rev().collect(),
+            }
+            .into()),
+            _ => Err(MinaError::Ambiguous {
+                wanted: wanted.to_string(),
+                what: "builds",
+                versions: found.into_iter().map(|r| r.version).collect(),
+            }
+            .into()),
+        }
+    }
+
+    /// The other codenames whose index (same channel and architecture) has
+    /// `wanted`, so that a version missing for this host says where it is
+    /// built, e.g. a release built for jammy only.
+    fn codenames_with(&self, fetch: &dyn Fetch, wanted: &str) -> Vec<String> {
+        apt::CODENAMES
+            .iter()
+            .filter(|codename| **codename != self.codename)
+            .map(|codename| Source {
+                codename: codename.to_string(),
+                ..self.clone()
+            })
+            .filter(|other| {
+                other
+                    .index(fetch)
+                    .is_ok_and(|index| !index.select(wanted).is_empty())
+            })
+            .map(|other| other.codename)
+            .collect()
     }
 }
 
@@ -177,6 +302,9 @@ pub fn installed(tools_root: &Path) -> Result<Vec<Installed>> {
     let mut found = vec![];
     for entry in entries {
         let entry = entry.with_context(|| format!("reading {}", root.display()))?;
+        // Hidden directories are minimina's work in progress, not installs:
+        // `.downloads`, and `.<version>.partial`, which already has its
+        // install.json in the moment before it is renamed to `<version>`.
         if entry.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
@@ -184,45 +312,27 @@ pub fn installed(tools_root: &Path) -> Result<Vec<Installed>> {
             found.push(installed);
         }
     }
-    let mut versions: Vec<String> = found.iter().map(|i| i.version.clone()).collect();
-    apt::sort_versions(&mut versions);
-    found.sort_by_key(|i| versions.iter().position(|v| *v == i.version));
+    found.sort_by(|a, b| PackageVersion::compare(&a.version, &b.version));
     Ok(found)
 }
 
 /// The installed version `wanted` (`4.0.2`, `4.0.2-84b8d96` or `latest`).
 pub fn resolve(tools_root: &Path, wanted: &str) -> Result<Installed> {
     let all = installed(tools_root)?;
-    let found: Vec<&Installed> = if wanted == "latest" {
-        all.last().into_iter().collect()
-    } else {
-        all.iter()
-            .filter(|i| apt::matches(&i.version, wanted))
-            .collect()
-    };
-    match found.as_slice() {
+    let versions = |items: &[&Installed]| items.iter().map(|i| i.version.clone()).collect();
+    match apt::select(&all, |i| &i.version, wanted).as_slice() {
         [one] => Ok((*one).clone()),
-        [] => bail!(
-            "mina {wanted} is not installed; run `minimina mina install {wanted}`{}",
-            if all.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    " (installed: {})",
-                    all.iter()
-                        .map(|i| i.version.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            }
-        ),
-        many => bail!(
-            "mina {wanted} names several installs: {}; give the whole version",
-            many.iter()
-                .map(|i| i.version.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+        [] => Err(MinaError::NotInstalled {
+            wanted: wanted.to_string(),
+            installed: versions(&all.iter().collect::<Vec<_>>()),
+        }
+        .into()),
+        many => Err(MinaError::Ambiguous {
+            wanted: wanted.to_string(),
+            what: "installs",
+            versions: versions(many),
+        }
+        .into()),
     }
 }
 
@@ -236,17 +346,17 @@ pub fn install(
     source: &Source,
 ) -> Result<(Installed, bool)> {
     let index = source.index(fetch)?;
-    let Some(release) = index.find(wanted)? else {
-        bail!(not_found(fetch, wanted, source, &index));
-    };
+    let release = source.find(fetch, &index, wanted)?;
     let root = root(tools_root);
     let dir = root.join(&release.version);
     if let Some(installed) = Installed::load(&dir)? {
         return Ok((installed, false));
     }
+    // before hundreds of MB are downloaded
+    require(runner, &DPKG_DEB)?;
 
     // unpacked into a hidden directory first: an interrupted install is not one
-    let partial = root.join(format!(".{}.partial", release.version));
+    let partial = root.join(partial_name(&release.version));
     if partial.exists() {
         std::fs::remove_dir_all(&partial)
             .with_context(|| format!("removing {}", partial.display()))?;
@@ -278,6 +388,8 @@ pub fn install(
     Ok((installed, true))
 }
 
+/// Downloads the debs of `release` one at a time, checks each against the
+/// index and unpacks it into `into`.
 fn unpack(
     root: &Path,
     into: &Path,
@@ -303,74 +415,35 @@ fn unpack(
             .with_context(|| format!("bad file name '{}'", deb.filename))?;
         let file = downloads.join(name);
         info!("Downloading {} ({} MiB)", deb.package, deb.size >> 20);
-        let sha256 = fetch.download(&Channel::deb_url(&deb.filename), &file);
-        let result = sha256.and_then(|sha256| {
-            if sha256 != deb.sha256 {
-                bail!(
-                    "{} does not match the index: SHA-256 {sha256}, expected {}",
-                    deb.filename,
-                    deb.sha256
-                );
-            }
-            runner
-                .run_checked(
-                    "dpkg-deb".as_ref(),
+        let result = fetch
+            .download(&source.repository.deb_url(deb), &file)
+            .and_then(|sha256| {
+                if sha256 != deb.sha256 {
+                    return Err(MinaError::Checksum {
+                        file: deb.filename.clone(),
+                        found: sha256,
+                        expected: deb.sha256.clone(),
+                    }
+                    .into());
+                }
+                runner.run_checked(
+                    DPKG_DEB.program.as_ref(),
                     &["-x", &file.to_string_lossy(), &into.to_string_lossy()],
                     &[],
                     &format!("dpkg-deb -x {}", name.to_string_lossy()),
-                )
-                .map_err(|e| match e.kind() {
-                    std::io::ErrorKind::NotFound => anyhow::anyhow!(
-                        "dpkg-deb unpacks the mina packages, but it was not found (package dpkg)"
-                    ),
-                    _ => e.into(),
-                })?;
-            Ok(())
-        });
+                )?;
+                Ok(())
+            });
         let _ = std::fs::remove_file(&file);
         result?;
     }
-    let mina = Binary::Mina.path(&into.join(BIN_DIR));
-    if !mina.is_file() {
-        bail!(
-            "the packages of mina {} have no {}/{}",
-            release.version,
-            BIN_DIR,
-            Binary::Mina
-        );
+    if !Binary::Mina.path(&into.join(BIN_DIR)).is_file() {
+        return Err(MinaError::NoBinary {
+            version: release.version.clone(),
+        }
+        .into());
     }
     Ok(())
-}
-
-/// Why `wanted` is not in the index of `source`, and where it is.
-fn not_found(fetch: &dyn Fetch, wanted: &str, source: &Source, index: &Index) -> String {
-    let elsewhere: Vec<&str> = apt::CODENAMES
-        .iter()
-        .copied()
-        .filter(|c| *c != source.codename)
-        .filter(|c| {
-            let other = Source {
-                codename: c.to_string(),
-                ..source.clone()
-            };
-            other
-                .index(fetch)
-                .is_ok_and(|i| i.find(wanted).is_ok_and(|r| r.is_some()))
-        })
-        .collect();
-    let mut message = format!(
-        "mina {wanted} is not in the {} channel for {}",
-        source.channel, source.codename
-    );
-    if !elsewhere.is_empty() {
-        message += &format!("; available for: {}", elsewhere.join(", "));
-    }
-    let versions = index.versions();
-    if !versions.is_empty() {
-        let recent = &versions[versions.len().saturating_sub(5)..];
-        message += &format!("; {} has: {}", source.codename, recent.join(", "));
-    }
-    message
 }
 
 /// Removes an install.
@@ -412,11 +485,20 @@ mod tests {
                         bytes.len(),
                         sha(&bytes)
                     );
-                    self.files.insert(Channel::deb_url(&filename), bytes);
+                    let entry = apt::Entry {
+                        package: package.to_string(),
+                        version: version.to_string(),
+                        filename: filename.clone(),
+                        size: 0,
+                        sha256: String::new(),
+                    };
+                    self.files.insert(source.repository.deb_url(&entry), bytes);
                 }
             }
             self.files.insert(
-                source.channel.index_url(&source.codename, &source.arch),
+                source
+                    .repository
+                    .index_url(&source.codename, &source.channel, &source.arch),
                 index.into_bytes(),
             );
             self
@@ -455,6 +537,11 @@ mod tests {
             args: &[&str],
             _: &[(&str, &str)],
         ) -> std::io::Result<Output> {
+            if args == ["--version"] {
+                let version =
+                    "Debian 'dpkg-deb' package management program version 1.22.6 (amd64).";
+                return Ok(crate::runner::fake::output(0, version, ""));
+            }
             self.lines.borrow_mut().push(format!(
                 "{} {}",
                 program.to_string_lossy(),
@@ -478,6 +565,7 @@ mod tests {
 
     fn noble() -> Source {
         Source {
+            repository: Repository::default(),
             channel: Channel::default(),
             codename: "noble".into(),
             arch: "amd64".into(),
@@ -534,6 +622,21 @@ mod tests {
     }
 
     #[test]
+    fn dpkg_deb_is_required_before_anything_is_downloaded() {
+        let tools = tempfile::tempdir().unwrap();
+        let repo = FakeRepo::default().with(&noble(), &["4.0.2-84b8d96"]);
+        let runner = crate::runner::fake::FakeRunner::default();
+        runner.reply_err(std::io::ErrorKind::NotFound);
+        let err = install(tools.path(), &runner, &repo, "4.0.2", &noble()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "dpkg-deb is required, but `dpkg-deb` was not found. Install the dpkg package."
+        );
+        // only the index was fetched
+        assert_eq!(repo.fetched.borrow().len(), 1);
+    }
+
+    #[test]
     fn a_failed_install_leaves_nothing() {
         let tools = tempfile::tempdir().unwrap();
         let repo = FakeRepo::default().with(&noble(), &["4.0.2-84b8d96"]);
@@ -564,7 +667,7 @@ mod tests {
         let tools = tempfile::tempdir().unwrap();
         let mut repo = FakeRepo::default().with(&noble(), &["4.0.2-84b8d96"]);
         // the index lies about the first package
-        let url = Channel::default().index_url("noble", "amd64");
+        let url = Repository::default().index_url("noble", &Channel::default(), "amd64");
         let index = String::from_utf8(repo.files[&url].clone()).unwrap();
         let first = sha(b"mina-generic");
         repo.files
@@ -600,7 +703,7 @@ mod tests {
         let tools = tempfile::tempdir().unwrap();
         let mut repo = FakeRepo::default().with(&noble(), &["4.0.4-c9e2eac"]);
         repo.files.insert(
-            apt::release_url("noble"),
+            Repository::default().release_url("noble"),
             b"Codename: noble\nComponents: alpha stable\n".to_vec(),
         );
         let nightly = Source {

@@ -250,26 +250,26 @@ pub mod node {
     }
 }
 
+/// What `minimina mina ...` prints: the install records of
+/// [`crate::install::mina`], with what the user needs from them.
 pub mod mina {
     use crate::install::{apt::Channel, mina};
     use serde::Serialize;
 
+    /// An install record, with the directory to pass as `--bin-path`.
     #[derive(Debug, Serialize, PartialEq)]
     pub struct Installed {
-        pub version: String,
-        pub channel: Channel,
-        pub codename: String,
+        #[serde(flatten)]
+        pub install: mina::Installed,
         /// For `--bin-path`; `--mina-version <version>` finds it.
         pub bin_path: String,
     }
 
-    impl From<&mina::Installed> for Installed {
-        fn from(i: &mina::Installed) -> Self {
+    impl From<mina::Installed> for Installed {
+        fn from(install: mina::Installed) -> Self {
             Installed {
-                version: i.version.clone(),
-                channel: i.channel.clone(),
-                codename: i.codename.clone(),
-                bin_path: i.bin_path().display().to_string(),
+                bin_path: install.bin_path().display().to_string(),
+                install,
             }
         }
     }
@@ -283,7 +283,7 @@ pub mod mina {
     }
 
     impl Install {
-        pub fn new(installed: &mina::Installed, new: bool) -> Self {
+        pub fn new(installed: mina::Installed, new: bool) -> Self {
             Install {
                 installed: installed.into(),
                 new,

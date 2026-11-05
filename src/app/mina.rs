@@ -1,17 +1,17 @@
 //! `minimina mina ...` handlers: mina versions in the tools directory.
 
 use crate::{
-    cli::{MinaCommand, MinaSourceArgs},
+    cli::{MinaCommand, MinaListArgs, MinaSourceArgs, MinaUninstallArgs},
     directory_manager::DirectoryManager,
     install::{
-        apt,
-        mina::{self, Fetch, Installed, Source},
+        apt::{self, Repository},
+        mina::{self, Fetch, Installed, MinaError, Source},
     },
     network_meta::NetworkMeta,
     output::mina as output,
     runner::Runner,
 };
-use anyhow::{bail, Result};
+use anyhow::Result;
 use std::path::Path;
 
 const OS_RELEASE: &str = "/etc/os-release";
@@ -23,68 +23,86 @@ pub fn run(
     cmd: MinaCommand,
 ) -> Result<()> {
     let tools = dirs.tools_root();
-    match cmd {
+    let out = match cmd {
         MinaCommand::Install(args) => {
-            let source = source(&args.source, Path::new(OS_RELEASE))?;
-            let (installed, new) = mina::install(&tools, runner, fetch, &args.version, &source)?;
-            println!("{}", output::Install::new(&installed, new));
+            install(&tools, runner, fetch, &args.version, &args.source)?.to_string()
         }
-        MinaCommand::Upgrade(args) => {
-            let source = source(&args, Path::new(OS_RELEASE))?;
-            let (installed, new) = mina::install(&tools, runner, fetch, "latest", &source)?;
-            println!("{}", output::Install::new(&installed, new));
-        }
-        MinaCommand::List(args) => {
-            let installed = mina::installed(&tools)?;
-            let available = if args.available {
-                let source = source(&args.source, Path::new(OS_RELEASE))?;
-                let versions = source.index(fetch)?.versions();
-                Some(output::Available {
-                    channel: source.channel,
-                    codename: source.codename,
-                    versions: versions
-                        .into_iter()
-                        .map(|version| output::AvailableVersion {
-                            installed: installed.iter().any(|i| i.version == version),
-                            version,
-                        })
-                        .collect(),
-                })
-            } else {
-                None
-            };
-            let list = output::List {
-                installed: installed.iter().map(output::Installed::from).collect(),
-                available,
-            };
-            println!("{list}");
-        }
-        MinaCommand::Uninstall(args) => {
-            let installed = mina::resolve(&tools, &args.version)?;
-            let users = networks_using(dirs, &installed)?;
-            if !users.is_empty() && !args.force {
-                bail!(
-                    "mina {} is used by network(s) {}; delete them first, or pass --force",
-                    installed.version,
-                    users.join(", ")
-                );
-            }
-            mina::uninstall(&installed)?;
-            println!(
-                "{}",
-                output::Uninstall {
-                    version: installed.version,
-                    dir: installed.dir.display().to_string(),
-                    used_by: users,
-                }
-            );
-        }
-    }
+        MinaCommand::Upgrade(args) => install(&tools, runner, fetch, "latest", &args)?.to_string(),
+        MinaCommand::List(args) => list(&tools, fetch, &args)?.to_string(),
+        MinaCommand::Uninstall(args) => uninstall(dirs, &args)?.to_string(),
+    };
+    println!("{out}");
     Ok(())
+}
+
+fn install(
+    tools: &Path,
+    runner: &dyn Runner,
+    fetch: &dyn Fetch,
+    wanted: &str,
+    args: &MinaSourceArgs,
+) -> Result<output::Install> {
+    let source = source(args, Path::new(OS_RELEASE))?;
+    let (installed, new) = mina::install(tools, runner, fetch, wanted, &source)?;
+    Ok(output::Install::new(installed, new))
+}
+
+fn list(tools: &Path, fetch: &dyn Fetch, args: &MinaListArgs) -> Result<output::List> {
+    let installed = mina::installed(tools)?;
+    let available = if args.available {
+        Some(available(fetch, &args.source, &installed)?)
+    } else {
+        None
+    };
+    Ok(output::List {
+        installed: installed.into_iter().map(output::Installed::from).collect(),
+        available,
+    })
+}
+
+/// The versions the channel has, and which of them are installed.
+fn available(
+    fetch: &dyn Fetch,
+    args: &MinaSourceArgs,
+    installed: &[Installed],
+) -> Result<output::Available> {
+    let source = source(args, Path::new(OS_RELEASE))?;
+    let versions = source.index(fetch)?.versions();
+    Ok(output::Available {
+        channel: source.channel,
+        codename: source.codename,
+        versions: versions
+            .into_iter()
+            .map(|version| output::AvailableVersion {
+                installed: installed.iter().any(|i| i.version == version),
+                version,
+            })
+            .collect(),
+    })
+}
+
+/// Removes an install, unless a network runs it (or `--force`).
+fn uninstall(dirs: &DirectoryManager, args: &MinaUninstallArgs) -> Result<output::Uninstall> {
+    let installed = mina::resolve(&dirs.tools_root(), &args.version)?;
+    let users = networks_using(dirs, &installed)?;
+    if !users.is_empty() && !args.force {
+        return Err(MinaError::InUse {
+            version: installed.version,
+            networks: users,
+        }
+        .into());
+    }
+    mina::uninstall(&installed)?;
+    Ok(output::Uninstall {
+        version: installed.version,
+        dir: installed.dir.display().to_string(),
+        used_by: users,
+    })
 }
 
 fn source(args: &MinaSourceArgs, os_release: &Path) -> Result<Source> {
     Ok(Source {
+        repository: Repository::default(),
         channel: args.channel.clone(),
         codename: match &args.codename {
             Some(codename) => codename.clone(),
@@ -118,8 +136,9 @@ fn networks_using(dirs: &DirectoryManager, installed: &Installed) -> Result<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{Channel, ExecutionMode, MinaUninstallArgs};
+    use crate::cli::{Channel, ExecutionMode};
     use crate::runner::fake::FakeRunner;
+    use anyhow::bail;
 
     struct NoNetwork;
 
@@ -196,7 +215,7 @@ mod tests {
         let dirs = DirectoryManager::with_base_path(home.path().to_path_buf());
         fake_install(&dirs, "4.0.2-84b8d96");
         let list = |available| {
-            let cmd = MinaCommand::List(crate::cli::MinaListArgs {
+            let cmd = MinaCommand::List(MinaListArgs {
                 available,
                 source: MinaSourceArgs {
                     channel: Channel::default(),
