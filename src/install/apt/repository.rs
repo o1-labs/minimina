@@ -72,6 +72,7 @@ mod tests {
             filename: "/pool/noble/m/mi/mina-generic_4.0.2-84b8d96_amd64.deb".into(),
             size: 100,
             sha256: "abc".into(),
+            depends: vec![],
         };
         assert_eq!(
             Repository::new("http://x/").deb_url(&entry),

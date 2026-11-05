@@ -11,7 +11,10 @@ mod node;
 mod setup;
 
 use crate::{
-    cli::{Cli, Command, ExecutionMode, HardforkCommand, NetworkCommand, Profile, ShutdownTimeout},
+    cli::{
+        Cli, Command, ExecutionMode, HardforkCommand, NetworkCommand, NodeCommand, Profile,
+        ShutdownTimeout,
+    },
     daemon_args::DaemonFeatures,
     directory_manager::DirectoryManager,
     docker::manager::DockerManager,
@@ -190,6 +193,10 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
         .bin_path
         .or(asked_mina.as_ref().map(install::mina::Installed::bin_path));
     let bin_path = env::resolve_bin_path(&mode, asked_bin.or(stored_bin))?;
+    let postfork_bin = stored
+        .as_ref()
+        .and_then(|m| m.hardfork.as_ref())
+        .map(|h| h.postfork_bin_path.clone());
     let features = stored.as_ref().map(|m| m.features).unwrap_or_default();
     let profile = created_profile
         .flatten()
@@ -224,10 +231,35 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
         runner,
     };
 
+    check_runnable(&ctx, &cli.command, postfork_bin.as_deref())?;
+
     match cli.command {
         Command::Network(cmd) => network::run(&ctx, cmd),
         Command::Node(cmd) => node::run(&ctx, cmd),
         Command::Mina(cmd) => mina::run(&ctx.dirs, ctx.runner.as_ref(), &install::mina::Http, cmd),
+    }
+}
+
+/// Before a command starts mina binaries: fails when they cannot load their
+/// libraries, which would otherwise show only as a loader error in a log.
+fn check_runnable(ctx: &Context, command: &Command, postfork_bin: Option<&Path>) -> Result<()> {
+    if ctx.mode != ExecutionMode::Native {
+        return Ok(());
+    }
+    let runner = ctx.runner.as_ref();
+    match command {
+        Command::Network(NetworkCommand::Create(_) | NetworkCommand::Start(_))
+        | Command::Node(NodeCommand::Start(_)) => match &ctx.bin_path {
+            Some(bin) => install::mina::require_runnable(runner, bin, ctx.mina_version.as_deref()),
+            None => Ok(()),
+        },
+        // apply starts the postfork binaries
+        Command::Network(NetworkCommand::Hardfork(HardforkCommand::Apply(_))) => match postfork_bin
+        {
+            Some(bin) => install::mina::require_runnable(runner, bin, None),
+            None => Ok(()),
+        },
+        _ => Ok(()),
     }
 }
 

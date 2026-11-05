@@ -44,6 +44,19 @@ pub enum MinaError {
     },
     #[error("the packages of mina {version} have no {BIN_DIR}/mina")]
     NoBinary { version: String },
+    #[error("the mina binaries in {} cannot run here: missing libraries {}; {}",
+        .bin_path.display(),
+        .libraries.join(", "),
+        match .version {
+            Some(v) => format!("`minimina mina check {v}` lists the packages to install"),
+            None => "install the packages that provide them".to_string(),
+        })]
+    MissingLibraries {
+        bin_path: std::path::PathBuf,
+        libraries: Vec<String>,
+        /// The installed mina version of `bin_path`, if it is one.
+        version: Option<String>,
+    },
     #[error("mina {version} is used by network(s) {}; delete them first, or pass --force", .networks.join(", "))]
     InUse {
         version: String,

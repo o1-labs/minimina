@@ -31,7 +31,7 @@ impl FakeRepo {
                 let bytes = package.as_bytes().to_vec();
                 index += &format!(
                     "Package: {package}\nVersion: {version}\nFilename: {filename}\n\
-                     Size: {}\nSHA256: {}\n\n",
+                     Size: {}\nSHA256: {}\nDepends: libssl3t64, mina-logproc\n\n",
                     bytes.len(),
                     sha(&bytes)
                 );
@@ -41,6 +41,7 @@ impl FakeRepo {
                     filename: filename.clone(),
                     size: 0,
                     sha256: String::new(),
+                    depends: vec![],
                 };
                 self.files.insert(source.repository.deb_url(&entry), bytes);
             }
@@ -135,6 +136,8 @@ fn installs_a_version_once_side_by_side() {
     let downloads = tools.path().join("mina/.downloads");
     assert_eq!(std::fs::read_dir(downloads).unwrap().count(), 0);
     assert_eq!(installed.packages[0], "mina-generic 4.0.2-84b8d96");
+    // recorded for `mina check`, without the packages of mina itself
+    assert_eq!(installed.depends, [apt::Dependency::from("libssl3t64")]);
 
     // installed: nothing is downloaded or unpacked again
     let (again, new) = install(tools.path(), &dpkg, &repo, "4.0.2", &noble()).unwrap();

@@ -1,5 +1,5 @@
 use super::{root, MinaError, BIN_DIR, INSTALL_FILE};
-use crate::install::apt::{self, Channel, PackageVersion};
+use crate::install::apt::{self, Channel, Dependency, PackageVersion};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -13,6 +13,10 @@ pub struct Installed {
     pub codename: String,
     /// `<package> <version>` of each unpacked deb.
     pub packages: Vec<String>,
+    /// What the packages depend on (installs made before it was recorded
+    /// have none).
+    #[serde(default)]
+    pub depends: Vec<Dependency>,
     #[serde(skip)]
     pub dir: PathBuf,
 }

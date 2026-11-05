@@ -4,9 +4,12 @@
 //! directory per version, so that versions sit side by side. [`npm`] installs
 //! npm applications (the archive node api); [`mina`] unpacks the deb packages
 //! of mina versions, found in the repositories of [`apt`]. [`requirement`]
-//! checks programs the host must provide (Node.js, Docker Compose).
+//! checks programs the host must provide (Node.js, Docker Compose); [`dpkg`]
+//! and [`ldd`] check what a mina version needs from the host.
 
 pub mod apt;
+pub mod dpkg;
+pub mod ldd;
 pub mod mina;
 pub mod npm;
 pub mod requirement;

@@ -375,6 +375,7 @@ minimina mina install 4.0.2                    # or 4.0.2-84b8d96, or latest
 minimina mina install latest --channel alpha   # a channel of packages.o1test.net; stable by default
 minimina mina upgrade                          # install the newest version of the channel
 minimina mina uninstall 4.0.2                  # refused while a network runs it, unless --force
+minimina mina check 4.0.2                      # what this host lacks to run it
 
 minimina --mina-version 4.0.2 network create -n local --spec net.toml   # implies --mode native
 ```
@@ -389,8 +390,18 @@ minimina --mina-version 4.0.2 network create -n local --spec net.toml   # implie
 - `--mina-version` takes the binaries of the install, as `--bin-path
   ~/.minimina/.tools/mina/<version>/usr/local/bin` would; the version is
   recorded with the network. The archive schema comes from the same install.
-- The host must have the libraries the packages depend on (`libssl3`,
-  `libgmp10`, `libjemalloc2`, `libpq`, ...), as for an `apt install`.
+- The host must have the libraries the binaries load (`libssl3`, `libgmp10`,
+  `libjemalloc2`, `libpq5`, ...). `mina install` and `mina check` report:
+  - `missing_libraries`: what `ldd` finds `not found` in `mina`,
+    `mina-archive`, `mina-rosetta`, `mina-create-genesis` and the libp2p
+    helper. Such a binary does not load, so `runnable` is false, and native
+    `network create`, `network start`, `node start` and `hardfork apply`
+    refuse to run it (also for `--bin-path` directories).
+  - `missing_packages` and `install_command`: the `Depends` of the packages
+    that dpkg has no package (or `Provides`) for. Only advice: the packages
+    declare more than the binaries load (`libpq-dev` where `libpq5` is
+    enough), and dpkg knows nothing of libraries installed another way.
+  - `unchecked`: a check the host has no tool for (`dpkg-query`, `ldd`).
 
 ### Integration with Lucy
 

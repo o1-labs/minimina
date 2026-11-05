@@ -3,6 +3,7 @@
 use crate::runner::{check, Runner};
 use crate::version::Version;
 use std::io;
+use std::process::Output;
 
 /// A program minimina needs, and how to ask it for its version.
 pub struct Tool<'a> {
@@ -40,15 +41,36 @@ pub enum ToolError {
     },
 }
 
+impl Tool<'_> {
+    /// Runs the tool with `args`. A tool that is not installed is
+    /// [`ToolError::Missing`]; the exit status is the caller's to check.
+    pub fn run(&self, runner: &dyn Runner, args: &[&str]) -> Result<Output, ToolError> {
+        runner
+            .run(self.program.as_ref(), args, &[])
+            .map_err(|cause| match cause.kind() {
+                io::ErrorKind::NotFound => self.missing(),
+                _ => ToolError::Failed {
+                    name: self.name.to_string(),
+                    cause,
+                    install: self.install.to_string(),
+                },
+            })
+    }
+
+    fn missing(&self) -> ToolError {
+        ToolError::Missing {
+            name: self.name.to_string(),
+            program: self.program.to_string(),
+            install: self.install.to_string(),
+        }
+    }
+}
+
 /// Checks that `tool` is installed and new enough; returns its version.
 pub fn require(runner: &dyn Runner, tool: &Tool) -> Result<Version, ToolError> {
     let output = runner
         .run(tool.program.as_ref(), tool.version_args, &[])
-        .map_err(|_| ToolError::Missing {
-            name: tool.name.to_string(),
-            program: tool.program.to_string(),
-            install: tool.install.to_string(),
-        })?;
+        .map_err(|_| tool.missing())?;
     let output = check(
         output,
         &format!("{} {}", tool.program, tool.version_args.join(" ")),
@@ -78,6 +100,32 @@ pub fn require(runner: &dyn Runner, tool: &Tool) -> Result<Version, ToolError> {
 mod tests {
     use super::*;
     use crate::runner::fake::FakeRunner;
+
+    #[test]
+    fn run_tells_a_missing_tool_from_a_failing_one() {
+        let tool = Tool {
+            name: "ldd",
+            program: "ldd",
+            version_args: &["--version"],
+            min: Version(2, 0, 0),
+            install: "Install libc-bin.",
+        };
+        let fake = FakeRunner::default();
+        fake.reply(1, "", "not a dynamic executable")
+            .reply_err(io::ErrorKind::NotFound)
+            .reply_err(io::ErrorKind::PermissionDenied);
+        // a non-zero exit is still output
+        assert!(!tool.run(&fake, &["x"]).unwrap().status.success());
+        assert!(matches!(
+            tool.run(&fake, &["x"]),
+            Err(ToolError::Missing { .. })
+        ));
+        assert!(matches!(
+            tool.run(&fake, &["x"]),
+            Err(ToolError::Failed { .. })
+        ));
+        assert_eq!(fake.lines(), ["ldd x"; 3]);
+    }
 
     #[test]
     fn require_reports_missing_failing_unparsable_and_old_tools() {
