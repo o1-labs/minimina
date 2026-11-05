@@ -97,6 +97,27 @@ pub enum Command {
     /// Manage mina versions for native mode
     #[clap(subcommand)]
     Mina(MinaCommand),
+
+    /// Network spec files
+    #[clap(subcommand)]
+    Spec(SpecCommand),
+}
+
+#[derive(Subcommand)]
+pub enum SpecCommand {
+    /// Print a network spec (commented TOML) from node flags, to edit and
+    /// pass to `network create --spec`
+    Init(SpecInitArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct SpecInitArgs {
+    /// Build profile written into the spec
+    #[clap(long, value_enum)]
+    pub profile: Option<Profile>,
+
+    #[clap(flatten)]
+    pub nodes: NodeFlags,
 }
 
 #[derive(Subcommand)]
@@ -282,6 +303,55 @@ pub struct CreateNetworkArgs {
     /// commands use the recorded profile
     #[clap(long, value_enum)]
     pub profile: Option<Profile>,
+
+    #[clap(flatten)]
+    pub nodes: NodeFlags,
+}
+
+/// The nodes of a network as flags. On top of `--spec`, each one replaces
+/// what the spec says for its role; without `--spec`, they change a network
+/// of one seed and one block producer.
+#[derive(Args, Debug, Clone, Default, PartialEq)]
+#[clap(next_help_heading = "Nodes")]
+pub struct NodeFlags {
+    /// Seed nodes
+    #[clap(long, value_name = "N")]
+    pub seeds: Option<u16>,
+
+    /// Block producers
+    #[clap(long, visible_alias = "bps", value_name = "N")]
+    pub block_producers: Option<u16>,
+
+    /// Plain nodes: follow the chain, produce no blocks
+    #[clap(long, visible_alias = "plains", value_name = "N")]
+    pub plain_nodes: Option<u16>,
+
+    /// An archive node (mina-archive and a postgres database)
+    #[clap(long)]
+    pub archive: bool,
+
+    /// mina-rosetta (needs --archive, or an archive node in the spec)
+    #[clap(long)]
+    pub rosetta: bool,
+
+    /// The archive node api (needs --archive, or an archive node in the spec)
+    #[clap(long)]
+    pub archive_node_api: bool,
+
+    /// Snark workers, and the snark coordinator they work for (0: none)
+    #[clap(long, value_name = "N")]
+    pub snark_workers: Option<u16>,
+
+    /// Funded test accounts with generated keys (account-1, ...)
+    #[clap(long, value_name = "N")]
+    pub accounts: Option<u16>,
+}
+
+impl NodeFlags {
+    /// Whether no flag is given.
+    pub fn is_empty(&self) -> bool {
+        *self == NodeFlags::default()
+    }
 }
 
 #[derive(Args, Clone)]
@@ -472,6 +542,7 @@ impl DefaultLogLevel for Command {
             // downloads report their progress
             Command::Mina(MinaCommand::Install(_) | MinaCommand::Upgrade(_)) => "info",
             Command::Mina(_) => "warn",
+            Command::Spec(_) => "warn",
         }
     }
 }
@@ -500,7 +571,7 @@ impl Command {
                 | NodeCommand::DumpPrecomputedBlocks(args)
                 | NodeCommand::DumpArchiveData(args) => args.network_id(),
             }),
-            Command::Mina(_) => None,
+            Command::Mina(_) | Command::Spec(_) => None,
         }
     }
 }
@@ -536,6 +607,43 @@ mod tests {
             }
             _ => panic!("not a create"),
         }
+    }
+
+    #[test]
+    fn node_flags_parse_with_their_aliases() {
+        let cli = Cli::try_parse_from([
+            "minimina",
+            "network",
+            "create",
+            "--bps",
+            "2",
+            "--plains",
+            "1",
+            "--archive",
+            "--snark-workers",
+            "0",
+        ])
+        .unwrap();
+        let Command::Network(NetworkCommand::Create(args)) = cli.command else {
+            panic!("not a create");
+        };
+        assert_eq!(
+            args.nodes,
+            NodeFlags {
+                block_producers: Some(2),
+                plain_nodes: Some(1),
+                archive: true,
+                snark_workers: Some(0),
+                ..Default::default()
+            }
+        );
+        let cli =
+            Cli::try_parse_from(["minimina", "spec", "init", "--block-producers", "3"]).unwrap();
+        let Command::Spec(SpecCommand::Init(args)) = cli.command else {
+            panic!("not spec init");
+        };
+        assert_eq!(args.nodes.block_producers, Some(3));
+        assert!(Cli::try_parse_from(["minimina", "network", "create", "--bps", "x"]).is_err());
     }
 
     #[test]

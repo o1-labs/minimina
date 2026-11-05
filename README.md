@@ -179,6 +179,64 @@ Names default to `<role>-<n>` (`seed-1`, `bp-1`, `node-1`); client ports start a
 balances, funded test accounts, runtime config overrides, docker images and the
 profile. The default network is a built-in spec.
 
+### Node flags
+
+The nodes can also be given as flags, without a file, or on top of one:
+
+```bash
+minimina network create -n mynet --block-producers 2 --plain-nodes 1 --archive --rosetta
+minimina network create -n mynet --spec net.toml --bps 3     # the spec, with 3 block producers
+minimina spec init --bps 2 --archive --accounts 5 > net.toml # the same flags, as a commented spec
+```
+
+| Flag | |
+|------|---|
+| `--seeds N` | seed nodes |
+| `--block-producers N` (`--bps`) | block producers |
+| `--plain-nodes N` (`--plains`) | plain nodes |
+| `--archive` | an archive node |
+| `--rosetta` | mina-rosetta (needs an archive node) |
+| `--archive-node-api` | the archive node api (needs an archive node) |
+| `--snark-workers N` | snark workers and their coordinator (`0`: none) |
+| `--accounts N` | funded test accounts (`account-1`, ...) |
+
+- Flags win over `--spec`, which wins over the built-in defaults. A count
+  replaces the nodes of its role in the spec (`0` removes them; the first
+  group keeps its balance, and its name and port while it is one node). A
+  switch adds its node when the spec has none.
+- Flags without `--spec` change a network of one seed and one block producer.
+  With neither, `network create` makes the default network above.
+- `-t/-g` (the Lucy topology and ledger, legacy) cannot be combined with
+  `--spec` or the flags.
+- `network create` writes the spec as resolved, with absolute paths, to
+  `<network>/network.toml`: `--spec ~/.minimina/mynet/network.toml` creates
+  the same network again.
+
+### Ledger file
+
+`[ledger] file` gives the accounts the genesis ledger starts with; the
+generated ones (block producers, `accounts`) are added after them. A relative
+path is relative to the spec file.
+
+```toml
+[ledger]
+file = "accounts.csv"   # or a .json runtime config, as -g takes it
+accounts = 2
+```
+
+- `.json`: a runtime config (`ledger.accounts`), `{"accounts": [...]}` or an
+  array of accounts. The accounts are kept as they are (timing, delegate, ...).
+- `.csv`: a header line naming the columns, then one account per line.
+  `public_key` and `balance` (in MINA, like every balance in the spec) are
+  required; `private_key` and `delegate` are optional. Empty lines and lines
+  starting with `#` are skipped.
+
+```csv
+public_key,balance,delegate
+B62qrPN5Y5yq8kGE3FbVKbGTdTAJNdtNtB5sNVpxyRwWGcDEhpMzc8g,1000,
+B62qiy32p8kAKnny8ZFwoMhYpBppM1DWVCqAPBYNcXnsAHhnfAAuXgg,0.5,B62qrPN5Y5yq8kGE3FbVKbGTdTAJNdtNtB5sNVpxyRwWGcDEhpMzc8g
+```
+
 ### Profile
 
 Since 4.0 the mina binaries are generic and select their build profile at

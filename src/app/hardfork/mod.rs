@@ -39,7 +39,8 @@ pub fn check_create(
     let Some(spec_path) = &cmd.spec else {
         return Ok(None);
     };
-    let spec = NetworkSpec::load(spec_path)?;
+    // with the node flags: they may add the archive the fork upgrades
+    let spec = super::setup::create_spec(cmd)?;
     let Some(h) = &spec.hardfork else {
         return Ok(None);
     };

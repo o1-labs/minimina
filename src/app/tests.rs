@@ -1226,3 +1226,124 @@ fn native_start_refuses_binaries_that_cannot_load() {
     );
     assert!(!h.dirs.network_path("x").exists());
 }
+
+#[test]
+fn flags_change_the_spec_and_the_resolved_spec_is_kept() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let pk = "B62qrPN5Y5yq8kGE3FbVKbGTdTAJNdtNtB5sNVpxyRwWGcDEhpMzc8g";
+    std::fs::write(
+        dir.path().join("given.csv"),
+        format!("public_key,balance\n{pk},42.5\n"),
+    )
+    .unwrap();
+    let spec = dir.path().join("net.toml");
+    std::fs::write(
+        &spec,
+        "[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"block-producer\"\nbalance = \"500\"\n\
+         [ledger]\nfile = \"given.csv\"\n",
+    )
+    .unwrap();
+    // --bps 2 replaces the spec's one block producer; --accounts 1 adds an account
+    // keys: bp-1, bp-2, account-1; libp2p: seed-1, bp-1, bp-2
+    for i in 0..3 {
+        h.fake.reply(0, &format!("Public key: B62q{i}\n"), "");
+    }
+    for i in 0..3 {
+        h.fake
+            .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");
+    }
+    h.run(&native_args(
+        &bin,
+        &[
+            "network",
+            "create",
+            "-n",
+            "f",
+            "--spec",
+            path_arg(&spec),
+            "--block-producers",
+            "2",
+            "--accounts",
+            "1",
+        ],
+    ))
+    .unwrap();
+
+    let net = h.dirs.network_path("f");
+    let ledger: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(net.join("genesis_ledger.json")).unwrap())
+            .unwrap();
+    let balances: Vec<_> = ledger["ledger"]["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| (a["pk"].as_str().unwrap(), a["balance"].as_str().unwrap()))
+        .collect();
+    // the given account first, then the generated ones
+    assert_eq!(
+        balances,
+        [
+            (pk, "42.5"),
+            ("B62q0", "500"),
+            ("B62q1", "500"),
+            ("B62q2", "1000")
+        ]
+    );
+
+    // network.toml is the spec as resolved, with the ledger file's absolute path
+    let kept = crate::spec::NetworkSpec::load(&h.dirs.spec_path("f")).unwrap();
+    assert_eq!(kept.nodes[1].count, 2);
+    assert_eq!(kept.ledger.accounts, 1);
+    assert_eq!(kept.ledger.file, Some(dir.path().join("given.csv")));
+}
+
+#[test]
+fn flags_alone_make_a_network() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    // keys: bp-1; libp2p: seed-1, bp-1, node-1
+    h.fake.reply(0, "Public key: B62q0\n", "");
+    for i in 0..3 {
+        h.fake
+            .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");
+    }
+    h.run(&native_args(
+        &bin,
+        &["network", "create", "-n", "f", "--plains", "1"],
+    ))
+    .unwrap();
+    let kept = crate::spec::NetworkSpec::load(&h.dirs.spec_path("f")).unwrap();
+    let roles: Vec<_> = kept.nodes.iter().map(|g| (g.role, g.count)).collect();
+    use crate::spec::Role;
+    assert_eq!(
+        roles,
+        [(Role::Seed, 1), (Role::BlockProducer, 1), (Role::Plain, 1)]
+    );
+}
+
+#[test]
+fn flags_and_the_legacy_files_do_not_mix() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let err = h
+        .run(&native_args(
+            &bin,
+            &[
+                "network",
+                "create",
+                "-n",
+                "f",
+                "-t",
+                SMALL_TOPOLOGY,
+                "-g",
+                SMALL_LEDGER,
+                "--bps",
+                "2",
+            ],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("cannot be combined with -t/-g"), "{err}");
+}

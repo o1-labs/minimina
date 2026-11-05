@@ -12,7 +12,7 @@ use crate::{
     keys::{KeysManager, NodeKey},
     native::keys::NativeKeysManager,
     service::{ServiceConfig, ServiceType},
-    spec::{NetworkSpec, PlannedNode, Role},
+    spec::{ledger_file, NetworkSpec, PlannedNode, Role},
     topology::Topology,
 };
 use anyhow::{bail, Context as _, Result};
@@ -32,12 +32,21 @@ pub struct SpecNetwork {
     pub libp2p: HashMap<String, NodeKey>,
 }
 
-/// The spec of `network create`: `--spec`, else the default network.
+/// The spec of `network create`: the node flags on top of `--spec`, else of
+/// [`NetworkSpec::flags_base`]; with neither, the default network.
 pub fn create_spec(cmd: &CreateNetworkArgs) -> Result<NetworkSpec> {
-    cmd.spec
-        .as_deref()
-        .map(NetworkSpec::load)
-        .unwrap_or_else(|| Ok(NetworkSpec::default_network()))
+    if !cmd.nodes.is_empty() && (cmd.topology.is_some() || cmd.genesis_ledger.is_some()) {
+        bail!(
+            "the node flags (--seeds, --block-producers, ...) cannot be combined with \
+             -t/-g, the legacy topology and ledger files; use --spec instead"
+        );
+    }
+    let spec = match (&cmd.spec, cmd.nodes.is_empty()) {
+        (Some(path), _) => NetworkSpec::load(path)?,
+        (None, false) => NetworkSpec::flags_base(),
+        (None, true) => NetworkSpec::default_network(),
+    };
+    Ok(spec.with_flags(&cmd.nodes))
 }
 
 /// Handles `network_id`'s genesis ledger: copies the given one, or generates
@@ -60,11 +69,11 @@ pub fn handle_genesis_ledger(
         }
         None => {
             let network_path = dirs.network_path(network_id);
-            if let Some(spec_path) = &cmd.spec {
-                std::fs::copy(spec_path, dirs.spec_path(network_id))
-                    .with_context(|| format!("copying {}", spec_path.display()))?;
-            }
-            generate_from_spec(ctx, &network_path, create_spec(cmd)?).map(Some)
+            let spec = create_spec(cmd)?;
+            // the spec as resolved, to create the network again with --spec
+            std::fs::write(dirs.spec_path(network_id), spec.to_toml()?)
+                .context("writing the network spec")?;
+            generate_from_spec(ctx, &network_path, spec).map(Some)
         }
     }
 }
@@ -142,8 +151,17 @@ fn generate_from_spec(
     for account in &accounts {
         ledger.push((pk(account)?, account_balance.to_string()));
     }
-    default::LedgerGenerator::generate(network_path, &ledger, spec.runtime_config_json()?.as_ref())
-        .context("Error generating genesis ledger")?;
+    let given = match &spec.ledger.file {
+        Some(file) => ledger_file::load(file)?,
+        None => vec![],
+    };
+    default::LedgerGenerator::generate(
+        network_path,
+        &given,
+        &ledger,
+        spec.runtime_config_json()?.as_ref(),
+    )
+    .context("Error generating genesis ledger")?;
 
     Ok(SpecNetwork {
         spec,

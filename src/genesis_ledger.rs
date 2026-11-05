@@ -79,8 +79,12 @@ pub mod default {
     impl LedgerGenerator {
         /// Writes the genesis runtime config: `accounts` (public key, balance) in
         /// the ledger, a genesis timestamp of now, and `runtime_config` merged on top.
+        ///
+        /// `given` accounts (runtime config ledger accounts, kept as they are)
+        /// come first.
         pub fn generate(
             network_path: &Path,
+            given: &[serde_json::Value],
             accounts: &[(String, String)],
             runtime_config: Option<&serde_json::Value>,
         ) -> std::io::Result<()> {
@@ -106,6 +110,9 @@ pub mod default {
             };
 
             let mut genesis_ledger = serde_json::to_value(GenesisLedger { genesis, ledger })?;
+            if let Some(accounts) = genesis_ledger["ledger"]["accounts"].as_array_mut() {
+                accounts.splice(0..0, given.iter().cloned());
+            }
             if let Some(overrides) = runtime_config {
                 merge_json(&mut genesis_ledger, overrides);
             }
@@ -229,7 +236,7 @@ mod tests {
             .expect("Cannot create temporary directory");
         let network_path = tempdir.path();
         let accounts = [("test_key".to_string(), "10".to_string())];
-        let result = default::LedgerGenerator::generate(network_path, &accounts, None);
+        let result = default::LedgerGenerator::generate(network_path, &[], &accounts, None);
         println!("{:?}", result);
         assert!(result.is_ok());
 
@@ -250,7 +257,7 @@ mod tests {
             .expect("Cannot create temporary directory");
         let network_path = tempdir.path();
         let accounts = [("test_key".to_string(), "10".to_string())];
-        let result = default::LedgerGenerator::generate(network_path, &accounts, None);
+        let result = default::LedgerGenerator::generate(network_path, &[], &accounts, None);
         println!("{:?}", result);
         assert!(result.is_ok());
 
@@ -389,7 +396,7 @@ mod tests {
             .expect("Cannot create temporary directory");
         let network_path = tempdir.path();
         let accounts = [("test_key".to_string(), "10".to_string())];
-        let result = default::LedgerGenerator::generate(network_path, &accounts, None);
+        let result = default::LedgerGenerator::generate(network_path, &[], &accounts, None);
         println!("{:?}", result);
         assert!(result.is_ok());
 

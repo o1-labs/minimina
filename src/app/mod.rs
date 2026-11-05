@@ -9,6 +9,7 @@ mod mina;
 mod network;
 mod node;
 mod setup;
+mod spec;
 
 use crate::{
     cli::{
@@ -142,6 +143,7 @@ pub fn run(cli: Cli) -> Result<()> {
     let dirs = DirectoryManager::new()?;
     match cli.command {
         Command::Mina(cmd) => mina::run(&dirs, &SystemRunner, &install::mina::Http, cmd),
+        Command::Spec(cmd) => spec::run(cmd),
         _ => run_with(cli, dirs, Rc::new(SystemRunner)),
     }
 }
@@ -237,6 +239,7 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
         Command::Network(cmd) => network::run(&ctx, cmd),
         Command::Node(cmd) => node::run(&ctx, cmd),
         Command::Mina(cmd) => mina::run(&ctx.dirs, ctx.runner.as_ref(), &install::mina::Http, cmd),
+        Command::Spec(cmd) => spec::run(cmd),
     }
 }
 

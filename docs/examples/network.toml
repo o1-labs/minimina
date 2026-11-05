@@ -41,6 +41,9 @@ role = "archive-node-api"     # GraphQL over the archive database (events, actio
 [ledger]
 accounts = 3
 balance = "1000"
+# file = "accounts.csv"       # accounts to start with; the generated ones are added
+#                             # .json: a runtime config ledger (as -g takes it)
+#                             # .csv: header line, then public_key,balance[,private_key,delegate]
 
 # Docker mode images (defaults: the built-in 4.0.1 images).
 # [docker]
