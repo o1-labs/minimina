@@ -269,3 +269,15 @@ fn native_network_files_and_permissions() {
     assert!(Path::new(&dir.join("logs")).is_dir());
     env.json(&["network", "delete", "-n", "files"], true);
 }
+
+#[test]
+fn mina_versions_are_listed_as_json() {
+    let env = Env::new();
+    let v = env.json(&["mina", "list"], true);
+    assert_eq!(v, serde_json::json!({"installed": []}));
+    let v = env.json(&["mina", "uninstall", "4.0.2"], false);
+    assert_eq!(
+        error_message(&v),
+        "mina 4.0.2 is not installed; run `minimina mina install 4.0.2`"
+    );
+}

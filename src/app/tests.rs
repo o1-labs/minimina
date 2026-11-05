@@ -881,6 +881,7 @@ fn hardfork_network_gets_its_schedule_and_status() {
             dirs: h.dirs.clone(),
             mode: crate::cli::ExecutionMode::Native,
             bin_path: Some(bin.path().into()),
+            mina_version: None,
             postgres_uri: String::new(),
             profile: Profile::Devnet,
             features: Default::default(),
@@ -1045,5 +1046,144 @@ fn hardfork_with_archive_needs_an_upgrade_script() {
     assert!(
         err.contains("set [hardfork.postfork] archive_upgrade"),
         "{err}"
+    );
+}
+
+/// An install of mina `version` in the tools directory, as `mina install` leaves it.
+fn installed_mina(h: &Harness, version: &str) -> std::path::PathBuf {
+    let dir = crate::install::mina::root(&h.dirs.tools_root()).join(version);
+    let bin = dir.join(crate::install::mina::BIN_DIR);
+    std::fs::create_dir_all(&bin).unwrap();
+    for file in ["mina", "mina-archive", "mina-create-genesis"] {
+        std::fs::write(bin.join(file), "").unwrap();
+    }
+    // the archive scripts of the package
+    let archive = dir.join("etc/mina/archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    std::fs::write(archive.join("upgrade.sql"), "").unwrap();
+    std::fs::write(
+        dir.join("install.json"),
+        format!(r#"{{"version":"{version}","channel":"stable","codename":"noble","packages":[]}}"#),
+    )
+    .unwrap();
+    bin
+}
+
+#[test]
+fn mina_version_runs_an_installed_version_natively() {
+    let h = Harness::new();
+    let create = |extra: &[&'static str]| {
+        let mut args = vec![
+            "network",
+            "create",
+            "-n",
+            "v",
+            "-t",
+            SMALL_TOPOLOGY,
+            "-g",
+            SMALL_LEDGER,
+        ];
+        args.extend_from_slice(extra);
+        h.run(&args)
+    };
+    let err = create(&["--mina-version", "4.0.2"])
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        "mina 4.0.2 is not installed; run `minimina mina install 4.0.2`"
+    );
+    let err = create(&["--mode", "docker", "--mina-version", "4.0.2"])
+        .unwrap_err()
+        .to_string();
+    assert_eq!(err, "--mina-version is only valid in native mode");
+
+    let bin = installed_mina(&h, "4.0.2-84b8d96");
+    installed_mina(&h, "4.0.4-c9e2eac");
+    // no --mode: an installed version runs natively
+    create(&["--mina-version", "4.0.2"]).unwrap();
+    let meta = NetworkMeta::load(&h.dirs.network_path("v"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.mode, crate::cli::ExecutionMode::Native);
+    assert_eq!(meta.bin_path.as_deref(), Some(bin.as_path()));
+    assert_eq!(meta.mina_version.as_deref(), Some("4.0.2-84b8d96"));
+    // later commands run the recorded binaries
+    h.run(&["network", "stop", "-n", "v"]).unwrap();
+    assert!(non_probe_calls(&h.fake).is_empty(), "{:?}", h.fake.lines());
+
+    // a binary directory replaces the version
+    let own = fake_mina_dir();
+    h.run(&native_args(
+        &own,
+        &[
+            "network",
+            "create",
+            "-n",
+            "v",
+            "-t",
+            SMALL_TOPOLOGY,
+            "-g",
+            SMALL_LEDGER,
+        ],
+    ))
+    .unwrap();
+    let meta = NetworkMeta::load(&h.dirs.network_path("v"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.mina_version, None);
+}
+
+#[test]
+fn hardfork_postfork_can_be_an_installed_version() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let spec = dir.path().join("hf.toml");
+    let write = |postfork: &str| {
+        std::fs::write(
+            &spec,
+            format!(
+                "[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"archive\"\n\
+                 [runtime_config]\ngenesis = {{ k = 10 }}\n\
+                 proof = {{ block_window_duration_ms = 30000 }}\n\
+                 [hardfork]\nmode = \"manual\"\nat = {{ slot = 42 }}\npostfork = {{ {postfork} }}\n"
+            ),
+        )
+        .unwrap();
+    };
+    let create = || {
+        h.run(&native_args(
+            &bin,
+            &["network", "create", "-n", "hf", "--spec", path_arg(&spec)],
+        ))
+    };
+
+    write("mina_version = \"4.0.4\"");
+    let err = create().unwrap_err().to_string();
+    assert!(
+        err.contains("[hardfork.postfork] mina 4.0.4 is not installed"),
+        "{err}"
+    );
+    write("mina_version = \"4.0.4\", bin_path = \"/x\"");
+    let err = create().unwrap_err().to_string();
+    assert!(err.contains("has bin_path and mina_version"), "{err}");
+
+    let post = installed_mina(&h, "4.0.4-c9e2eac");
+    write("mina_version = \"4.0.4\"");
+    queue_hardfork_create(&h);
+    create().unwrap();
+    let meta = NetworkMeta::load(&h.dirs.network_path("hf"))
+        .unwrap()
+        .unwrap();
+    let hardfork = meta.hardfork.unwrap();
+    assert_eq!(hardfork.postfork_bin_path, post);
+    // the upgrade script comes from the installed version
+    assert_eq!(
+        hardfork.archive_upgrade,
+        Some(
+            crate::install::mina::root(&h.dirs.tools_root())
+                .join("4.0.4-c9e2eac/etc/mina/archive/upgrade.sql")
+        )
     );
 }

@@ -10,7 +10,7 @@
 //! method = "legacy"                # manual only: legacy | advanced [default: legacy]
 //!
 //! [hardfork.postfork]
-//! bin_path = "/opt/mina-postfork/bin"
+//! bin_path = "/opt/mina-postfork/bin"   # or an installed version: mina_version = "4.0.4"
 //! # archive_upgrade = "/opt/mina-postfork/upgrade.sql"   # default: from the package
 //! ```
 //!
@@ -89,6 +89,8 @@ pub struct PostforkSpec {
     /// The postfork `upgrade.sql` of the archive database. Default: the one
     /// of the postfork package (`<package root>/etc/mina/archive/upgrade.sql`).
     pub archive_upgrade: Option<PathBuf>,
+    /// An installed mina version (`minimina mina install`) instead of `bin_path`.
+    pub mina_version: Option<String>,
 }
 
 /// Genesis constants the schedule depends on.

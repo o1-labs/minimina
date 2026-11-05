@@ -5,6 +5,7 @@
 
 mod env;
 mod hardfork;
+mod mina;
 mod network;
 mod node;
 mod setup;
@@ -14,6 +15,7 @@ use crate::{
     daemon_args::DaemonFeatures,
     directory_manager::DirectoryManager,
     docker::manager::DockerManager,
+    install,
     native::manager::{NativeManager, DEFAULT_POSTGRES_URI, DEFAULT_SHUTDOWN_TIMEOUT},
     network_meta::NetworkMeta,
     runner::{Runner, SystemRunner},
@@ -47,6 +49,8 @@ pub struct Context {
     pub dirs: DirectoryManager,
     pub mode: ExecutionMode,
     bin_path: Option<PathBuf>,
+    /// The installed mina version of `bin_path`, if it is one.
+    pub mina_version: Option<String>,
     /// Postgres server URI (no database) for native archive nodes.
     pub postgres_uri: String,
     /// Build profile exported as `MINA_PROFILE` to every mina process.
@@ -63,6 +67,7 @@ impl Context {
             ExecutionMode::Docker => NetworkMeta {
                 mode: self.mode,
                 bin_path: None,
+                mina_version: None,
                 postgres_uri: None,
                 profile: self.profile,
                 features: self.features,
@@ -72,6 +77,7 @@ impl Context {
             ExecutionMode::Native => NetworkMeta {
                 mode: self.mode,
                 bin_path: self.bin_path.clone(),
+                mina_version: self.mina_version.clone(),
                 postgres_uri: Some(self.postgres_uri.clone()),
                 profile: self.profile,
                 features: self.features,
@@ -130,7 +136,11 @@ impl Context {
 
 /// Runs `cli` against the host: `~/.minimina` (or `$MINIMINA_HOME`) and real processes.
 pub fn run(cli: Cli) -> Result<()> {
-    run_with(cli, DirectoryManager::new()?, Rc::new(SystemRunner))
+    let dirs = DirectoryManager::new()?;
+    match cli.command {
+        Command::Mina(cmd) => mina::run(&dirs, &SystemRunner, &install::mina::Http, cmd),
+        _ => run_with(cli, dirs, Rc::new(SystemRunner)),
+    }
 }
 
 pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Result<()> {
@@ -157,11 +167,29 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
             meta.mode
         ),
         (Some(meta), _) => meta.mode,
+        // an installed version runs natively
+        (None, None) if cli.mina_version.is_some() => ExecutionMode::Native,
         // networks created before minimina.json existed default to docker, as before
         (None, asked) => asked.unwrap_or(ExecutionMode::Docker),
     };
+    let asked_mina = match (&cli.mina_version, mode) {
+        (None, _) => None,
+        (Some(_), ExecutionMode::Docker) => bail!("--mina-version is only valid in native mode"),
+        (Some(version), ExecutionMode::Native) => {
+            Some(install::mina::resolve(&dirs.tools_root(), version)?)
+        }
+    };
+    // a binary directory given now replaces the recorded one, and its version
+    let mina_version = match (&asked_mina, &cli.bin_path) {
+        (Some(installed), _) => Some(installed.version.clone()),
+        (None, Some(_)) => None,
+        (None, None) => stored.as_ref().and_then(|m| m.mina_version.clone()),
+    };
     let stored_bin = stored.as_ref().and_then(|m| m.bin_path.clone());
-    let bin_path = env::resolve_bin_path(&mode, cli.bin_path.or(stored_bin))?;
+    let asked_bin = cli
+        .bin_path
+        .or(asked_mina.as_ref().map(install::mina::Installed::bin_path));
+    let bin_path = env::resolve_bin_path(&mode, asked_bin.or(stored_bin))?;
     let features = stored.as_ref().map(|m| m.features).unwrap_or_default();
     let profile = created_profile
         .flatten()
@@ -189,6 +217,7 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
         dirs,
         mode,
         bin_path,
+        mina_version,
         postgres_uri,
         profile,
         features,
@@ -198,6 +227,7 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
     match cli.command {
         Command::Network(cmd) => network::run(&ctx, cmd),
         Command::Node(cmd) => node::run(&ctx, cmd),
+        Command::Mina(cmd) => mina::run(&ctx.dirs, ctx.runner.as_ref(), &install::mina::Http, cmd),
     }
 }
 
