@@ -88,6 +88,7 @@ mod tests {
                 filename: "pool/noble/m/mi/mina-generic_4.0.2-84b8d96_amd64.deb".into(),
                 size: 100,
                 sha256: "abc4.0.2-84b8d96".into(),
+                depends: vec!["libssl3t64".into(), "libgmp10".into()],
             }]
         );
         // a stanza without a size is skipped
@@ -110,6 +111,26 @@ mod tests {
         let release = index.release("4.0.2-84b8d96").unwrap();
         assert_eq!(release.debs.len(), PACKAGES.len());
         assert_eq!(release.size(), 400);
+    }
+
+    #[test]
+    fn a_release_depends_on_what_its_packages_do() {
+        let mut text: Vec<String> = PACKAGES
+            .iter()
+            .map(|p| stanza(p, "4.0.2-84b8d96"))
+            .collect();
+        text[0] = text[0].replace(
+            "Depends: libssl3t64, libgmp10",
+            "Pre-Depends: tzdata\nDepends: libssl3t64, mina-logproc, libpq-dev | libpq5",
+        );
+        let release = Index::parse(&text.join("\n"))
+            .release("4.0.2-84b8d96")
+            .unwrap();
+        let depends: Vec<String> = release.depends().iter().map(ToString::to_string).collect();
+        assert_eq!(
+            depends,
+            ["tzdata", "libssl3t64", "libpq-dev | libpq5", "libgmp10"]
+        );
     }
 
     #[test]

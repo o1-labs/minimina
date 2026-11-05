@@ -5,11 +5,13 @@
 //! - [`ControlFile`] of [`Stanza`]s: the `Field: value` format both index
 //!   files are written in; [`ReleaseInfo`] and [`Index`] (of [`Entry`]s,
 //!   grouped into [`Release`]s) read what minimina needs from them.
+//! - [`Dependency`]: one entry of the `Depends` of a package.
 //! - [`PackageVersion`]: the versions mina packages carry (`4.0.2-84b8d96`).
 //! - [`host`]: the codename and architecture of this machine.
 
 mod channel;
 mod control_file;
+mod dependency;
 mod entry;
 pub mod host;
 mod index;
@@ -21,6 +23,7 @@ mod stanza;
 
 pub use channel::Channel;
 pub use control_file::ControlFile;
+pub use dependency::Dependency;
 pub use entry::Entry;
 pub use host::{host_arch, host_codename};
 pub use index::Index;

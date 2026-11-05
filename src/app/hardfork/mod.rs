@@ -217,6 +217,11 @@ fn check_postfork(
                 .join(", ")
         ));
     }
+    if let Err(e) = install::mina::require_runnable(ctx.runner.as_ref(), dir, None) {
+        // `mina version` would fail with a loader error
+        problems.push(format!("postfork: {e}"));
+        return problems;
+    }
     if !missing.contains(&Binary::Mina) {
         let mina_env = native::mina_env(dir, ctx.profile);
         let mina = Binary::Mina.path(dir);

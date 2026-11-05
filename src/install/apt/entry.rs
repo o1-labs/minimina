@@ -1,4 +1,4 @@
-use super::Stanza;
+use super::{Dependency, Stanza};
 
 /// One package of the index.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,6 +9,8 @@ pub struct Entry {
     pub filename: String,
     pub size: u64,
     pub sha256: String,
+    /// `Pre-Depends` and `Depends`.
+    pub depends: Vec<Dependency>,
 }
 
 impl Entry {
@@ -20,6 +22,11 @@ impl Entry {
             filename: stanza.get("Filename")?.to_string(),
             size: stanza.get("Size")?.parse().ok()?,
             sha256: stanza.get("SHA256")?.to_ascii_lowercase(),
+            depends: ["Pre-Depends", "Depends"]
+                .iter()
+                .filter_map(|field| stanza.get(field))
+                .flat_map(Dependency::parse_list)
+                .collect(),
         })
     }
 }

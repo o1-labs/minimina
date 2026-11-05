@@ -110,6 +110,9 @@ pub enum MinaCommand {
     Uninstall(MinaUninstallArgs),
     /// Install the newest version of the channel
     Upgrade(MinaSourceArgs),
+    /// What an installed mina version needs from this host: libraries its
+    /// binaries cannot load, and packages it depends on that are not installed
+    Check(MinaCheckArgs),
 }
 
 /// Where mina packages come from.
@@ -145,6 +148,13 @@ pub struct MinaListArgs {
 
     #[clap(flatten)]
     pub source: MinaSourceArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct MinaCheckArgs {
+    /// Installed version: `4.0.2`, `4.0.2-84b8d96` or `latest`
+    #[clap(id = "release", value_name = "VERSION")]
+    pub version: String,
 }
 
 #[derive(Args, Debug, Clone)]

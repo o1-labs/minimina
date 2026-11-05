@@ -1187,3 +1187,42 @@ fn hardfork_postfork_can_be_an_installed_version() {
         )
     );
 }
+
+#[test]
+fn native_start_refuses_binaries_that_cannot_load() {
+    let h = Harness::new();
+    let bin = tempfile::tempdir().unwrap();
+    // an executable ldd looks at
+    std::fs::write(bin.path().join("mina"), b"\x7fELF").unwrap();
+    h.fake.reply(0, "\tlibssl.so.3 => not found\n", "");
+    let err = h
+        .run(&native_args(
+            &bin,
+            &[
+                "network",
+                "create",
+                "-n",
+                "x",
+                "-t",
+                SMALL_TOPOLOGY,
+                "-g",
+                SMALL_LEDGER,
+            ],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        format!(
+            "the mina binaries in {} cannot run here: missing libraries libssl.so.3; \
+             install the packages that provide them",
+            bin.path().display()
+        )
+    );
+    // nothing ran but ldd
+    assert_eq!(
+        h.fake.lines(),
+        [format!("ldd {}/mina", bin.path().display())]
+    );
+    assert!(!h.dirs.network_path("x").exists());
+}

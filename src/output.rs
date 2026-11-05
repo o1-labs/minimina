@@ -280,15 +280,19 @@ pub mod mina {
         pub installed: Installed,
         /// False when the version was installed already.
         pub new: bool,
+        /// What this host lacks to run it.
+        pub requirements: mina::Requirements,
     }
 
-    impl Install {
-        pub fn new(installed: mina::Installed, new: bool) -> Self {
-            Install {
-                installed: installed.into(),
-                new,
-            }
-        }
+    /// `mina check`
+    #[derive(Debug, Serialize, PartialEq)]
+    pub struct Check {
+        pub version: String,
+        pub bin_path: String,
+        /// Whether the binaries can be loaded.
+        pub runnable: bool,
+        #[serde(flatten)]
+        pub requirements: mina::Requirements,
     }
 
     #[derive(Debug, Serialize, PartialEq)]
@@ -386,6 +390,7 @@ impl_display!(node::Status);
 impl_display!(mina::Install);
 impl_display!(mina::List);
 impl_display!(mina::Uninstall);
+impl_display!(mina::Check);
 impl_display!(Error);
 
 #[cfg(test)]

@@ -64,6 +64,7 @@ pub fn install(
             .iter()
             .map(|d| format!("{} {}", d.package, d.version))
             .collect(),
+        depends: release.depends(),
         dir: dir.clone(),
     };
     std::fs::write(

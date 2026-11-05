@@ -1,11 +1,11 @@
 //! `minimina mina ...` handlers: mina versions in the tools directory.
 
 use crate::{
-    cli::{MinaCommand, MinaListArgs, MinaSourceArgs, MinaUninstallArgs},
+    cli::{MinaCheckArgs, MinaCommand, MinaListArgs, MinaSourceArgs, MinaUninstallArgs},
     directory_manager::DirectoryManager,
     install::{
-        apt::{self, Repository},
-        mina::{self, Fetch, Installed, MinaError, Source},
+        apt::{self, Dependency, Repository},
+        mina::{self, Fetch, Installed, MinaError, Requirements, Source},
     },
     network_meta::NetworkMeta,
     output::mina as output,
@@ -30,6 +30,7 @@ pub fn run(
         MinaCommand::Upgrade(args) => install(&tools, runner, fetch, "latest", &args)?.to_string(),
         MinaCommand::List(args) => list(&tools, fetch, &args)?.to_string(),
         MinaCommand::Uninstall(args) => uninstall(dirs, &args)?.to_string(),
+        MinaCommand::Check(args) => check(&tools, runner, fetch, &args)?.to_string(),
     };
     println!("{out}");
     Ok(())
@@ -44,7 +45,62 @@ fn install(
 ) -> Result<output::Install> {
     let source = source(args, Path::new(OS_RELEASE))?;
     let (installed, new) = mina::install(tools, runner, fetch, wanted, &source)?;
-    Ok(output::Install::new(installed, new))
+    let requirements = Requirements::check(runner, &installed.depends, &installed.bin_path());
+    requirements.warn(&installed.version);
+    Ok(output::Install {
+        installed: installed.into(),
+        new,
+        requirements,
+    })
+}
+
+/// What the host lacks for an installed version.
+fn check(
+    tools: &Path,
+    runner: &dyn Runner,
+    fetch: &dyn Fetch,
+    args: &MinaCheckArgs,
+) -> Result<output::Check> {
+    let installed = mina::resolve(tools, &args.version)?;
+    let depends = match recorded_or_indexed_depends(fetch, &installed) {
+        Ok(depends) => depends,
+        Err(e) => {
+            log::warn!(
+                "the packages of mina {} are not checked: {e:#}",
+                installed.version
+            );
+            vec![]
+        }
+    };
+    let requirements = Requirements::check(runner, &depends, &installed.bin_path());
+    Ok(output::Check {
+        version: installed.version.clone(),
+        bin_path: installed.bin_path().display().to_string(),
+        runnable: requirements.runnable(),
+        requirements,
+    })
+}
+
+/// The dependencies of an install; installs made before minimina recorded
+/// them get them from the index they came from.
+fn recorded_or_indexed_depends(
+    fetch: &dyn Fetch,
+    installed: &Installed,
+) -> Result<Vec<Dependency>> {
+    if !installed.depends.is_empty() {
+        return Ok(installed.depends.clone());
+    }
+    let source = Source {
+        repository: Repository::default(),
+        channel: installed.channel.clone(),
+        codename: installed.codename.clone(),
+        arch: apt::host_arch()?.to_string(),
+    };
+    let release = source
+        .index(fetch)?
+        .release(&installed.version)
+        .ok_or_else(|| anyhow::anyhow!("the index no longer has {}", installed.version))?;
+    Ok(release.depends())
 }
 
 fn list(tools: &Path, fetch: &dyn Fetch, args: &MinaListArgs) -> Result<output::List> {
@@ -161,6 +217,7 @@ mod tests {
             channel: Channel::default(),
             codename: "noble".into(),
             packages: vec![],
+            depends: vec![],
             dir,
         };
         std::fs::write(

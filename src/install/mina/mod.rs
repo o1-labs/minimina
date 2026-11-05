@@ -12,6 +12,8 @@
 //! - [`install()`] downloads and unpacks a version; [`Installed`] is a version
 //!   in the tools directory, which [`installed()`], [`resolve()`] and
 //!   [`uninstall()`] work with.
+//! - [`Requirements`]: what a version needs from the host, and
+//!   [`require_runnable`] before binaries are started.
 //! - [`Fetch`] gets files from the repository ([`Http`] for real).
 //! - [`MinaError`]: why a version cannot be installed, used or removed.
 
@@ -19,6 +21,7 @@ mod error;
 mod fetch;
 mod install;
 mod installed;
+mod requirements;
 mod source;
 #[cfg(test)]
 mod tests;
@@ -27,6 +30,7 @@ pub use error::MinaError;
 pub use fetch::{Fetch, Http};
 pub use install::install;
 pub use installed::{installed, resolve, uninstall, Installed};
+pub use requirements::{require_runnable, Requirements};
 pub use source::Source;
 
 use std::path::{Path, PathBuf};
