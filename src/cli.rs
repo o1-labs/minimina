@@ -115,8 +115,9 @@ pub enum MinaCommand {
 /// Where mina packages come from.
 #[derive(Args, Debug, Clone)]
 pub struct MinaSourceArgs {
-    /// Package repository
-    #[clap(long, value_enum, default_value_t)]
+    /// Channel of packages.o1test.net: stable, unstable, alpha, beta, ...
+    /// (the components of its Release file for the codename)
+    #[clap(long, default_value_t)]
     pub channel: Channel,
 
     /// Distribution the packages are built for (noble, jammy, bookworm)
@@ -535,7 +536,7 @@ mod tests {
             "install",
             "4.0.2",
             "--channel",
-            "nightly",
+            "alpha",
             "--codename",
             "jammy",
         ])
@@ -543,7 +544,7 @@ mod tests {
         match cli.command {
             Command::Mina(MinaCommand::Install(args)) => {
                 assert_eq!(args.version, "4.0.2");
-                assert_eq!(args.source.channel, Channel::Nightly);
+                assert_eq!(args.source.channel.to_string(), "alpha");
                 assert_eq!(args.source.codename.as_deref(), Some("jammy"));
             }
             _ => panic!("not an install"),

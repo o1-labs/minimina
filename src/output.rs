@@ -267,7 +267,7 @@ pub mod mina {
         fn from(i: &mina::Installed) -> Self {
             Installed {
                 version: i.version.clone(),
-                channel: i.channel,
+                channel: i.channel.clone(),
                 codename: i.codename.clone(),
                 bin_path: i.bin_path().display().to_string(),
             }

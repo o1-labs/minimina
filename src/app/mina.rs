@@ -85,7 +85,7 @@ pub fn run(
 
 fn source(args: &MinaSourceArgs, os_release: &Path) -> Result<Source> {
     Ok(Source {
-        channel: args.channel,
+        channel: args.channel.clone(),
         codename: match &args.codename {
             Some(codename) => codename.clone(),
             None => apt::host_codename(os_release)?,
@@ -139,7 +139,7 @@ mod tests {
         std::fs::write(dir.join(mina::BIN_DIR).join("mina"), "").unwrap();
         let installed = Installed {
             version: version.into(),
-            channel: Channel::Stable,
+            channel: Channel::default(),
             codename: "noble".into(),
             packages: vec![],
             dir,
@@ -199,7 +199,7 @@ mod tests {
             let cmd = MinaCommand::List(crate::cli::MinaListArgs {
                 available,
                 source: MinaSourceArgs {
-                    channel: Channel::Stable,
+                    channel: Channel::default(),
                     codename: Some("noble".into()),
                 },
             });
@@ -207,7 +207,10 @@ mod tests {
         };
         list(false).unwrap();
         let err = format!("{:#}", list(true).unwrap_err());
-        assert!(err.contains("offline: https://stable.apt"), "{err}");
+        assert!(
+            err.contains("offline: https://packages.o1test.net/dists/noble/stable/"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -216,11 +219,11 @@ mod tests {
         let os_release = dir.path().join("os-release");
         std::fs::write(&os_release, "VERSION_CODENAME=bookworm\n").unwrap();
         let args = MinaSourceArgs {
-            channel: Channel::O1test,
+            channel: "alpha".parse().unwrap(),
             codename: None,
         };
         let source = source(&args, &os_release).unwrap();
         assert_eq!(source.codename, "bookworm");
-        assert_eq!(source.channel, Channel::O1test);
+        assert_eq!(source.channel.to_string(), "alpha");
     }
 }

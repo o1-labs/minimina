@@ -3,7 +3,6 @@
 
 use crate::version::Version;
 use anyhow::{bail, Context as _, Result};
-use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -22,62 +21,67 @@ pub const PACKAGES: [&str; 4] = [
 /// Codenames mina is built for, to say where a missing version is available.
 pub const CODENAMES: [&str; 3] = ["noble", "jammy", "bookworm"];
 
-/// A repository and component mina packages are published to.
-#[derive(Debug, Clone, Copy, Default, ValueEnum, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Channel {
-    /// Releases
-    #[default]
-    Stable,
-    /// Release candidates
-    Unstable,
-    /// Nightly builds
-    Nightly,
-    /// o1Labs test repository
-    O1test,
+/// The repository mina packages are installed from.
+pub const REPOSITORY: &str = "https://packages.o1test.net";
+
+/// A channel of [`REPOSITORY`]: one of its apt components (`stable`,
+/// `unstable`, `alpha`, ...), which the `Release` file of a codename lists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Channel(String);
+
+impl Default for Channel {
+    fn default() -> Self {
+        Channel("stable".into())
+    }
+}
+
+impl std::str::FromStr for Channel {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, String> {
+        // it goes into URLs
+        if s.is_empty()
+            || !s
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        {
+            return Err(format!("'{s}' is not a channel name"));
+        }
+        Ok(Channel(s.to_string()))
+    }
 }
 
 impl Channel {
-    fn base_url(self) -> &'static str {
-        match self {
-            Channel::Stable => "https://stable.apt.packages.minaprotocol.com",
-            Channel::Unstable => "https://unstable.apt.packages.minaprotocol.com",
-            Channel::Nightly => "https://nightly.apt.packages.minaprotocol.com",
-            Channel::O1test => "https://packages.o1test.net",
-        }
-    }
-
-    fn component(self) -> &'static str {
-        match self {
-            Channel::Stable | Channel::O1test => "stable",
-            Channel::Unstable | Channel::Nightly => "unstable",
-        }
-    }
-
     /// URL of the `Packages` index of `codename` for `arch`.
-    pub fn index_url(self, codename: &str, arch: &str) -> String {
-        format!(
-            "{}/dists/{codename}/{}/binary-{arch}/Packages",
-            self.base_url(),
-            self.component()
-        )
+    pub fn index_url(&self, codename: &str, arch: &str) -> String {
+        format!("{REPOSITORY}/dists/{codename}/{self}/binary-{arch}/Packages")
     }
 
     /// URL of a `.deb`, from the `Filename` of its index entry.
-    pub fn deb_url(self, filename: &str) -> String {
-        format!("{}/{}", self.base_url(), filename.trim_start_matches('/'))
+    pub fn deb_url(filename: &str) -> String {
+        format!("{REPOSITORY}/{}", filename.trim_start_matches('/'))
     }
 }
 
 impl std::fmt::Display for Channel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Channel::Stable => "stable",
-            Channel::Unstable => "unstable",
-            Channel::Nightly => "nightly",
-            Channel::O1test => "o1test",
-        })
+        f.write_str(&self.0)
     }
+}
+
+/// URL of the `Release` file of `codename`, which lists its channels.
+pub fn release_url(codename: &str) -> String {
+    format!("{REPOSITORY}/dists/{codename}/Release")
+}
+
+/// The channels (`Components`) of a `Release` file.
+pub fn channels(release: &str) -> Vec<String> {
+    release
+        .lines()
+        .find_map(|l| l.strip_prefix("Components:"))
+        .map(|c| c.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
 }
 
 /// `VERSION_CODENAME` of an `os-release` file (`/etc/os-release`).
@@ -256,18 +260,25 @@ mod tests {
     }
 
     #[test]
-    fn channels_point_at_their_repositories() {
+    fn channels_are_components_of_the_repository() {
         assert_eq!(
-            Channel::Stable.index_url("noble", "amd64"),
-            "https://stable.apt.packages.minaprotocol.com/dists/noble/stable/binary-amd64/Packages"
+            Channel::default().index_url("noble", "amd64"),
+            "https://packages.o1test.net/dists/noble/stable/binary-amd64/Packages"
+        );
+        let alpha: Channel = "alpha".parse().unwrap();
+        assert_eq!(
+            alpha.index_url("jammy", "arm64"),
+            "https://packages.o1test.net/dists/jammy/alpha/binary-arm64/Packages"
         );
         assert_eq!(
-            Channel::Nightly.index_url("jammy", "arm64"),
-            "https://nightly.apt.packages.minaprotocol.com/dists/jammy/unstable/binary-arm64/Packages"
-        );
-        assert_eq!(
-            Channel::O1test.deb_url("pool/x.deb"),
+            Channel::deb_url("pool/x.deb"),
             "https://packages.o1test.net/pool/x.deb"
+        );
+        assert!("../x".parse::<Channel>().is_err());
+        assert!("".parse::<Channel>().is_err());
+        assert_eq!(
+            channels("Codename: noble\nComponents: alpha stable umt-no-upgrade\nSuite: x\n"),
+            ["alpha", "stable", "umt-no-upgrade"]
         );
     }
 

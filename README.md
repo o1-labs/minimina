@@ -372,15 +372,17 @@ hardfork test runs two). Nothing is installed system-wide and no root is needed.
 ```bash
 minimina mina list --available                 # installed versions, and those of the channel
 minimina mina install 4.0.2                    # or 4.0.2-84b8d96, or latest
-minimina mina install latest --channel nightly # stable (default) | unstable | nightly | o1test
+minimina mina install latest --channel alpha   # a channel of packages.o1test.net; stable by default
 minimina mina upgrade                          # install the newest version of the channel
 minimina mina uninstall 4.0.2                  # refused while a network runs it, unless --force
 
 minimina --mina-version 4.0.2 network create -n local --spec net.toml   # implies --mode native
 ```
 
-- The packages come from the repository of the channel for the codename of
-  the host (`VERSION_CODENAME` in `/etc/os-release`; `--codename` overrides).
+- The packages come from https://packages.o1test.net: `--channel` is one of
+  its apt components (`stable`, `unstable`, `alpha`, `beta`, ...; an unknown
+  one lists those the codename has), for the codename of the host
+  (`VERSION_CODENAME` in `/etc/os-release`; `--codename` overrides).
   A version that is missing names the codenames that have it.
 - Every deb is checked against the SHA-256 of the repository index. An
   interrupted install leaves no version behind; the next one starts again.

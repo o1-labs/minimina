@@ -104,10 +104,27 @@ pub struct Source {
 impl Source {
     pub fn index(&self, fetch: &dyn Fetch) -> Result<Index> {
         let url = self.channel.index_url(&self.codename, &self.arch);
-        let text = fetch
-            .text(&url)
-            .with_context(|| format!("no {} packages for {}", self.channel, self.codename))?;
-        Ok(Index::parse(&text))
+        match fetch.text(&url) {
+            Ok(text) => Ok(Index::parse(&text)),
+            Err(e) => {
+                // say which channels there are when the channel is not one
+                let channels = fetch
+                    .text(&apt::release_url(&self.codename))
+                    .map(|release| apt::channels(&release))
+                    .unwrap_or_default();
+                if !channels.is_empty() && !channels.contains(&self.channel.to_string()) {
+                    bail!(
+                        "{} has no channel {} for {}; channels: {}",
+                        apt::REPOSITORY,
+                        self.channel,
+                        self.codename,
+                        channels.join(", ")
+                    );
+                }
+                Err(e)
+                    .with_context(|| format!("no {} packages for {}", self.channel, self.codename))
+            }
+        }
     }
 }
 
@@ -241,7 +258,7 @@ pub fn install(
     }
     let installed = Installed {
         version: release.version.clone(),
-        channel: source.channel,
+        channel: source.channel.clone(),
         codename: source.codename.clone(),
         packages: release
             .debs
@@ -286,7 +303,7 @@ fn unpack(
             .with_context(|| format!("bad file name '{}'", deb.filename))?;
         let file = downloads.join(name);
         info!("Downloading {} ({} MiB)", deb.package, deb.size >> 20);
-        let sha256 = fetch.download(&source.channel.deb_url(&deb.filename), &file);
+        let sha256 = fetch.download(&Channel::deb_url(&deb.filename), &file);
         let result = sha256.and_then(|sha256| {
             if sha256 != deb.sha256 {
                 bail!(
@@ -395,7 +412,7 @@ mod tests {
                         bytes.len(),
                         sha(&bytes)
                     );
-                    self.files.insert(source.channel.deb_url(&filename), bytes);
+                    self.files.insert(Channel::deb_url(&filename), bytes);
                 }
             }
             self.files.insert(
@@ -461,7 +478,7 @@ mod tests {
 
     fn noble() -> Source {
         Source {
-            channel: Channel::Stable,
+            channel: Channel::default(),
             codename: "noble".into(),
             arch: "amd64".into(),
         }
@@ -547,7 +564,7 @@ mod tests {
         let tools = tempfile::tempdir().unwrap();
         let mut repo = FakeRepo::default().with(&noble(), &["4.0.2-84b8d96"]);
         // the index lies about the first package
-        let url = Channel::Stable.index_url("noble", "amd64");
+        let url = Channel::default().index_url("noble", "amd64");
         let index = String::from_utf8(repo.files[&url].clone()).unwrap();
         let first = sha(b"mina-generic");
         repo.files
@@ -575,6 +592,33 @@ mod tests {
             err,
             "mina 4.0.2 is not in the stable channel for noble; available for: jammy; \
              noble has: 4.0.4-c9e2eac"
+        );
+    }
+
+    #[test]
+    fn an_unknown_channel_lists_the_channels() {
+        let tools = tempfile::tempdir().unwrap();
+        let mut repo = FakeRepo::default().with(&noble(), &["4.0.4-c9e2eac"]);
+        repo.files.insert(
+            apt::release_url("noble"),
+            b"Codename: noble\nComponents: alpha stable\n".to_vec(),
+        );
+        let nightly = Source {
+            channel: "nightly".parse().unwrap(),
+            ..noble()
+        };
+        let err = install(
+            tools.path(),
+            &FakeDpkg::default(),
+            &repo,
+            "latest",
+            &nightly,
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            err,
+            "https://packages.o1test.net has no channel nightly for noble; channels: alpha, stable"
         );
     }
 }
