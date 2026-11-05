@@ -1,8 +1,41 @@
-//! The packages installed on a Debian-based host, from `dpkg-query`.
+//! dpkg on the host: `dpkg-deb` unpacks the mina packages, `dpkg-query`
+//! says which packages are installed.
 
 use super::apt::Dependency;
-use crate::runner::Runner;
+use super::requirement::{Tool, ToolError};
+use crate::runner::{check, Runner};
+use crate::version::Version;
 use std::collections::HashSet;
+use std::path::Path;
+
+/// Unpacks debs.
+pub const DPKG_DEB: Tool = Tool {
+    name: "dpkg-deb",
+    program: "dpkg-deb",
+    version_args: &["--version"],
+    min: Version(1, 17, 0),
+    install: "Install the dpkg package.",
+};
+
+/// Reads the dpkg database.
+pub const DPKG_QUERY: Tool = Tool {
+    name: "dpkg-query",
+    program: "dpkg-query",
+    version_args: &["--version"],
+    min: Version(1, 17, 0),
+    install: "Install the dpkg package.",
+};
+
+/// `dpkg-deb -x`: the files of `deb` under `into`, without installing it.
+pub fn unpack(runner: &dyn Runner, deb: &Path, into: &Path) -> anyhow::Result<()> {
+    let output = DPKG_DEB.run(
+        runner,
+        &["-x", &deb.to_string_lossy(), &into.to_string_lossy()],
+    )?;
+    let name = deb.file_name().unwrap_or(deb.as_os_str()).to_string_lossy();
+    check(output, &format!("dpkg-deb -x {name}"))?;
+    Ok(())
+}
 
 /// Names installed packages answer to: their own and what they `Provide`.
 #[derive(Debug, Default)]
@@ -11,18 +44,17 @@ pub struct DpkgDatabase {
 }
 
 impl DpkgDatabase {
-    /// One `dpkg-query` for every package. `None` when the host has no dpkg
-    /// (not Debian-based) or it fails.
-    pub fn load(runner: &dyn Runner) -> Option<Self> {
-        let output = runner
-            .run(
-                "dpkg-query".as_ref(),
-                &["-W", "-f", "${Package}\t${db:Status-Abbrev}\t${Provides}\n"],
-                &[],
-            )
-            .ok()
-            .filter(|o| o.status.success())?;
-        Some(Self::parse(&String::from_utf8_lossy(&output.stdout)))
+    /// One `dpkg-query` for every package. [`ToolError::Missing`] on a host
+    /// without dpkg (not Debian-based).
+    pub fn load(runner: &dyn Runner) -> Result<Self, ToolError> {
+        let args = ["-W", "-f", "${Package}\t${db:Status-Abbrev}\t${Provides}\n"];
+        let output = DPKG_QUERY.run(runner, &args)?;
+        let output = check(output, "dpkg-query -W").map_err(|cause| ToolError::Failed {
+            name: DPKG_QUERY.name.to_string(),
+            cause,
+            install: DPKG_QUERY.install.to_string(),
+        })?;
+        Ok(Self::parse(&String::from_utf8_lossy(&output.stdout)))
     }
 
     /// Lines of `<package>\t<status>\t<provides>`; `ii` is installed.
@@ -96,6 +128,9 @@ mod tests {
     fn no_dpkg_is_no_database() {
         let fake = FakeRunner::default();
         fake.reply_err(std::io::ErrorKind::NotFound);
-        assert!(DpkgDatabase::load(&fake).is_none());
+        assert!(matches!(
+            DpkgDatabase::load(&fake),
+            Err(ToolError::Missing { .. })
+        ));
     }
 }

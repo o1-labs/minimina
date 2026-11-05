@@ -1,9 +1,9 @@
 use super::{root, Fetch, Installed, MinaError, Source, BIN_DIR, INSTALL_FILE};
 use crate::install::apt::Release;
-use crate::install::requirement::{require, Tool};
+use crate::install::dpkg::{self, DPKG_DEB};
+use crate::install::requirement::require;
 use crate::native::binary::Binary;
 use crate::runner::Runner;
-use crate::version::Version;
 use anyhow::{Context as _, Result};
 use log::info;
 use std::path::Path;
@@ -15,15 +15,6 @@ const DOWNLOADS: &str = ".downloads";
 fn partial_name(version: &str) -> String {
     format!(".{version}.partial")
 }
-
-/// `dpkg-deb`, which unpacks the debs.
-const DPKG_DEB: Tool = Tool {
-    name: "dpkg-deb",
-    program: "dpkg-deb",
-    version_args: &["--version"],
-    min: Version(1, 17, 0),
-    install: "Install the dpkg package.",
-};
 
 /// Installs `wanted` (`4.0.2`, `4.0.2-84b8d96` or `latest`) from `source`,
 /// unless it is installed already. Returns the install and whether it is new.
@@ -116,13 +107,7 @@ fn unpack(
                     }
                     .into());
                 }
-                runner.run_checked(
-                    DPKG_DEB.program.as_ref(),
-                    &["-x", &file.to_string_lossy(), &into.to_string_lossy()],
-                    &[],
-                    &format!("dpkg-deb -x {}", name.to_string_lossy()),
-                )?;
-                Ok(())
+                dpkg::unpack(runner, &file, into)
             });
         let _ = std::fs::remove_file(&file);
         result?;

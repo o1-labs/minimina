@@ -10,7 +10,7 @@
 
 use super::MinaError;
 use crate::install::apt::Dependency;
-use crate::install::{dpkg::DpkgDatabase, ldd};
+use crate::install::{dpkg::DpkgDatabase, ldd, ToolError};
 use crate::native::binary::Binary;
 use crate::runner::Runner;
 use anyhow::Result;
@@ -48,10 +48,8 @@ impl Requirements {
     pub fn check(runner: &dyn Runner, depends: &[Dependency], bin_path: &Path) -> Self {
         let mut requirements = Requirements::default();
         match DpkgDatabase::load(runner) {
-            Some(db) => requirements.missing_packages = db.missing(depends),
-            None => requirements
-                .unchecked
-                .push("packages: no dpkg-query on this host".into()),
+            Ok(db) => requirements.missing_packages = db.missing(depends),
+            Err(e) => requirements.unchecked.push(unchecked("packages", &e)),
         }
         if !requirements.missing_packages.is_empty() {
             let names: Vec<&str> = requirements
@@ -63,10 +61,8 @@ impl Requirements {
                 Some(format!("sudo apt-get install {}", names.join(" ")));
         }
         match missing_libraries(runner, bin_path) {
-            Some(libraries) => requirements.missing_libraries = libraries,
-            None => requirements
-                .unchecked
-                .push("libraries: no ldd on this host".into()),
+            Ok(libraries) => requirements.missing_libraries = libraries,
+            Err(e) => requirements.unchecked.push(unchecked("libraries", &e)),
         }
         requirements
     }
@@ -97,8 +93,16 @@ impl Requirements {
     }
 }
 
-/// The libraries the binaries in `bin_path` cannot load; `None` without `ldd`.
-fn missing_libraries(runner: &dyn Runner, bin_path: &Path) -> Option<Vec<String>> {
+/// Why `what` was not checked.
+fn unchecked(what: &str, e: &ToolError) -> String {
+    match e {
+        ToolError::Missing { program, .. } => format!("{what}: no {program} on this host"),
+        e => format!("{what}: {e}"),
+    }
+}
+
+/// The libraries the binaries in `bin_path` cannot load.
+fn missing_libraries(runner: &dyn Runner, bin_path: &Path) -> Result<Vec<String>, ToolError> {
     let binaries: Vec<_> = BINARIES
         .iter()
         .map(|b| b.path(bin_path))
@@ -112,13 +116,18 @@ fn missing_libraries(runner: &dyn Runner, bin_path: &Path) -> Option<Vec<String>
 /// the installed mina version of `bin_path`, if it is one.
 pub fn require_runnable(runner: &dyn Runner, bin_path: &Path, version: Option<&str>) -> Result<()> {
     match missing_libraries(runner, bin_path) {
-        Some(libraries) if !libraries.is_empty() => Err(MinaError::MissingLibraries {
+        Ok(libraries) if !libraries.is_empty() => Err(MinaError::MissingLibraries {
             bin_path: bin_path.to_path_buf(),
             libraries,
             version: version.map(str::to_string),
         }
         .into()),
-        _ => Ok(()),
+        Ok(_) => Ok(()),
+        // what cannot be checked does not stop a network
+        Err(e) => {
+            log::warn!("{}", unchecked("the libraries of the mina binaries", &e));
+            Ok(())
+        }
     }
 }
 

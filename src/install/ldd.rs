@@ -2,9 +2,20 @@
 //! `ldd`: what makes a mina binary fail at load time
 //! (`libssl.so.3: cannot open shared object file`).
 
+use super::requirement::{Tool, ToolError};
 use crate::runner::Runner;
+use crate::version::Version;
 use std::io::Read;
 use std::path::Path;
+
+/// Lists the libraries of a binary, and where they are found.
+pub const LDD: Tool = Tool {
+    name: "ldd",
+    program: "ldd",
+    version_args: &["--version"],
+    min: Version(2, 0, 0),
+    install: "Install libc-bin.",
+};
 
 /// Whether `path` starts like an ELF file. Anything else (a script, an
 /// empty file) has no libraries for `ldd` to look at.
@@ -16,18 +27,14 @@ fn is_elf(path: &Path) -> bool {
 }
 
 /// The libraries of `binaries` that are `not found`, each once, sorted.
-/// `None` when the host has no `ldd`: nothing could be checked.
-pub fn missing_libraries(runner: &dyn Runner, binaries: &[&Path]) -> Option<Vec<String>> {
+/// [`ToolError::Missing`] when the host has no `ldd`.
+pub fn missing_libraries(
+    runner: &dyn Runner,
+    binaries: &[&Path],
+) -> Result<Vec<String>, ToolError> {
     let mut missing = vec![];
     for binary in binaries.iter().filter(|b| is_elf(b)) {
-        let output = match runner.run("ldd".as_ref(), &[&binary.to_string_lossy()], &[]) {
-            Ok(output) => output,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-            Err(e) => {
-                log::warn!("ldd {}: {e}", binary.display());
-                continue;
-            }
-        };
+        let output = LDD.run(runner, &[&binary.to_string_lossy()])?;
         // `\tlibssl.so.3 => not found`
         for line in String::from_utf8_lossy(&output.stdout).lines() {
             if let Some((library, "not found")) = line
@@ -40,7 +47,7 @@ pub fn missing_libraries(runner: &dyn Runner, binaries: &[&Path]) -> Option<Vec<
     }
     missing.sort();
     missing.dedup();
-    Some(missing)
+    Ok(missing)
 }
 
 #[cfg(test)]
@@ -79,6 +86,9 @@ mod tests {
 
         let fake = FakeRunner::default();
         fake.reply_err(std::io::ErrorKind::NotFound);
-        assert_eq!(missing_libraries(&fake, &[&mina]), None);
+        assert!(matches!(
+            missing_libraries(&fake, &[&mina]),
+            Err(ToolError::Missing { .. })
+        ));
     }
 }
