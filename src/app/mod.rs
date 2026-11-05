@@ -10,7 +10,7 @@ mod node;
 mod setup;
 
 use crate::{
-    cli::{Cli, Command, ExecutionMode, NetworkCommand, Profile, ShutdownTimeout},
+    cli::{Cli, Command, ExecutionMode, HardforkCommand, NetworkCommand, Profile, ShutdownTimeout},
     daemon_args::DaemonFeatures,
     directory_manager::DirectoryManager,
     docker::manager::DockerManager,
@@ -176,7 +176,9 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
     let reads_files_only = matches!(
         cli.command,
         Command::Network(
-            NetworkCommand::List | NetworkCommand::Info(_) | NetworkCommand::Hardfork(_)
+            NetworkCommand::List
+                | NetworkCommand::Info(_)
+                | NetworkCommand::Hardfork(HardforkCommand::Status(_))
         )
     );
     if !reads_files_only {

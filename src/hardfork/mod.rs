@@ -11,11 +11,14 @@
 //!
 //! [hardfork.postfork]
 //! bin_path = "/opt/mina-postfork/bin"
+//! # archive_upgrade = "/opt/mina-postfork/upgrade.sql"   # default: from the package
 //! ```
 //!
 //! `at` is `slot_chain_end`, the last slot of the prefork chain. A date is
 //! changed to a slot from the genesis timestamp, so it is placed again when
 //! the first `network start` sets the genesis timestamp.
+
+pub mod fork_config;
 
 use crate::runtime_config::{self, RuntimeConfig};
 use chrono::{DateTime, Duration, FixedOffset, Utc};
@@ -83,6 +86,9 @@ pub struct PostforkSpec {
     /// Directory with the postfork `mina`, `mina-archive`, `mina-rosetta`, ...
     /// A relative path is relative to the spec file.
     pub bin_path: Option<PathBuf>,
+    /// The postfork `upgrade.sql` of the archive database. Default: the one
+    /// of the postfork package (`<package root>/etc/mina/archive/upgrade.sql`).
+    pub archive_upgrade: Option<PathBuf>,
 }
 
 /// Genesis constants the schedule depends on.

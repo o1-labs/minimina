@@ -63,3 +63,4 @@ balance = "1000"
 # method = "legacy"              # manual only: legacy | advanced
 # [hardfork.postfork]
 # bin_path = "/opt/mina-postfork/bin"
+# archive_upgrade = "/opt/mina-postfork/upgrade.sql"   # default: the package's etc/mina/archive/upgrade.sql

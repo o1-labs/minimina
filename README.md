@@ -213,6 +213,7 @@ at = { slot = 42 }               # slot_chain_end, or an RFC 3339 date: at = "20
 
 [hardfork.postfork]
 bin_path = "/opt/mina-postfork/bin"   # relative to the spec file
+# archive_upgrade = "/opt/mina-postfork/upgrade.sql"   # default: from the package
 ```
 
 `network create` writes `daemon.slot_tx_end`, `daemon.slot_chain_end` and
@@ -226,7 +227,14 @@ refuses the spec, with a list of all problems, before it changes anything, if:
 - `bin_path` is missing, does not have `mina` (and `mina-archive`,
   `mina-rosetta`, `mina-create-genesis` when the network needs them), or its
   `mina` does not run;
-- `mode = "auto"` and the prefork daemon has no `--hardfork-handling`.
+- `mode = "auto"` and the prefork daemon has no `--hardfork-handling`;
+- the network has an archive, and minimina finds no postfork `upgrade.sql`.
+  The default is the script of the postfork package,
+  `<package root>/etc/mina/archive/upgrade.sql`, where the package root is
+  `bin_path` without `usr/local/bin` (for example, a package unpacked with
+  `dpkg-deb -x`). Packages of all versions install the script as
+  `/etc/mina/archive/upgrade.sql`, so for a build that is not in a package
+  directory, set `archive_upgrade`.
 
 A date is changed to a slot again at the first `network start`, from the real
 genesis timestamp.
@@ -236,8 +244,44 @@ minimina network hardfork status -n mynet
 ```
 
 shows the phase of the network (`not-started`, `before-genesis`, `prefork`,
-`tx-end`, `chain-end`, `fork-genesis`), the slot and time of `slot_tx_end`,
-`slot_chain_end` and the fork genesis, and the time to the next phase.
+`tx-end`, `chain-end`, `fork-genesis`), the state of the hardfork (`planned`,
+`prepared`, `applied`), the slot and time of `slot_tx_end`, `slot_chain_end`
+and the fork genesis, and the time to the next phase.
+
+#### Manual mode
+
+```bash
+minimina network hardfork prepare -n mynet --wait   # after slot_chain_end
+minimina network hardfork apply -n mynet            # before the fork genesis
+```
+
+`prepare` works on the running prefork network, one slot after
+`slot_chain_end` (`--wait` waits for it). It writes the postfork data to
+`<network dir>/hardfork/` and stops with all problems if a check fails:
+
+1. It gets `fork_config` (GraphQL) from every daemon. All daemons must give
+   the same fork point (the state hash and height of the last prefork block).
+2. The postfork `mina-create-genesis` (`runtime_genesis_ledger`) makes the
+   postfork ledgers and `ledger_hashes.json` from the fork config.
+3. It writes `daemon.json`: the fork point, the epoch seeds, the ledger
+   hashes, and the genesis timestamp of the fork genesis slot.
+4. `method = "advanced"` only: each prefork daemon writes its own fork data
+   (`mina advanced generate-hardfork-config`). Its ledger hash must be the
+   hash of step 2. If not, the prefork and postfork versions do not agree on
+   the hardfork ledger, and the postfork daemon cannot load the data.
+5. The postfork `mina internal chain-id` must give one chain id for all
+   nodes. This also checks that the ledger files are there.
+
+`apply` stops the network and then:
+
+1. keeps the prefork `genesis_ledger.json` as `genesis_ledger.prefork.json`,
+   and writes the shared postfork config (without `ledger`, `daemon` and
+   `genesis.genesis_state_timestamp`);
+2. copies `daemon.json` to the config directory of each daemon, and the
+   ledgers to `<config dir>/<chain id>/genesis`;
+3. applies the postfork `upgrade.sql` to the archive database, and checks
+   that the last `migration_history` row says `applied`;
+4. records the postfork `bin_path` and starts the network with it.
 
 ---
 

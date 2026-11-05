@@ -818,12 +818,30 @@ fn queue_hardfork_create(h: &Harness) {
     }
 }
 
-fn postfork_dir(files: &[&str]) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    for file in files {
-        std::fs::write(dir.path().join(file), "").unwrap();
+/// An unpacked postfork package: `files` in `usr/local/bin`, and the archive
+/// upgrade script in `etc/mina/archive`.
+struct PostforkPackage {
+    _root: tempfile::TempDir,
+    bin: std::path::PathBuf,
+}
+
+impl PostforkPackage {
+    fn root(&self) -> &Path {
+        self._root.path()
     }
-    dir
+}
+
+fn postfork_dir(files: &[&str]) -> PostforkPackage {
+    let root = tempfile::tempdir().unwrap();
+    let bin = root.path().join("usr/local/bin");
+    let sql = root.path().join(crate::utils::PACKAGED_SCHEMA_DIR);
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&sql).unwrap();
+    std::fs::write(sql.join("upgrade.sql"), "").unwrap();
+    for file in files {
+        std::fs::write(bin.join(file), "").unwrap();
+    }
+    PostforkPackage { _root: root, bin }
 }
 
 #[test]
@@ -834,7 +852,7 @@ fn hardfork_network_gets_its_schedule_and_status() {
     let dir = tempfile::tempdir().unwrap();
     let spec = hardfork_spec(
         dir.path(),
-        post.path(),
+        &post.bin,
         "mode = \"manual\"\nat = { slot = 42 }",
     );
     queue_hardfork_create(&h);
@@ -844,13 +862,13 @@ fn hardfork_network_gets_its_schedule_and_status() {
     ))
     .unwrap();
 
-    let post_mina = format!("{}/mina version", post.path().display());
+    let post_mina = format!("{}/mina version", post.bin.display());
     assert_eq!(h.fake.lines()[0], post_mina);
     let net = h.dirs.network_path("hf");
     let meta = NetworkMeta::load(&net).unwrap().unwrap();
     assert!(meta.genesis_pending);
     let hf = meta.hardfork.unwrap();
-    assert_eq!(hf.postfork_bin_path, post.path());
+    assert_eq!(hf.postfork_bin_path, post.bin);
     assert_eq!(hf.method, Some(crate::hardfork::ForkMethod::Legacy));
     let ledger = crate::genesis_ledger::read(&net).unwrap();
     assert_eq!(
@@ -903,7 +921,7 @@ fn invalid_hardfork_is_refused_before_the_old_network_goes() {
     let ok_post = postfork_dir(&["mina", "mina-archive", "mina-create-genesis"]);
     let spec = hardfork_spec(
         dir.path(),
-        ok_post.path(),
+        &ok_post.bin,
         "mode = \"manual\"\nat = { slot = 42 }",
     );
     queue_hardfork_create(&h);
@@ -917,7 +935,7 @@ fn invalid_hardfork_is_refused_before_the_old_network_goes() {
     let post = postfork_dir(&["mina"]);
     let spec = hardfork_spec(
         dir.path(),
-        post.path(),
+        &post.bin,
         "mode = \"auto\"\nat = { slot = 20 }\nmethod = \"advanced\"",
     );
     h.fake
@@ -970,4 +988,62 @@ fn hardfork_needs_postfork_binaries_and_native_mode() {
         assert!(err.contains(part), "no '{part}' in:\n{err}");
     }
     assert!(!h.dirs.network_path_exists("hf"));
+}
+
+#[test]
+fn prepare_and_apply_refuse_out_of_order() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let post = postfork_dir(&["mina", "mina-archive", "mina-create-genesis"]);
+    let dir = tempfile::tempdir().unwrap();
+    let spec = hardfork_spec(
+        dir.path(),
+        &post.bin,
+        "mode = \"manual\"\nat = { slot = 42 }",
+    );
+    queue_hardfork_create(&h);
+    h.run(&native_args(
+        &bin,
+        &["network", "create", "-n", "hf", "--spec", path_arg(&spec)],
+    ))
+    .unwrap();
+    let meta = NetworkMeta::load(&h.dirs.network_path("hf"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        meta.hardfork.unwrap().archive_upgrade,
+        Some(post.root().join("etc/mina/archive/upgrade.sql"))
+    );
+
+    let err = |args: &[&str]| h.run(args).unwrap_err().to_string();
+    assert!(err(&["network", "hardfork", "apply", "-n", "hf"])
+        .contains("run `network hardfork prepare -n hf`"));
+    assert!(err(&["network", "hardfork", "prepare", "-n", "hf"]).contains("has not started"));
+}
+
+#[test]
+fn hardfork_with_archive_needs_an_upgrade_script() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let post = tempfile::tempdir().unwrap();
+    for file in ["mina", "mina-archive", "mina-create-genesis"] {
+        std::fs::write(post.path().join(file), "").unwrap();
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let spec = hardfork_spec(
+        dir.path(),
+        post.path(),
+        "mode = \"manual\"\nat = { slot = 42 }",
+    );
+    let err = h
+        .run(&native_args(
+            &bin,
+            &["network", "create", "-n", "hf", "--spec", path_arg(&spec)],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("set [hardfork.postfork] archive_upgrade"),
+        "{err}"
+    );
 }
