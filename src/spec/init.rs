@@ -171,7 +171,7 @@ mod tests {
         // set values are written
         let mut spec = NetworkSpec::default_network();
         spec.profile = Some(crate::cli::Profile::Lightnet);
-        spec.ledger.balance = Some("5.5".into());
+        spec.ledger.balance = Some("5.5".parse().unwrap());
         spec.ledger.file = Some("/tmp/a b.csv".into());
         let text = SpecDocument::new(&spec).unwrap().render("x");
         assert!(text.contains("profile = \"lightnet\""), "{text}");

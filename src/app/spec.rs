@@ -8,15 +8,25 @@ use anyhow::Result;
 
 pub fn run(cmd: SpecCommand) -> Result<()> {
     match cmd {
-        SpecCommand::Init(args) => {
-            let command = std::iter::once("minimina".to_string())
-                .chain(std::env::args().skip(1))
-                .collect::<Vec<_>>()
-                .join(" ");
-            print!("{}", spec_init(&args, &command)?);
-        }
+        SpecCommand::Init(args) => print!("{}", spec_init(&args, &invocation())?),
     }
     Ok(())
+}
+
+/// The command line this process was run with, for the header. The program
+/// is its file name: the path it was run by (`./target/release/minimina`,
+/// `/usr/local/bin/minimina`) says nothing about the spec.
+fn invocation() -> String {
+    let mut args = std::env::args();
+    let program = args.next().unwrap_or_default();
+    let program = std::path::Path::new(&program)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or(program);
+    std::iter::once(program)
+        .chain(args)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The spec of the flags, as commented TOML. Not JSON like the other

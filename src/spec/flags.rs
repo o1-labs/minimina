@@ -96,6 +96,7 @@ impl NetworkSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::ledger::Balance;
 
     fn roles(spec: &NetworkSpec) -> Vec<(Role, u16)> {
         spec.nodes.iter().map(|g| (g.role, g.count)).collect()
@@ -179,7 +180,7 @@ mod tests {
         // two seeds cannot share a name and a port; the balance stays
         assert_eq!(spec.nodes[0].name, None);
         assert_eq!(spec.nodes[0].client_port, None);
-        assert_eq!(spec.nodes[1].balance.as_deref(), Some("500"));
+        assert_eq!(spec.nodes[1].balance, Some(Balance::mina(500)));
         assert_eq!(spec.nodes[3].workers, Some(4));
         assert_eq!(spec.nodes[3].fee.as_deref(), Some("0.5"));
 

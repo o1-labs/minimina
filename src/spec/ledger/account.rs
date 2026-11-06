@@ -1,4 +1,4 @@
-use super::{Balance, PublicKey};
+use super::{Balance, PublicKey, Timing};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -11,7 +11,9 @@ pub struct LedgerAccount {
     pub sk: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegate: Option<PublicKey>,
-    /// Every other field (timing, permissions, ...), kept as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<Timing>,
+    /// Every other field (permissions, token, zkapp, ...), kept as it is.
     #[serde(flatten)]
     pub other: Map<String, Value>,
 }
@@ -23,6 +25,7 @@ impl LedgerAccount {
             balance,
             sk: None,
             delegate: None,
+            timing: None,
             other: Map::new(),
         }
     }

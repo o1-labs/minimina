@@ -7,6 +7,17 @@ use serde::{Deserialize, Serialize};
 #[serde(try_from = "String", into = "String")]
 pub struct Balance(String);
 
+impl Balance {
+    /// `mina` whole MINA.
+    pub fn mina(mina: u64) -> Self {
+        Balance(mina.to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 impl std::str::FromStr for Balance {
     type Err = LedgerProblem;
 

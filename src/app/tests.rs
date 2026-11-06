@@ -76,6 +76,12 @@ fn non_probe_calls(fake: &FakeRunner) -> Vec<String> {
         .collect()
 }
 
+/// A public key the fake `generate-keypair` prints: `B62q`, `i`, and zeros
+/// to the 55 characters of a real one.
+fn test_pk(i: usize) -> String {
+    format!("B62q{i:0<51}")
+}
+
 fn fake_mina_dir() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("mina"), "").unwrap();
@@ -327,7 +333,8 @@ fn native_archive_uses_the_schema_of_its_package() {
     std::fs::create_dir_all(&schema_dir).unwrap();
     std::fs::write(schema_dir.join("create_schema.sql"), "-- packaged").unwrap();
     for _ in 0..3 {
-        h.fake.reply(0, "Public key: B62qtest\n", "");
+        h.fake
+            .reply(0, &format!("Public key: {}\n", test_pk(0)), "");
     }
     for i in 0..5 {
         h.fake
@@ -362,7 +369,8 @@ fn native_default_network_generates_keys_with_mina() {
     let h = Harness::new();
     let bin = fake_mina_dir();
     for _ in 0..3 {
-        h.fake.reply(0, "Public key: B62qtest\n", "");
+        h.fake
+            .reply(0, &format!("Public key: {}\n", test_pk(0)), "");
     }
     for i in 0..5 {
         h.fake
@@ -419,7 +427,7 @@ fn native_default_network_generates_keys_with_mina() {
 
     let net = h.dirs.network_path("def");
     let ledger = std::fs::read_to_string(net.join("genesis_ledger.json")).unwrap();
-    assert!(ledger.contains("B62qtest"));
+    assert!(ledger.contains(&test_pk(0)));
     // only the two block producers hold stake
     assert_eq!(ledger.matches("\"pk\"").count(), 2, "{ledger}");
 }
@@ -451,7 +459,8 @@ fn native_spec_network() {
     .unwrap();
     // keys: bp-1, bp-2, account-1, account-2; libp2p: seed-1, bp-1, bp-2, node-1
     for i in 0..4 {
-        h.fake.reply(0, &format!("Public key: B62q{i}\n"), "");
+        h.fake
+            .reply(0, &format!("Public key: {}\n", test_pk(i)), "");
     }
     for i in 0..4 {
         h.fake
@@ -491,10 +500,10 @@ fn native_spec_network() {
     assert_eq!(
         balances,
         [
-            ("B62q0", "500"),
-            ("B62q1", "500"),
-            ("B62q2", "1000"),
-            ("B62q3", "1000")
+            (test_pk(0).as_str(), "500"),
+            (test_pk(1).as_str(), "500"),
+            (test_pk(2).as_str(), "1000"),
+            (test_pk(3).as_str(), "1000")
         ]
     );
     assert_eq!(ledger["proof"]["block_window_duration_ms"], 30000);
@@ -1248,7 +1257,8 @@ fn flags_change_the_spec_and_the_resolved_spec_is_kept() {
     // --bps 2 replaces the spec's one block producer; --accounts 1 adds an account
     // keys: bp-1, bp-2, account-1; libp2p: seed-1, bp-1, bp-2
     for i in 0..3 {
-        h.fake.reply(0, &format!("Public key: B62q{i}\n"), "");
+        h.fake
+            .reply(0, &format!("Public key: {}\n", test_pk(i)), "");
     }
     for i in 0..3 {
         h.fake
@@ -1286,9 +1296,9 @@ fn flags_change_the_spec_and_the_resolved_spec_is_kept() {
         balances,
         [
             (pk, "42.5"),
-            ("B62q0", "500"),
-            ("B62q1", "500"),
-            ("B62q2", "1000")
+            (test_pk(0).as_str(), "500"),
+            (test_pk(1).as_str(), "500"),
+            (test_pk(2).as_str(), "1000")
         ]
     );
 
@@ -1304,7 +1314,8 @@ fn flags_alone_make_a_network() {
     let h = Harness::new();
     let bin = fake_mina_dir();
     // keys: bp-1; libp2p: seed-1, bp-1, node-1
-    h.fake.reply(0, "Public key: B62q0\n", "");
+    h.fake
+        .reply(0, &format!("Public key: {}\n", test_pk(0)), "");
     for i in 0..3 {
         h.fake
             .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");

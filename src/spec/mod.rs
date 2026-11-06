@@ -48,6 +48,7 @@ pub mod init;
 pub mod ledger;
 
 pub use error::{LedgerProblem, SpecError};
+use ledger::Balance;
 
 use crate::{cli::Profile, hardfork::HardforkSpec};
 use anyhow::{bail, Context as _, Result};
@@ -57,8 +58,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Genesis balance of a block producer that sets none.
-pub const DEFAULT_BLOCK_PRODUCER_BALANCE: &str = "11550000";
+/// Genesis balance in MINA of a block producer that sets none.
+pub const DEFAULT_BLOCK_PRODUCER_BALANCE: u64 = 11_550_000;
 /// First client port of automatically placed daemons; each takes `PORT_STEP` ports.
 const FIRST_CLIENT_PORT: u16 = 3100;
 /// Client, rest, external, metrics, libp2p metrics, archive.
@@ -120,7 +121,7 @@ pub struct NodeGroup {
     pub count: u16,
     /// Genesis balance of each node. Block producers default to
     /// [`DEFAULT_BLOCK_PRODUCER_BALANCE`]; other nodes get no account.
-    pub balance: Option<String>,
+    pub balance: Option<Balance>,
     /// Client port (others follow it). Default: the next free block from 3100.
     pub client_port: Option<u16>,
     /// Archive node: port of the `mina-archive` process. Default: client port + 5.
@@ -183,7 +184,7 @@ pub struct LedgerSpec {
     /// Funded accounts with generated keys (`account-1`, ...), for transactions in tests.
     #[serde(default)]
     pub accounts: u16,
-    pub balance: Option<String>,
+    pub balance: Option<Balance>,
     /// Accounts to start with (see [`ledger`]); the generated ones are
     /// added to them. A relative path is relative to the spec file.
     pub file: Option<PathBuf>,
@@ -211,7 +212,7 @@ impl DockerSpec {
 pub struct PlannedNode {
     pub name: String,
     pub role: Role,
-    pub balance: Option<String>,
+    pub balance: Option<Balance>,
     pub client_port: u16,
     pub archive_port: Option<u16>,
     /// Snark coordinator: names of its workers.
@@ -245,9 +246,12 @@ impl NetworkSpec {
             .with_context(|| format!("reading network spec {}", path.display()))?;
         let mut spec: NetworkSpec = toml::from_str(&text)
             .with_context(|| format!("parsing network spec {}", path.display()))?;
-        let base = std::path::absolute(path.parent().unwrap_or(Path::new(".")))
-            .with_context(|| format!("resolving {}", path.display()))?;
-        spec.resolve_paths(&base);
+        // `net.toml` has an empty parent: make the path absolute first
+        let absolute =
+            std::path::absolute(path).with_context(|| format!("resolving {}", path.display()))?;
+        if let Some(base) = absolute.parent() {
+            spec.resolve_paths(base);
+        }
         Ok(spec)
     }
 
@@ -406,7 +410,7 @@ impl NetworkSpec {
                 let client_port = group.client_port.unwrap_or_else(&mut auto_port);
                 let balance = group.balance.clone().or_else(|| {
                     (group.role == Role::BlockProducer)
-                        .then(|| DEFAULT_BLOCK_PRODUCER_BALANCE.to_string())
+                        .then(|| Balance::mina(DEFAULT_BLOCK_PRODUCER_BALANCE))
                 });
                 let workers = (1..=group.workers.unwrap_or(0))
                     .map(|i| match name.strip_suffix("coordinator") {
@@ -542,14 +546,20 @@ mod tests {
         let plan = s.plan().unwrap();
         let summary: Vec<_> = plan
             .iter()
-            .map(|n| (n.name.as_str(), n.client_port, n.balance.as_deref()))
+            .map(|n| {
+                (
+                    n.name.as_str(),
+                    n.client_port,
+                    n.balance.as_ref().map(Balance::as_str),
+                )
+            })
             .collect();
         assert_eq!(
             summary,
             vec![
                 ("seed-1", 3100, None),
-                ("bp-1", 3110, Some(DEFAULT_BLOCK_PRODUCER_BALANCE)),
-                ("bp-2", 3120, Some(DEFAULT_BLOCK_PRODUCER_BALANCE)),
+                ("bp-1", 3110, Some("11550000")),
+                ("bp-2", 3120, Some("11550000")),
                 ("node-1", 3130, None),
                 ("archive", 3140, None),
                 ("snark-coordinator", 3150, None),
@@ -698,5 +708,12 @@ mod tests {
         assert!(err("[[nodes]]\nrole = \"seed\"\nworkers = 1").contains("for snark coordinators"));
         assert!(toml::from_str::<NetworkSpec>("[[nodes]]\nrole = \"seed\"\ncolour = 1").is_err());
         assert!(toml::from_str::<NetworkSpec>("[[nodes]]\nrole = \"wizard\"").is_err());
+        let bad_balance = toml::from_str::<NetworkSpec>("[ledger]\nbalance = \"1e9\"")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            bad_balance.contains("balance '1e9' is not an amount of MINA"),
+            "{bad_balance}"
+        );
     }
 }

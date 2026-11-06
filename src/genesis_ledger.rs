@@ -7,6 +7,7 @@
 extern crate chrono;
 use chrono::prelude::*;
 
+use crate::spec::ledger::LedgerAccount;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -34,25 +35,7 @@ struct Genesis {
 struct Ledger {
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
-    accounts: Vec<Account>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Account {
-    pk: String,
-    sk: Option<String>,
-    balance: String,
-    delegate: Option<String>,
-    timing: Option<Timing>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Timing {
-    initial_minimum_balance: String,
-    cliff_time: String,
-    cliff_amount: String,
-    vesting_period: String,
-    vesting_increment: String,
+    accounts: Vec<LedgerAccount>,
 }
 
 /// Replayer input format
@@ -66,7 +49,7 @@ struct ReplayerInput {
 
 #[derive(Serialize, Deserialize)]
 struct ReplayerGensisLedger {
-    accounts: Vec<Account>,
+    accounts: Vec<LedgerAccount>,
     add_genesis_winner: bool,
 }
 
@@ -77,32 +60,17 @@ pub mod default {
     pub struct LedgerGenerator;
 
     impl LedgerGenerator {
-        /// Writes the genesis runtime config: `accounts` (public key, balance) in
-        /// the ledger, a genesis timestamp of now, and `runtime_config` merged on top.
-        ///
-        /// `given` accounts (runtime config ledger accounts, kept as they are)
-        /// come first.
+        /// Writes the genesis runtime config: `accounts` in the ledger, in
+        /// order, a genesis timestamp of now, and `runtime_config` merged on top.
         pub fn generate(
             network_path: &Path,
-            given: &[serde_json::Value],
-            accounts: &[(String, String)],
+            accounts: &[LedgerAccount],
             runtime_config: Option<&serde_json::Value>,
         ) -> std::io::Result<()> {
             info!("Generating genesis ledger.");
-            let accounts: Vec<Account> = accounts
-                .iter()
-                .map(|(pk, balance)| Account {
-                    pk: pk.clone(),
-                    sk: None,
-                    balance: balance.clone(),
-                    delegate: None,
-                    timing: None,
-                })
-                .collect();
-
             let ledger = Ledger {
                 name: Some("default_genesis_ledger".into()),
-                accounts,
+                accounts: accounts.to_vec(),
             };
 
             let genesis = Genesis {
@@ -110,9 +78,6 @@ pub mod default {
             };
 
             let mut genesis_ledger = serde_json::to_value(GenesisLedger { genesis, ledger })?;
-            if let Some(accounts) = genesis_ledger["ledger"]["accounts"].as_array_mut() {
-                accounts.splice(0..0, given.iter().cloned());
-            }
             if let Some(overrides) = runtime_config {
                 merge_json(&mut genesis_ledger, overrides);
             }
@@ -228,6 +193,16 @@ pub fn set_slot_since_genesis(network_path: &Path, slot_since_genesis: u64) -> s
 mod tests {
     use super::*;
 
+    const PK1: &str = "B62qrPN5Y5yq8kGE3FbVKbGTdTAJNdtNtB5sNVpxyRwWGcDEhpMzc8g";
+    const PK2: &str = "B62qiy32p8kAKnny8ZFwoMhYpBppM1DWVCqAPBYNcXnsAHhnfAAuXgg";
+
+    fn accounts() -> [LedgerAccount; 1] {
+        [LedgerAccount::new(
+            PK1.parse().unwrap(),
+            "10".parse().unwrap(),
+        )]
+    }
+
     #[test]
     fn test_generate_default_ledger() {
         let tempdir = tempfile::Builder::new()
@@ -235,8 +210,7 @@ mod tests {
             .tempdir()
             .expect("Cannot create temporary directory");
         let network_path = tempdir.path();
-        let accounts = [("test_key".to_string(), "10".to_string())];
-        let result = default::LedgerGenerator::generate(network_path, &[], &accounts, None);
+        let result = default::LedgerGenerator::generate(network_path, &accounts(), None);
         println!("{:?}", result);
         assert!(result.is_ok());
 
@@ -246,7 +220,7 @@ mod tests {
         let content = std::fs::read_to_string(path).unwrap();
         assert!(content.contains("genesis_state_timestamp"));
         assert!(content.contains("ledger"));
-        assert!(content.contains("test_key"));
+        assert!(content.contains(PK1));
     }
 
     #[test]
@@ -256,8 +230,7 @@ mod tests {
             .tempdir()
             .expect("Cannot create temporary directory");
         let network_path = tempdir.path();
-        let accounts = [("test_key".to_string(), "10".to_string())];
-        let result = default::LedgerGenerator::generate(network_path, &[], &accounts, None);
+        let result = default::LedgerGenerator::generate(network_path, &accounts(), None);
         println!("{:?}", result);
         assert!(result.is_ok());
 
@@ -270,7 +243,7 @@ mod tests {
         assert!(path.exists());
         let content = std::fs::read_to_string(path).unwrap();
         assert!(content.contains("genesis_ledger"));
-        assert!(content.contains("test_key"));
+        assert!(content.contains(PK1));
         assert!(content.contains("start_slot_since_genesis"));
     }
 
@@ -284,13 +257,13 @@ mod tests {
               "name": "default_genesis_ledger",
               "accounts": [
                 {
-                  "pk": "POTATO",
+                  "pk": "B62qrPN5Y5yq8kGE3FbVKbGTdTAJNdtNtB5sNVpxyRwWGcDEhpMzc8g",
                   "sk": null,
                   "balance": "11550000.000000000",
                   "delegate": null
                 },
                 {
-                  "pk": "TOMATO",
+                  "pk": "B62qiy32p8kAKnny8ZFwoMhYpBppM1DWVCqAPBYNcXnsAHhnfAAuXgg",
                   "sk": null,
                   "balance": "11550000.000000000",
                   "delegate": null,
@@ -315,8 +288,8 @@ mod tests {
             Some("default_genesis_ledger".into())
         );
         assert_eq!(genesis_ledger.ledger.accounts.len(), 2);
-        assert_eq!(genesis_ledger.ledger.accounts[0].pk, "POTATO");
-        assert_eq!(genesis_ledger.ledger.accounts[1].pk, "TOMATO");
+        assert_eq!(genesis_ledger.ledger.accounts[0].pk.to_string(), PK1);
+        assert_eq!(genesis_ledger.ledger.accounts[1].pk.to_string(), PK2);
         assert_eq!(
             genesis_ledger.ledger.accounts[1]
                 .timing
@@ -366,13 +339,13 @@ mod tests {
             "genesis_ledger": {
               "accounts": [
                 {
-                  "pk": "POTATO",
+                  "pk": "B62qrPN5Y5yq8kGE3FbVKbGTdTAJNdtNtB5sNVpxyRwWGcDEhpMzc8g",
                   "sk": null,
                   "balance": "11550000.000000000",
                   "delegate": null
                 },
                 {
-                  "pk": "TOMATO",
+                  "pk": "B62qiy32p8kAKnny8ZFwoMhYpBppM1DWVCqAPBYNcXnsAHhnfAAuXgg",
                   "sk": null,
                   "balance": "11550000.000000000",
                   "delegate": null
@@ -384,8 +357,14 @@ mod tests {
         let replayer_input: ReplayerInput = serde_json::from_str(replayer_input).unwrap();
         assert_eq!(replayer_input.start_slot_since_genesis, 0);
         assert_eq!(replayer_input.genesis_ledger.accounts.len(), 2);
-        assert_eq!(replayer_input.genesis_ledger.accounts[0].pk, "POTATO");
-        assert_eq!(replayer_input.genesis_ledger.accounts[1].pk, "TOMATO");
+        assert_eq!(
+            replayer_input.genesis_ledger.accounts[0].pk.to_string(),
+            PK1
+        );
+        assert_eq!(
+            replayer_input.genesis_ledger.accounts[1].pk.to_string(),
+            PK2
+        );
     }
 
     #[test]
@@ -395,8 +374,7 @@ mod tests {
             .tempdir()
             .expect("Cannot create temporary directory");
         let network_path = tempdir.path();
-        let accounts = [("test_key".to_string(), "10".to_string())];
-        let result = default::LedgerGenerator::generate(network_path, &[], &accounts, None);
+        let result = default::LedgerGenerator::generate(network_path, &accounts(), None);
         println!("{:?}", result);
         assert!(result.is_ok());
 

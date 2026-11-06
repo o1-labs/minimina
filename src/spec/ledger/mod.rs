@@ -1,8 +1,9 @@
 //! The accounts of `[ledger] file`, which the genesis ledger starts with.
 //!
 //! - `.json`: a runtime config (`ledger.accounts`, as `-g` takes it), a
-//!   `{"accounts": [...]}` object, or the array of accounts. Fields other
-//!   than `pk`, `balance`, `sk` and `delegate` are kept as they are.
+//!   `{"accounts": [...]}` object, or the array of accounts. Fields the
+//!   [`LedgerAccount`] model does not name (permissions, ...) are kept as
+//!   they are.
 //! - `.csv`: a [`CsvHeader`] line naming the columns, then one account per
 //!   line: `public_key` and `balance` (in MINA, as in the rest of the spec),
 //!   optionally `private_key` and `delegate`. Empty lines and lines that start
@@ -12,11 +13,13 @@ mod account;
 mod balance;
 mod csv_header;
 mod public_key;
+mod timing;
 
 pub use account::LedgerAccount;
 pub use balance::Balance;
 pub use csv_header::{Column, CsvHeader};
 pub use public_key::PublicKey;
+pub use timing::Timing;
 
 use super::{LedgerProblem, SpecError};
 use serde_json::Value;
@@ -213,7 +216,14 @@ mod tests {
     #[test]
     fn json_takes_a_runtime_config_or_its_accounts() {
         let dir = tempfile::tempdir().unwrap();
-        let given = json!({"pk": PK1, "balance": "5", "sk": null, "timing": {"cliff_time": "10"}});
+        let timing = json!({
+            "initial_minimum_balance": "5",
+            "cliff_time": "10",
+            "cliff_amount": "0",
+            "vesting_period": "1",
+            "vesting_increment": "1"
+        });
+        let given = json!({"pk": PK1, "balance": "5", "sk": null, "timing": timing, "token": "1"});
         for text in [
             json!({"genesis": {}, "ledger": {"name": "x", "accounts": [given]}}),
             json!({"accounts": [given]}),
@@ -221,10 +231,12 @@ mod tests {
         ] {
             let ledger = LedgerFile::load(&file(&dir, "l.json", &text.to_string())).unwrap();
             assert_eq!(ledger.accounts.len(), 1);
+            let account = &ledger.accounts[0];
+            assert_eq!(account.timing.as_ref().unwrap().cliff_time, "10");
             // other fields are kept; a null sk is no sk
             assert_eq!(
-                serde_json::to_value(&ledger.accounts[0]).unwrap(),
-                json!({"pk": PK1, "balance": "5", "timing": {"cliff_time": "10"}})
+                serde_json::to_value(account).unwrap(),
+                json!({"pk": PK1, "balance": "5", "timing": timing, "token": "1"})
             );
         }
         let path = file(&dir, "l.json", &json!([{"pk": PK1}]).to_string());
