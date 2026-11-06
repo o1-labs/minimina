@@ -6,15 +6,12 @@
 //! in `validate-fork`. Here the first is the fork block and the second the
 //! postfork genesis.
 
-mod archive_block;
 mod error;
-mod migration;
 
-pub use archive_block::ArchiveBlock;
 pub use error::ToolboxError;
-pub use migration::Migration;
 
 use crate::{
+    archive_db::{ArchiveBlock, Migration},
     cli::Profile,
     native::{self, binary::Binary},
     runner::Runner,

@@ -13,6 +13,8 @@ pub enum Binary {
     Libp2pHelper,
     /// The archive database checks and repairs of a hardfork.
     ArchiveHardforkToolbox,
+    /// Replays the archive's transactions and checks the ledger hashes.
+    Replayer,
 }
 
 impl Binary {
@@ -24,6 +26,7 @@ impl Binary {
             Binary::CreateGenesis => "mina-create-genesis",
             Binary::Libp2pHelper => "coda-libp2p_helper",
             Binary::ArchiveHardforkToolbox => "mina-archive-hardfork-toolbox",
+            Binary::Replayer => "mina-replayer",
         }
     }
 

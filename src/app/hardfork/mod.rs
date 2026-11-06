@@ -10,6 +10,7 @@ use crate::{
     install,
     native::{self, binary::Binary},
     network_meta::{HardforkMeta, HardforkState, NetworkMeta},
+    replayer::AppliedFork,
     runtime_config::{self, RuntimeConfig},
     spec::{NetworkSpec, Role},
     utils,
@@ -306,6 +307,20 @@ pub fn is_applied(ctx: &Context, network_id: &str) -> Result<bool> {
     Ok(NetworkMeta::load(&ctx.dirs.network_path(network_id))?
         .and_then(|m| m.hardfork)
         .is_some_and(|h| h.state == HardforkState::Applied))
+}
+
+/// The fork a replay of the archive crosses, after `hardfork apply`.
+pub fn applied_fork(ctx: &Context, network_id: &str) -> Result<Option<AppliedFork>> {
+    if !is_applied(ctx, network_id)? {
+        return Ok(None);
+    }
+    Ok(Some(AppliedFork {
+        prefork_config: ctx
+            .dirs
+            .network_path(network_id)
+            .join(genesis_ledger::PREFORK_GENESIS_LEDGER_JSON),
+        fork_genesis_slot: status(ctx, network_id, Utc::now())?.fork_genesis.slot,
+    }))
 }
 
 #[derive(Debug, Serialize)]
