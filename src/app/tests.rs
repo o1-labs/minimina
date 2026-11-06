@@ -10,11 +10,18 @@ use crate::{
 use clap::Parser;
 use std::{path::Path, rc::Rc};
 
-const SMALL_TOPOLOGY: &str = "tests/data/small_network/topology.json";
-const SMALL_LEDGER: &str = "tests/data/small_network/genesis_ledger.json";
+/// The small network: a seed `seed-0` and a block producer `receiver`.
+const SMALL_SPEC: &str = r#"
+[[nodes]]
+role = "seed"
+name = "seed-0"
+[[nodes]]
+role = "block-producer"
+name = "receiver"
+"#;
 
 struct Harness {
-    _home: tempfile::TempDir,
+    home: tempfile::TempDir,
     dirs: DirectoryManager,
     fake: Rc<FakeRunner>,
 }
@@ -24,7 +31,7 @@ impl Harness {
         let home = tempfile::tempdir().unwrap();
         let dirs = DirectoryManager::with_base_path(home.path().join(".minimina"));
         Harness {
-            _home: home,
+            home,
             dirs,
             fake: Rc::new(FakeRunner::default()),
         }
@@ -54,25 +61,54 @@ impl Harness {
         )
     }
 
+    /// The small network's spec file.
+    fn small_spec(&self) -> String {
+        let path = self.home.path().join("small.toml");
+        std::fs::write(&path, SMALL_SPEC).unwrap();
+        path.display().to_string()
+    }
+
+    /// Queues the key generation of the small network: the key of
+    /// `receiver`, then the libp2p keys of `seed-0` and `receiver`.
+    fn small_keys(&self) -> &FakeRunner {
+        self.fake
+            .reply(0, &format!("Public key: {}\n", test_pk(0)), "")
+            .reply(0, "libp2p keypair:\nenc,pub,peer0\n", "")
+            .reply(0, "libp2p keypair:\nenc,pub,peer1\n", "")
+    }
+
+    /// `network create --spec <small>` with `extra` arguments before it.
+    fn create_small_with(&self, extra: &[&str], network_id: &str) -> anyhow::Result<()> {
+        let spec = self.small_spec();
+        let mut args = extra.to_vec();
+        args.extend(["network", "create", "-n", network_id, "--spec", &spec]);
+        self.run(&args)
+    }
+
+    /// Creates the small network in docker mode, after [`Harness::docker_ok`].
     fn create_small(&self, network_id: &str) -> anyhow::Result<()> {
-        self.run(&[
-            "network",
-            "create",
-            "-n",
-            network_id,
-            "-t",
-            SMALL_TOPOLOGY,
-            "-g",
-            SMALL_LEDGER,
-        ])
+        self.small_keys();
+        self.create_small_with(&[], network_id)
+    }
+
+    /// Creates the small network natively with the mina of `bin`.
+    fn create_small_native(&self, bin: &tempfile::TempDir, network_id: &str) -> anyhow::Result<()> {
+        self.small_keys();
+        let bin = path_arg(bin.path());
+        self.create_small_with(&["--mode", "native", "--bin-path", bin], network_id)
     }
 }
 
-/// Runner calls other than `mina version` (the installed-config probe).
+/// Runner calls other than the probes of the mina binaries (`mina version`,
+/// `mina daemon -help`) and key generation.
 fn non_probe_calls(fake: &FakeRunner) -> Vec<String> {
     fake.lines()
         .into_iter()
-        .filter(|l| !l.ends_with("/mina version") && !l.ends_with("mina daemon -help"))
+        .filter(|l| {
+            !l.ends_with("/mina version")
+                && !l.ends_with("mina daemon -help")
+                && !l.contains(" generate-keypair ")
+        })
         .collect()
 }
 
@@ -116,7 +152,7 @@ fn docker_environment_failure_stops_before_any_command() {
 }
 
 #[test]
-fn docker_create_from_topology_writes_network_files() {
+fn docker_create_from_a_spec_writes_network_files() {
     let h = Harness::new();
     h.docker_ok();
     h.create_small("small").unwrap();
@@ -125,32 +161,73 @@ fn docker_create_from_topology_writes_network_files() {
     for file in [
         "docker-compose.yaml",
         "network.json",
+        "network.toml",
         "services.json",
         "genesis_ledger.json",
-        "topology.json",
-        "peer_list_file.txt",
-        "network-keypairs/receiver.json",
-        "libp2p-keypairs/seed-0.json",
     ] {
         assert!(net.join(file).exists(), "missing {file}");
     }
-    assert!(h.fake.lines()[2].ends_with("--entrypoint mina gcr.io/o1labs-192920/mina-daemon:2.0.0berkeley-rc1-1551e2f-bullseye-berkeley daemon -help"));
-    assert_eq!(h.fake.lines()[3..], [h.compose("small", "create")]);
-    // the berkeley image has no -precomputed-blocks-dir
+    let lines = h.fake.lines();
+    // the keys are generated in the daemon image
+    assert!(lines[2].contains(" advanced generate-keypair -privkey-path "));
+    assert!(lines[5].ends_with(&format!(
+        "--entrypoint mina {} daemon -help",
+        super::DEFAULT_DAEMON_DOCKER_IMAGE
+    )));
+    assert_eq!(lines[6..], [h.compose("small", "create")]);
+    // a daemon whose help has no -precomputed-blocks-dir
     let compose = std::fs::read_to_string(net.join("docker-compose.yaml")).unwrap();
     assert!(compose.contains("-precomputed-blocks-file /config-directory/precomputed_blocks.log"));
-    let peers = std::fs::read_to_string(net.join("peer_list_file.txt")).unwrap();
-    assert!(peers.starts_with("/dns4/seed-0-small/tcp/"), "{peers}");
+    assert!(
+        compose.contains("-peer /dns4/seed-0-small/tcp/3102/p2p/peer0"),
+        "{compose}"
+    );
     assert!(h.dirs.get_network_info("small").unwrap().contains("seed-0"));
+}
+
+#[test]
+fn docker_create_with_an_uptime_service_backend() {
+    let h = Harness::new();
+    let fixture = std::fs::canonicalize("tests/data/uptime").unwrap();
+    let spec = h.home.path().join("uptime.toml");
+    std::fs::write(
+        &spec,
+        format!(
+            "{SMALL_SPEC}[[nodes]]\nrole = \"uptime-service-backend\"\n\
+             app_config = \"{0}/app_config.json\"\nminasheets = \"{0}/minasheets.json\"\n\
+             [docker]\nuptime_service_backend_image = \"uptime:1\"\n",
+            fixture.display()
+        ),
+    )
+    .unwrap();
+    h.docker_ok();
+    h.small_keys();
+    h.run(&["network", "create", "-n", "up", "--spec", path_arg(&spec)])
+        .unwrap();
+
+    let net = h.dirs.network_path("up");
+    for file in ["app_config.json", "minasheets.json"] {
+        assert!(
+            net.join("uptime_service_config").join(file).is_file(),
+            "{file}"
+        );
+    }
+    let compose = std::fs::read_to_string(net.join("docker-compose.yaml")).unwrap();
+    assert!(compose.contains("image: uptime:1"), "{compose}");
+    assert!(
+        compose.contains("-uptime-url http://uptime-service-backend-up:8080/v1/submit"),
+        "{compose}"
+    );
 }
 
 #[test]
 fn docker_create_reports_compose_failure() {
     let h = Harness::new();
-    h.docker_ok()
+    h.docker_ok();
+    h.small_keys()
         .reply(0, "", "") // mina daemon -help
         .reply(1, "", "no such image");
-    let err = h.create_small("small").unwrap_err();
+    let err = h.create_small_with(&[], "small").unwrap_err();
     assert!(err.to_string().contains("docker compose create"));
     assert!(err.to_string().contains("no such image"));
 }
@@ -160,7 +237,7 @@ fn create_over_existing_network_tears_it_down_first() {
     let h = Harness::new();
     h.docker_ok();
     h.create_small("small").unwrap();
-    h.docker_ok();
+    h.docker_ok().reply(0, "", ""); // compose down, before the new keys
     h.create_small("small").unwrap();
     assert!(h
         .fake
@@ -168,26 +245,63 @@ fn create_over_existing_network_tears_it_down_first() {
         .contains(&h.compose("small", "down --volumes --remove-orphans")));
 }
 
+/// A mistake in what create is given is found before the old network of the
+/// same name is stopped and deleted.
 #[test]
-fn genesis_ledger_without_topology_is_rejected() {
-    let h = Harness::new();
-    h.docker_ok();
-    let err = h
-        .run(&["network", "create", "-n", "x", "-g", SMALL_LEDGER])
-        .unwrap_err();
-    assert!(err.to_string().contains("Must provide a topology file"));
-    assert!(!h.dirs.network_path_exists("x"));
-}
+fn bad_inputs_leave_the_old_network_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, text: &str| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, text).unwrap();
+        path.display().to_string()
+    };
+    // a name for two nodes, found when the nodes are planned
+    let named_pair = write(
+        "pair.toml",
+        "[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"block-producer\"\ncount = 2\nname = \"bp\"\n",
+    );
+    // a ledger file with a bad key, found when it is read
+    write("bad.csv", "public_key,balance\nB62qbad,10\n");
+    let bad_ledger = write(
+        "ledger.toml",
+        "[[nodes]]\nrole = \"seed\"\n[ledger]\nfile = \"bad.csv\"\n",
+    );
+    // a balance that is not one, found when the spec is read
+    let bad_balance = write(
+        "balance.toml",
+        "[[nodes]]\nrole = \"seed\"\n[ledger]\nbalance = \"1e9\"\n",
+    );
 
-#[test]
-fn topology_without_genesis_ledger_is_rejected() {
-    let h = Harness::new();
-    h.docker_ok();
-    let err = h
-        .run(&["network", "create", "-n", "x", "-t", SMALL_TOPOLOGY])
-        .unwrap_err();
-    assert!(err.to_string().contains("Must provide a genesis ledger"));
-    assert!(!h.dirs.network_path_exists("x"));
+    let cases = [
+        (named_pair, "need count = 1"),
+        (bad_ledger, "'B62qbad' is not a mina public key"),
+        (bad_balance, "balance '1e9' is not an amount of MINA"),
+    ];
+    for (spec, problem) in cases {
+        let h = Harness::new();
+        let old = h.dirs.network_path("x");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("services.json"), "old").unwrap();
+        h.docker_ok();
+
+        let err = h
+            .run(&["network", "create", "-n", "x", "--spec", &spec])
+            .unwrap_err();
+        assert!(format!("{err:#}").contains(problem), "{err:#}");
+        // at most the environment check ran: no compose down
+        let lines = h.fake.lines();
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.starts_with("docker --version")
+                    || l.starts_with("docker compose version")),
+            "{lines:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(old.join("services.json")).unwrap(),
+            "old"
+        );
+    }
 }
 
 #[test]
@@ -292,28 +406,14 @@ fn archive_commands_require_an_archive_node() {
 fn native_create_prepares_directories_without_running_anything() {
     let h = Harness::new();
     let bin = fake_mina_dir();
-    h.run(&[
-        "--mode",
-        "native",
-        "--bin-path",
-        path_arg(bin.path()),
-        "network",
-        "create",
-        "-n",
-        "nat",
-        "-t",
-        SMALL_TOPOLOGY,
-        "-g",
-        SMALL_LEDGER,
-    ])
-    .unwrap();
+    h.create_small_native(&bin, "nat").unwrap();
 
     let net = h.dirs.network_path("nat");
     // native nodes share the host: the seed is dialled on localhost, not a compose DNS name
-    let peers = std::fs::read_to_string(net.join("peer_list_file.txt")).unwrap();
+    let services = std::fs::read_to_string(net.join("services.json")).unwrap();
     assert!(
-        peers.starts_with("/ip4/127.0.0.1/tcp/") && peers.contains("/p2p/12D3KooW"),
-        "{peers}"
+        services.contains("/ip4/127.0.0.1/tcp/3102/p2p/peer0"),
+        "{services}"
     );
     assert!(net.join("logs").is_dir());
     assert!(net.join("config-directory/seed-0").is_dir());
@@ -541,20 +641,7 @@ fn native_args<'a>(bin: &'a tempfile::TempDir, rest: &[&'a str]) -> Vec<&'a str>
 fn native_network_remembers_its_mode() {
     let h = Harness::new();
     let bin = fake_mina_dir();
-    h.run(&native_args(
-        &bin,
-        &[
-            "network",
-            "create",
-            "-n",
-            "nat",
-            "-t",
-            SMALL_TOPOLOGY,
-            "-g",
-            SMALL_LEDGER,
-        ],
-    ))
-    .unwrap();
+    h.create_small_native(&bin, "nat").unwrap();
     let meta = crate::network_meta::NetworkMeta::load(&h.dirs.network_path("nat"))
         .unwrap()
         .unwrap();
@@ -605,22 +692,9 @@ fn network_without_metadata_defaults_to_docker() {
 fn recreating_a_native_network_does_not_call_docker() {
     let h = Harness::new();
     let bin = fake_mina_dir();
-    let create = native_args(
-        &bin,
-        &[
-            "network",
-            "create",
-            "-n",
-            "nat",
-            "-t",
-            SMALL_TOPOLOGY,
-            "-g",
-            SMALL_LEDGER,
-        ],
-    );
-    h.run(&create).unwrap();
-    h.run(&create).unwrap();
-    assert!(non_probe_calls(&h.fake).is_empty());
+    h.create_small_native(&bin, "nat").unwrap();
+    h.create_small_native(&bin, "nat").unwrap();
+    assert!(non_probe_calls(&h.fake).is_empty(), "{:?}", h.fake.lines());
 }
 
 #[test]
@@ -641,39 +715,22 @@ fn docker_stop_passes_timeout() {
 fn native_node_start_rejects_unknown_node() {
     let h = Harness::new();
     let bin = fake_mina_dir();
-    h.run(&native_args(
-        &bin,
-        &[
-            "network",
-            "create",
-            "-n",
-            "nat",
-            "-t",
-            SMALL_TOPOLOGY,
-            "-g",
-            SMALL_LEDGER,
-        ],
-    ))
-    .unwrap();
+    h.create_small_native(&bin, "nat").unwrap();
     let err = h
         .run(&["node", "start", "-n", "nat", "-i", "ghost"])
         .unwrap_err();
     assert!(format!("{err:#}").contains("Node 'ghost' does not exist in network 'nat'"));
 }
 
-const LARGE_TOPOLOGY: &str = "tests/data/large_network/topology.json";
-const LARGE_LEDGER: &str = "tests/data/large_network/genesis_ledger.json";
-
-/// The large network (with an archive node) whose schema is a local file.
-fn archive_topology(dir: &Path) -> std::path::PathBuf {
-    let schema = dir.join("create_schema.sql");
-    std::fs::write(&schema, "CREATE TABLE blocks ();").unwrap();
-    let mut topology: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(LARGE_TOPOLOGY).unwrap()).unwrap();
-    topology["archive-node"]["schema_files"] = serde_json::json!([schema.to_str().unwrap()]);
-    let path = dir.join("topology.json");
-    std::fs::write(&path, topology.to_string()).unwrap();
-    path
+/// A seed and an archive node.
+fn archive_spec(h: &Harness) -> String {
+    let path = h.home.path().join("archive.toml");
+    std::fs::write(
+        &path,
+        "[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"archive\"\n",
+    )
+    .unwrap();
+    path.display().to_string()
 }
 
 /// Replies for `network create` up to the schema step of the archive database.
@@ -683,6 +740,8 @@ fn queue_archive_create(h: &Harness, network_id: &str) {
         r#"{{"ID":"1","Name":"{postgres}","Image":"postgres:17","Command":"","CreatedAt":"","State":"running","Status":"Up","Health":"","ExitCode":0,"Labels":"","Service":"{postgres}"}}"#
     );
     h.docker_ok()
+        .reply(0, "libp2p keypair:\nenc,pub,peer0\n", "") // seed
+        .reply(0, "libp2p keypair:\nenc,pub,peer1\n", "") // archive
         .reply(0, "", "") // mina daemon -help
         .reply(0, "", "") // compose create
         .reply(0, "", "") // compose start postgres
@@ -690,26 +749,17 @@ fn queue_archive_create(h: &Harness, network_id: &str) {
         .reply(2, "", "no response") // pg_isready: still in init
         .reply(0, "", "") // pg_isready
         .reply(0, "", "") // createdb
+        .reply(0, "CREATE TABLE blocks ();", "") // the schema of the archive image
         .reply(0, "", ""); // docker cp schema
 }
 
 #[test]
 fn docker_archive_create_waits_for_postgres_and_applies_schema() {
     let h = Harness::new();
-    let dir = tempfile::tempdir().unwrap();
-    let topology = archive_topology(dir.path());
+    let spec = archive_spec(&h);
     queue_archive_create(&h, "arch");
-    h.run(&[
-        "network",
-        "create",
-        "-n",
-        "arch",
-        "-t",
-        path_arg(&topology),
-        "-g",
-        LARGE_LEDGER,
-    ])
-    .unwrap();
+    h.run(&["network", "create", "-n", "arch", "--spec", &spec])
+        .unwrap();
 
     let lines = h.fake.lines();
     let pos = |needle: &str| {
@@ -736,21 +786,11 @@ fn docker_archive_create_waits_for_postgres_and_applies_schema() {
 #[test]
 fn docker_archive_create_fails_on_schema_error() {
     let h = Harness::new();
-    let dir = tempfile::tempdir().unwrap();
-    let topology = archive_topology(dir.path());
+    let spec = archive_spec(&h);
     queue_archive_create(&h, "arch");
     h.fake.reply(3, "", "ERROR: syntax error");
     let err = h
-        .run(&[
-            "network",
-            "create",
-            "-n",
-            "arch",
-            "-t",
-            path_arg(&topology),
-            "-g",
-            LARGE_LEDGER,
-        ])
+        .run(&["network", "create", "-n", "arch", "--spec", &spec])
         .unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -761,13 +801,14 @@ fn docker_archive_create_fails_on_schema_error() {
 #[test]
 fn docker_archive_create_fails_when_createdb_fails() {
     let h = Harness::new();
-    let dir = tempfile::tempdir().unwrap();
-    let topology = archive_topology(dir.path());
+    let spec = archive_spec(&h);
     let postgres = "postgres-arch";
     let ps = format!(
         r#"{{"ID":"1","Name":"{postgres}","Image":"postgres:17","Command":"","CreatedAt":"","State":"running","Status":"Up","Health":"","ExitCode":0,"Labels":"","Service":"{postgres}"}}"#
     );
     h.docker_ok()
+        .reply(0, "libp2p keypair:\nenc,pub,peer0\n", "")
+        .reply(0, "libp2p keypair:\nenc,pub,peer1\n", "")
         .reply(0, "", "") // mina daemon -help
         .reply(0, "", "")
         .reply(0, "", "")
@@ -775,16 +816,7 @@ fn docker_archive_create_fails_when_createdb_fails() {
         .reply(0, "", "")
         .reply(1, "", "container is not running");
     let err = h
-        .run(&[
-            "network",
-            "create",
-            "-n",
-            "arch",
-            "-t",
-            path_arg(&topology),
-            "-g",
-            LARGE_LEDGER,
-        ])
+        .run(&["network", "create", "-n", "arch", "--spec", &spec])
         .unwrap_err();
     assert!(err
         .to_string()
@@ -1081,20 +1113,7 @@ fn installed_mina(h: &Harness, version: &str) -> std::path::PathBuf {
 #[test]
 fn mina_version_runs_an_installed_version_natively() {
     let h = Harness::new();
-    let create = |extra: &[&'static str]| {
-        let mut args = vec![
-            "network",
-            "create",
-            "-n",
-            "v",
-            "-t",
-            SMALL_TOPOLOGY,
-            "-g",
-            SMALL_LEDGER,
-        ];
-        args.extend_from_slice(extra);
-        h.run(&args)
-    };
+    let create = |extra: &[&str]| h.create_small_with(extra, "v");
     let err = create(&["--mina-version", "4.0.2"])
         .unwrap_err()
         .to_string();
@@ -1110,6 +1129,7 @@ fn mina_version_runs_an_installed_version_natively() {
     let bin = installed_mina(&h, "4.0.2-84b8d96");
     installed_mina(&h, "4.0.4-c9e2eac");
     // no --mode: an installed version runs natively
+    h.small_keys();
     create(&["--mina-version", "4.0.2"]).unwrap();
     let meta = NetworkMeta::load(&h.dirs.network_path("v"))
         .unwrap()
@@ -1123,20 +1143,7 @@ fn mina_version_runs_an_installed_version_natively() {
 
     // a binary directory replaces the version
     let own = fake_mina_dir();
-    h.run(&native_args(
-        &own,
-        &[
-            "network",
-            "create",
-            "-n",
-            "v",
-            "-t",
-            SMALL_TOPOLOGY,
-            "-g",
-            SMALL_LEDGER,
-        ],
-    ))
-    .unwrap();
+    h.create_small_native(&own, "v").unwrap();
     let meta = NetworkMeta::load(&h.dirs.network_path("v"))
         .unwrap()
         .unwrap();
@@ -1205,19 +1212,7 @@ fn native_start_refuses_binaries_that_cannot_load() {
     std::fs::write(bin.path().join("mina"), b"\x7fELF").unwrap();
     h.fake.reply(0, "\tlibssl.so.3 => not found\n", "");
     let err = h
-        .run(&native_args(
-            &bin,
-            &[
-                "network",
-                "create",
-                "-n",
-                "x",
-                "-t",
-                SMALL_TOPOLOGY,
-                "-g",
-                SMALL_LEDGER,
-            ],
-        ))
+        .run(&native_args(&bin, &["network", "create", "-n", "x"]))
         .unwrap_err()
         .to_string();
     assert_eq!(
@@ -1332,29 +1327,4 @@ fn flags_alone_make_a_network() {
         roles,
         [(Role::Seed, 1), (Role::BlockProducer, 1), (Role::Plain, 1)]
     );
-}
-
-#[test]
-fn flags_and_the_legacy_files_do_not_mix() {
-    let h = Harness::new();
-    let bin = fake_mina_dir();
-    let err = h
-        .run(&native_args(
-            &bin,
-            &[
-                "network",
-                "create",
-                "-n",
-                "f",
-                "-t",
-                SMALL_TOPOLOGY,
-                "-g",
-                SMALL_LEDGER,
-                "--bps",
-                "2",
-            ],
-        ))
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("cannot be combined with -t/-g"), "{err}");
 }

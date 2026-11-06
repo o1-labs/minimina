@@ -3,7 +3,7 @@
 
 use super::Context;
 use crate::{
-    cli::{CreateNetworkArgs, ExecutionMode},
+    cli::ExecutionMode,
     daemon_args::DaemonFeatures,
     genesis_ledger,
     hardfork::{self, Constants, ForkAt, ForkMethod, HardforkMode, HardforkSpec, Schedule},
@@ -32,15 +32,7 @@ const ARCHIVE_UPGRADE_SQL: &str = "upgrade.sql";
 /// Checks the `[hardfork]` of the spec of `create`, with every problem in one
 /// error, before anything is changed. The schedule is placed from a genesis
 /// of now; the first `network start` places a date again.
-pub fn check_create(
-    ctx: &Context,
-    cmd: &CreateNetworkArgs,
-) -> Result<Option<(HardforkMeta, Schedule)>> {
-    let Some(spec_path) = &cmd.spec else {
-        return Ok(None);
-    };
-    // with the node flags: they may add the archive the fork upgrades
-    let spec = super::setup::create_spec(cmd)?;
+pub fn check_create(ctx: &Context, spec: &NetworkSpec) -> Result<Option<(HardforkMeta, Schedule)>> {
     let Some(h) = &spec.hardfork else {
         return Ok(None);
     };
@@ -88,17 +80,15 @@ pub fn check_create(
             problems.push("[hardfork.postfork] has bin_path and mina_version: keep one".into());
             None
         }
-        (Some(path), None) => {
-            let base = spec_path.parent().unwrap_or(Path::new("."));
-            let dir = std::path::absolute(base.join(path))
-                .with_context(|| format!("resolving {}", path.display()))?;
-            problems.extend(check_postfork(ctx, &spec, method, &dir));
-            Some(dir)
+        // made absolute by `NetworkSpec::load`
+        (Some(dir), None) => {
+            problems.extend(check_postfork(ctx, spec, method, dir));
+            Some(dir.clone())
         }
         (None, Some(version)) => match install::mina::resolve(&ctx.dirs.tools_root(), version) {
             Ok(installed) => {
                 let dir = installed.bin_path();
-                problems.extend(check_postfork(ctx, &spec, method, &dir));
+                problems.extend(check_postfork(ctx, spec, method, &dir));
                 Some(dir)
             }
             Err(e) => {
@@ -111,7 +101,7 @@ pub fn check_create(
         &postfork,
         spec.nodes.iter().any(|g| g.role == Role::Archive),
     ) {
-        (Some(postfork), true) => archive_upgrade_script(spec_path, h, postfork)
+        (Some(postfork), true) => archive_upgrade_script(h, postfork)
             .map_err(|p| problems.push(p))
             .ok(),
         _ => None,
@@ -140,8 +130,7 @@ pub fn check_create(
             schedule,
         ))),
         _ => bail!(
-            "The [hardfork] of {} is not valid:\n  - {}",
-            spec_path.display(),
+            "The [hardfork] of the network spec is not valid:\n  - {}",
             problems.join("\n  - ")
         ),
     }
@@ -150,22 +139,18 @@ pub fn check_create(
 /// The postfork `upgrade.sql` of the archive database: `archive_upgrade` of
 /// the spec, else the one of the postfork package.
 fn archive_upgrade_script(
-    spec_path: &Path,
     h: &HardforkSpec,
     postfork: &Path,
 ) -> std::result::Result<PathBuf, String> {
     let given = h.postfork.as_ref().and_then(|p| p.archive_upgrade.as_ref());
     match given {
-        Some(path) => {
-            let base = spec_path.parent().unwrap_or(Path::new("."));
-            let path = std::path::absolute(base.join(path)).map_err(|e| e.to_string())?;
-            path.is_file().then_some(path.clone()).ok_or_else(|| {
-                format!(
-                    "[hardfork.postfork] archive_upgrade {} is not a file",
-                    path.display()
-                )
-            })
-        }
+        // made absolute by `NetworkSpec::load`
+        Some(path) => path.is_file().then_some(path.clone()).ok_or_else(|| {
+            format!(
+                "[hardfork.postfork] archive_upgrade {} is not a file",
+                path.display()
+            )
+        }),
         None => utils::packaged_schema(postfork, ARCHIVE_UPGRADE_SQL).ok_or_else(|| {
             format!(
                 "the archive needs the postfork {ARCHIVE_UPGRADE_SQL}, and {} is not in a package \

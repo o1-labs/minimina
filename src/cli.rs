@@ -279,16 +279,8 @@ pub struct StopNetworkArgs {
 pub struct CreateNetworkArgs {
     /// Path to a (TOML) network spec: roles and counts of the nodes; minimina
     /// generates keys, ports, peers and the genesis ledger
-    #[clap(short = 's', long, conflicts_with_all = ["topology", "genesis_ledger"])]
+    #[clap(short = 's', long)]
     pub spec: Option<std::path::PathBuf>,
-
-    /// Path to the (JSON) topology file
-    #[clap(short = 't', long)]
-    pub topology: Option<std::path::PathBuf>,
-
-    /// Path to the (JSON) genesis ledger/runtime config
-    #[clap(short = 'g', long)]
-    pub genesis_ledger: Option<std::path::PathBuf>,
 
     /// Network identifier
     #[clap(flatten)]
@@ -306,15 +298,6 @@ pub struct CreateNetworkArgs {
 
     #[clap(flatten)]
     pub nodes: NodeFlags,
-}
-
-impl CreateNetworkArgs {
-    /// `-t/-g`: a Lucy topology and its genesis ledger, the legacy input. They
-    /// bring their own nodes and keys (the topology's keys are the ledger's
-    /// accounts), so nothing generates or changes nodes for them.
-    pub fn uses_legacy_files(&self) -> bool {
-        self.topology.is_some() || self.genesis_ledger.is_some()
-    }
 }
 
 /// The nodes of a network as flags. On top of `--spec`, each one replaces
@@ -601,13 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn spec_excludes_topology_and_ledger() {
-        for other in [["-t", "t.json"], ["-g", "g.json"]] {
-            let mut args = vec!["minimina", "network", "create", "--spec", "n.toml"];
-            args.extend(other);
-            let err = Cli::try_parse_from(args).err().unwrap();
-            assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
-        }
+    fn create_takes_a_spec() {
         let cli = Cli::try_parse_from(["minimina", "network", "create", "-s", "n.toml"]).unwrap();
         match cli.command {
             Command::Network(NetworkCommand::Create(args)) => {
@@ -700,10 +677,8 @@ mod tests {
             "minimina",
             "network",
             "create",
-            "--topology",
-            "/path/to/file",
-            "--genesis-ledger",
-            "/path/to/dir",
+            "--spec",
+            "/path/to/net.toml",
             "--network-id",
             "test",
         ];
@@ -713,12 +688,8 @@ mod tests {
         match cli.command {
             Command::Network(NetworkCommand::Create(args)) => {
                 assert_eq!(
-                    args.topology,
-                    Some(std::path::PathBuf::from("/path/to/file"))
-                );
-                assert_eq!(
-                    args.genesis_ledger,
-                    Some(std::path::PathBuf::from("/path/to/dir"))
+                    args.spec,
+                    Some(std::path::PathBuf::from("/path/to/net.toml"))
                 );
                 assert_eq!(args.network_id(), "test");
             }

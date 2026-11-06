@@ -165,7 +165,8 @@ minimina network start -n mynet
 ```
 
 Roles: `seed`, `block-producer`, `plain`, `archive`, `snark-coordinator`, `rosetta`,
-`archive-node-api`.
+`archive-node-api`, `uptime-service-backend` (see [Uptime service
+backend](#uptime-service-backend)).
 A `rosetta` node runs `mina-rosetta` against the archive database and the GraphQL
 API of a daemon (`node = "<name>"`, default: the archive node); the output of
 `network create` gives its `rosetta_uri`. An `archive-node-api` node runs
@@ -206,8 +207,6 @@ minimina spec init --bps 2 --archive --accounts 5 > net.toml # the same flags, a
   switch adds its node when the spec has none.
 - Flags without `--spec` change a network of one seed and one block producer.
   With neither, `network create` makes the default network above.
-- `-t/-g` (the Lucy topology and ledger, legacy) cannot be combined with
-  `--spec` or the flags.
 - `network create` writes the spec as resolved, with absolute paths, to
   `<network>/network.toml`: `--spec ~/.minimina/mynet/network.toml` creates
   the same network again.
@@ -220,7 +219,7 @@ path is relative to the spec file.
 
 ```toml
 [ledger]
-file = "accounts.csv"   # or a .json runtime config, as -g takes it
+file = "accounts.csv"   # or a .json runtime config (ledger.accounts)
 accounts = 2
 ```
 
@@ -345,52 +344,27 @@ minimina network hardfork apply -n mynet            # before the fork genesis
 
 ---
 
-## Custom Networks (Lucy-Generated Genesis & Topology)
+## Uptime service backend
 
-Pre-configured test networks are available in `./tests/data/`:
+A network can run the [uptime service
+backend](https://github.com/MinaFoundation/uptime-service-backend) (docker mode
+only; native mode skips it). Its block producers submit to it:
 
-**Large network:**
-```bash
-minimina network create \
-  -g ./tests/data/large_network/genesis_ledger.json \
-  -t ./tests/data/large_network/topology.json \
-  -n large-network
+```toml
+[[nodes]]
+role = "uptime-service-backend"
+app_config = "uptime/app_config.json"     # relative to the spec file
+minasheets = "uptime/minasheets.json"     # Google Sheets credentials
+# config_files = ["uptime/other.json"]    # other files the app config names
+
+[docker]
+uptime_service_backend_image = "<the backend's image>"
 ```
 
-**Small network:**
-```bash
-minimina network create \
-  -g ./tests/data/small_network/genesis_ledger.json \
-  -t ./tests/data/small_network/topology.json \
-  -n small-network
-```
-
-Manage custom networks with the same commands, using `-n <name>`:
-```bash
-minimina network start -n large-network
-minimina network status -n large-network
-minimina network stop -n large-network
-minimina network delete -n large-network
-```
-
----
-
-## Network with Uptime-Service-Backend
-
-Test data is in `tests/data/uptime_service_network`.
-
-1. Populate `app_config.json` and `minasheets.json` with AWS S3 and Google Sheets credentials
-2. Rename `uptime_service_config_test` to `uptime_service_config`
-3. Create and start:
-
-```bash
-minimina network create \
-  -n uptime \
-  -t tests/data/uptime_service_network/topology.json \
-  -g tests/data/uptime_service_network/genesis_ledger.json
-
-minimina network start -n uptime
-```
+[tests/data/uptime](tests/data/uptime) has empty templates of both files; fill
+in the AWS S3 and Google Sheets credentials. minimina copies the files to
+`<network>/uptime_service_config/`, the backend listens on port 8080, and the
+block producers get `-uptime-url` and `-uptime-submitter-key`.
 
 ---
 
@@ -404,7 +378,7 @@ MiniMina supports two deployment modes:
 ### Native mode
 
 ```bash
-minimina --mode native [--bin-path /usr/local/bin] network create -n local -t topology.json -g genesis_ledger.json
+minimina --mode native [--bin-path /usr/local/bin] network create -n local --spec net.toml
 minimina network start -n local          # mode and bin path come from the network
 minimina network status -n local
 minimina node stop -n local -i seed-0 --timeout 30
@@ -460,17 +434,6 @@ minimina --mina-version 4.0.2 network create -n local --spec net.toml   # implie
     declare more than the binaries load (`libpq-dev` where `libpq5` is
     enough), and dpkg knows nothing of libraries installed another way.
   - `unchecked`: a check the host has no tool for (`dpkg-query`, `ldd`).
-
-### Integration with Lucy
-
-MiniMina is designed to work with [Lucy](../test_executive/README.md) (the Mina integration test executive). Lucy generates network topology and genesis files, then uses MiniMina to create and manage the test network:
-
-1. Lucy generates topology and genesis files
-2. Lucy calls `minimina network create` with those files
-3. MiniMina returns GraphQL endpoints and log paths
-4. Lucy executes integration tests via GraphQL
-5. Lucy can start/stop individual nodes during tests
-6. Lucy calls `minimina network delete` to tear down
 
 ## License
 

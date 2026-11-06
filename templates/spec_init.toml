@@ -32,6 +32,10 @@ profile = {{ profile|toml }}
 {% when Role::ArchiveNodeApi -%}
 # GraphQL over the archive database (events, actions); `version`: of the
 # npm package or docker image, `bin`: own executable (native mode).
+{% when Role::UptimeServiceBackend -%}
+# Collects block producers' uptime submissions (docker mode, port 8080):
+# `app_config`, `minasheets` (credentials), `config_files`; the image is
+# [docker] uptime_service_backend_image.
 {% endmatch -%}
 role = {{ node.role|toml }}
 {% if node.count != 1 -%}
@@ -64,11 +68,20 @@ version = {{ version|toml }}
 {% if let Some(bin) = node.bin -%}
 bin = {{ bin|toml }}
 {% endif -%}
+{% if let Some(app_config) = node.app_config -%}
+app_config = {{ app_config|toml }}
+{% endif -%}
+{% if let Some(minasheets) = node.minasheets -%}
+minasheets = {{ minasheets|toml }}
+{% endif -%}
+{% if let Some(files) = node.config_files -%}
+config_files = {{ files|toml }}
+{% endif -%}
 {% endfor %}
 # Funded accounts for transactions in tests: account-1 .. account-N, with
 # `balance` MINA each; keys are in <network dir>/network-keypairs.
 # `file` gives accounts to start with; the generated ones are added after them:
-#   .json: a runtime config ledger (ledger.accounts), as -g takes it
+#   .json: a runtime config ledger (ledger.accounts)
 #   .csv:  a header line, then public_key,balance[,private_key,delegate] per
 #          line; balances in MINA
 # A relative `file` is relative to this file.

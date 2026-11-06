@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::cli::ExecutionMode;
-use crate::topology::GitBuild;
 
 pub mod typed;
 
@@ -42,7 +41,6 @@ pub struct ServiceConfig {
     pub service_type: ServiceType,
     pub service_name: String,
     pub docker_image: Option<String>,
-    pub git_build: Option<GitBuild>,
     pub client_port: Option<u16>,
     pub public_key: Option<String>,
     pub public_key_path: Option<String>,
@@ -145,13 +143,6 @@ impl ServiceConfig {
                 | ServiceType::SnarkCoordinator
                 | ServiceType::ArchiveNode
         )
-    }
-
-    pub fn get_seeds(services: &[Self]) -> Vec<&Self> {
-        services
-            .iter()
-            .filter(|service| ServiceType::Seed == service.service_type)
-            .collect()
     }
 
     /// The first archive node; [`typed::check`] reports a second one.

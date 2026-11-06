@@ -5,6 +5,7 @@
 
 mod env;
 mod hardfork;
+mod inputs;
 mod mina;
 mod network;
 mod node;
@@ -153,7 +154,7 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
     let created_profile = match &cli.command {
         Command::Network(NetworkCommand::Create(args)) => Some(match args.profile {
             Some(profile) => Some(profile),
-            None => setup::create_spec(args)?.profile,
+            None => inputs::create_spec(args)?.profile,
         }),
         _ => None,
     };

@@ -609,45 +609,61 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_compose_from_topology() -> std::io::Result<()> {
-        use crate::{directory_manager::DirectoryManager, topology::Topology};
-        let tempdir = tempfile::Builder::new()
-            .prefix("test_generate_compose_from_topology")
-            .tempdir()
-            .expect("Cannot create temporary directory");
-        let tmp_network_path = tempdir.path();
-        let dir_manager = DirectoryManager::with_base_path(tmp_network_path.to_path_buf());
-        let network_id = "test_network";
-        let network_path = dir_manager.network_path(network_id);
-        dir_manager.generate_dir_structure(network_id)?;
-
-        let file = std::path::PathBuf::from("./tests/data/large_network/topology.json");
-        let contents = std::fs::read_to_string(file)?;
-        let topology: Topology = serde_json::from_str(&contents)?;
-        let peers_file = dir_manager.peer_list_file(network_id);
-        let services = topology.services(&peers_file);
-        let compose_contents = generate(
-            &services,
-            &network_path,
+    fn block_producers_submit_to_the_uptime_service_backend() {
+        let configs = vec![
+            ServiceConfig {
+                service_name: "seed".to_string(),
+                service_type: ServiceType::Seed,
+                docker_image: Some("mina".into()),
+                client_port: Some(3100),
+                ..Default::default()
+            },
+            ServiceConfig {
+                service_name: "bp".to_string(),
+                service_type: ServiceType::BlockProducer,
+                docker_image: Some("mina".into()),
+                client_port: Some(3110),
+                public_key_path: Some("/local-network/network-keypairs/bp".into()),
+                ..Default::default()
+            },
+            ServiceConfig {
+                service_name: "uptime".to_string(),
+                service_type: ServiceType::UptimeServiceBackend,
+                docker_image: Some("uptime-image".into()),
+                uptime_service_backend_app_config: Some("/u/app_config.json".into()),
+                uptime_service_backend_minasheets: Some("/u/minasheets.json".into()),
+                ..Default::default()
+            },
+        ];
+        let compose = generate(
+            &configs,
+            Path::new("/networks/net"),
             Profile::Devnet,
             DaemonFeatures::default(),
         )
         .unwrap();
-
-        assert!(compose_contents.contains("snark-node"));
-        assert!(compose_contents.contains("archive-node"));
-        assert!(compose_contents.contains("archive-node-service"));
-        assert!(compose_contents.contains("receiver"));
-        assert!(compose_contents.contains("empty_node-1"));
-        assert!(compose_contents.contains("empty_node-2"));
-        assert!(compose_contents.contains("observer"));
-        assert!(compose_contents.contains("seed-0"));
-        assert!(compose_contents.contains("seed-1"));
-        assert!(compose_contents.contains("-archive-address"));
-
-        dir_manager.delete_network_directory(network_id)?;
-
-        Ok(())
+        let compose: serde_norway::Value = serde_norway::from_str(&compose).unwrap();
+        let uptime = &compose["services"]["uptime-net"];
+        assert_eq!(uptime["image"], "uptime-image");
+        assert_eq!(uptime["ports"][0], "8080:8080");
+        assert_eq!(
+            uptime["environment"]["CONFIG_FILE"],
+            "/local-network/uptime_service_config/app_config.json"
+        );
+        assert_eq!(
+            uptime["environment"]["GOOGLE_APPLICATION_CREDENTIALS"],
+            "/local-network/uptime_service_config/minasheets.json"
+        );
+        let bp = serde_norway::to_string(&compose["services"]["bp-net"]).unwrap();
+        assert!(
+            bp.contains("-uptime-url http://uptime-net:8080/v1/submit"),
+            "{bp}"
+        );
+        assert!(bp.contains("-uptime-submitter-key"), "{bp}");
+        assert_eq!(
+            compose["x-defaults"]["environment"]["UPTIME_PRIVKEY_PASS"],
+            "naughty blue worm"
+        );
     }
 
     #[test]

@@ -7,11 +7,10 @@
 //! - `libp2p-keypairs`: Contains the key pairs for the libp2p service.
 //! - `genesis_ledger.json`: Contains the genesis ledger for the network.
 //! - `docker-compose.yml`: Contains the docker compose file for the network.
-//! - `network.json`: Contains the network topology representation in JSON format.
-//! - `network.toml`: A copy of the network spec, for a network made from one.
-//! - `peer_list_file.txt`: Contains the list of libp2p peers for the network.
+//! - `network.json`: The nodes and their endpoints, as `network create` prints them.
+//! - `network.toml`: The network spec as resolved, to create the network again.
+//! - `uptime_service_config/`: The uptime service backend's files, when it has one.
 
-use crate::cli::ExecutionMode;
 use crate::genesis_ledger::GENESIS_LEDGER_JSON;
 use crate::output;
 use crate::service::ServiceConfig;
@@ -277,44 +276,6 @@ impl DirectoryManager {
         Ok(())
     }
 
-    pub fn peer_list_file(&self, network_id: &str) -> PathBuf {
-        self.network_path(network_id).join("peer_list_file.txt")
-    }
-
-    pub fn create_peer_list_file(
-        &self,
-        network_id: &str,
-        peers: &[&ServiceConfig],
-        mode: ExecutionMode,
-    ) -> Result<()> {
-        use std::io::Write;
-
-        let peer_list_path = self.peer_list_file(network_id);
-        let mut file = fs::File::create(peer_list_path)?;
-
-        for peer in peers {
-            let external_port = peer.client_port.ok_or_else(|| {
-                invalid(format!("seed '{}' has no client_port", peer.service_name))
-            })? + 2;
-            let libp2p_key = peer.libp2p_peerid.as_deref().ok_or_else(|| {
-                invalid(format!(
-                    "seed '{}' has no libp2p peer id",
-                    peer.service_name
-                ))
-            })?;
-            let address = ServiceConfig::generate_peer(
-                &peer.service_name,
-                network_id,
-                libp2p_key,
-                external_port,
-                mode,
-            );
-            writeln!(file, "{address}")?;
-        }
-
-        Ok(())
-    }
-
     /// Checks whether the genesis timestamp is too far in the past.
     pub fn check_genesis_timestamp(&self, network_id: &str) -> Result<()> {
         use chrono::{prelude::*, Duration};
@@ -360,35 +321,6 @@ impl DirectoryManager {
         Ok(())
     }
 
-    /// Copies the genesis ledger at `genesis_ledger_path` to the network directory
-    pub fn copy_genesis_ledger(&self, network_id: &str, genesis_ledger_path: &Path) -> Result<()> {
-        let network_genesis_path = self.genesis_ledger_path(network_id);
-        fs::copy(genesis_ledger_path, network_genesis_path).map(|_| ())
-    }
-
-    pub fn overwrite_genesis_timestamp(
-        &self,
-        network_id: &str,
-        genesis_ledger_path: &Path,
-    ) -> Result<()> {
-        use crate::genesis_ledger::current_timestamp;
-        use fs::{read_to_string, write};
-
-        let contents = read_to_string(genesis_ledger_path)?;
-        let mut ledger: serde_json::Value = serde_json::from_str(&contents)?;
-        let genesis = ledger
-            .get_mut("genesis")
-            .and_then(|g| g.as_object_mut())
-            .ok_or_else(|| invalid("'genesis' object missing in genesis ledger"))?;
-        genesis.insert(
-            "genesis_state_timestamp".to_string(),
-            serde_json::Value::String(current_timestamp()),
-        );
-
-        let contents = serde_json::to_string_pretty(&ledger)?;
-        write(self.genesis_ledger_path(network_id), contents)
-    }
-
     /// Returns the genesis ledger path for the given network
     pub fn genesis_ledger_path(&self, network_id: &str) -> PathBuf {
         self.network_path(network_id).join(GENESIS_LEDGER_JSON)
@@ -431,11 +363,6 @@ impl DirectoryManager {
         let contents = fs::read_to_string(services_file_path)?;
         let services: Vec<ServiceConfig> = serde_json::from_str(&contents)?;
         Ok(services)
-    }
-
-    /// Returns the topology file path for the given network
-    pub fn topology_file_path(&self, network_id: &str) -> PathBuf {
-        self.network_path(network_id).join("topology.json")
     }
 }
 
@@ -768,10 +695,10 @@ mod tests {
             service_name: "test_service1".to_string(),
             service_type: crate::service::ServiceType::UptimeServiceBackend,
             uptime_service_backend_app_config: Some(PathBuf::from(
-                "./tests/data/uptime_service_network/uptime_service_config_test/app_config.json",
+                "./tests/data/uptime/app_config.json",
             )),
             uptime_service_backend_minasheets: Some(PathBuf::from(
-                "./tests/data/uptime_service_network/uptime_service_config_test/minasheets.json",
+                "./tests/data/uptime/minasheets.json",
             )),
             ..Default::default()
         }];

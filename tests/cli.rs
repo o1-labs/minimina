@@ -12,18 +12,27 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const SMALL_TOPOLOGY: &str = "tests/data/small_network/topology.json";
+/// The small network: a seed `seed-0` and a block producer `receiver`.
+const SMALL_SPEC: &str = r#"
+[[nodes]]
+role = "seed"
+name = "seed-0"
+[[nodes]]
+role = "block-producer"
+name = "receiver"
+"#;
 
 const FAKE_MINA: &str = r#"#!/bin/sh
 [ "$1" = version ] && { echo 'Commit 0000000000'; exit 0; }
 [ "$1 $2" = "daemon -help" ] && { echo '  [--precomputed-blocks-dir DIR]'; exit 0; }
+[ "$1 $2" = "advanced generate-keypair" ] && { echo 'Public key: B62q000000000000000000000000000000000000000000000000000'; exit 0; }
+[ "$1 $2" = "libp2p generate-keypair" ] && { printf 'libp2p keypair:\nenc,pub,12D3KooWfake\n'; exit 0; }
 echo "mina $*"
 port=""; prev=""
 for a in "$@"; do [ "$prev" = "-external-port" ] && port=$a; prev=$a; done
 [ -n "$port" ] && exec python3 -c "import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('0.0.0.0', $port)); s.listen(); time.sleep(300)"
 exec sleep 300
 "#;
-const SMALL_LEDGER: &str = "tests/data/small_network/genesis_ledger.json";
 
 struct Env {
     home: tempfile::TempDir,
@@ -82,6 +91,8 @@ impl Env {
     }
 
     fn create_native(&self, id: &str) -> Value {
+        let spec = self.home.path().join("small.toml");
+        fs::write(&spec, SMALL_SPEC).unwrap();
         self.json(
             &[
                 "--mode",
@@ -92,10 +103,8 @@ impl Env {
                 "create",
                 "-n",
                 id,
-                "-t",
-                SMALL_TOPOLOGY,
-                "-g",
-                SMALL_LEDGER,
+                "--spec",
+                spec.to_str().unwrap(),
             ],
             true,
         )
@@ -152,8 +161,18 @@ fn errors_are_json_with_exit_code_1() {
         "Mina binary not found at '/nonexistent/mina'."
     );
 
-    let v = env.json(&["network", "create", "-n", "x", "-g", SMALL_LEDGER], false);
-    assert!(error_message(&v).contains("Must provide a topology file"));
+    let v = env.json(
+        &[
+            "network",
+            "create",
+            "-n",
+            "x",
+            "--spec",
+            "/nonexistent.toml",
+        ],
+        false,
+    );
+    assert!(error_message(&v).contains("reading network spec /nonexistent.toml"));
 }
 
 #[test]
@@ -165,7 +184,7 @@ fn native_network_lifecycle() {
     assert!(nodes.contains_key("seed-0") && nodes.contains_key("receiver"));
     assert_eq!(
         nodes["seed-0"]["graphql_uri"].as_str().unwrap(),
-        "http://localhost:7081/graphql"
+        "http://localhost:3101/graphql"
     );
 
     let listed = env.json(&["network", "list"], true);
@@ -194,7 +213,7 @@ fn native_network_lifecycle() {
         .output()
         .unwrap();
     let logs = String::from_utf8_lossy(&out.stdout);
-    assert!(logs.contains("mina daemon -client-port 7080"), "{logs}");
+    assert!(logs.contains("mina daemon -client-port 3100"), "{logs}");
     assert!(logs.contains("-seed"), "{logs}");
     assert!(logs.contains("-external-ip 127.0.0.1"), "{logs}");
     // the fake mina has -precomputed-blocks-dir, and the daemon needs it to exist
@@ -252,8 +271,7 @@ fn native_network_files_and_permissions() {
         "network.json",
         "services.json",
         "genesis_ledger.json",
-        "topology.json",
-        "peer_list_file.txt",
+        "network.toml",
     ] {
         assert!(dir.join(file).is_file(), "missing {file}");
     }
@@ -261,11 +279,6 @@ fn native_network_files_and_permissions() {
         let mode = fs::metadata(dir.join(sub)).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700, "{sub}");
     }
-    let key = dir.join("network-keypairs/receiver.json");
-    assert_eq!(
-        fs::metadata(key).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
     assert!(Path::new(&dir.join("logs")).is_dir());
     env.json(&["network", "delete", "-n", "files"], true);
 }

@@ -36,13 +36,20 @@ role = "archive-node-api"     # GraphQL over the archive database (events, actio
 # workers = 1
 # fee = "0.001"
 
+# Docker mode only: block producers submit their uptime to it (port 8080).
+# [[nodes]]
+# role = "uptime-service-backend"
+# app_config = "uptime/app_config.json"    # relative to this file
+# minasheets = "uptime/minasheets.json"    # Google Sheets credentials
+# config_files = ["uptime/other.json"]     # other files the app config names
+
 # Funded accounts for transactions in tests: account-1 .. account-N.
 # Keys are in <network dir>/network-keypairs.
 [ledger]
 accounts = 3
 balance = "1000"
 # file = "accounts.csv"       # accounts to start with; the generated ones are added
-#                             # .json: a runtime config ledger (as -g takes it)
+#                             # .json: a runtime config ledger (ledger.accounts)
 #                             # .csv: header line, then public_key,balance[,private_key,delegate]
 
 # Docker mode images (defaults: the built-in 4.0.1 images).
@@ -51,6 +58,7 @@ balance = "1000"
 # archive_image = "minaprotocol/mina-archive:..."
 # rosetta_image = "minaprotocol/mina-rosetta:..."
 # archive_node_api_image = "ghcr.io/o1-labs/archive-node-api:..."
+# uptime_service_backend_image = "..."   # no default; needed for the uptime role
 
 # Merged into the generated genesis runtime config.
 # [runtime_config.genesis]

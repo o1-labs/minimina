@@ -21,6 +21,14 @@
 //! [[nodes]]
 //! role = "rosetta"                # reads the archive and the archive's daemon
 //!
+//! [[nodes]]                       # docker mode: block producers submit to it
+//! role = "uptime-service-backend"
+//! app_config = "uptime/app_config.json"
+//! minasheets = "uptime/minasheets.json"
+//!
+//! [docker]
+//! uptime_service_backend_image = "uptime-service-backend:..."
+//!
 //! [ledger]                        # funded accounts for tests: account-1 ...
 //! accounts = 5
 //! balance = "1000"
@@ -46,9 +54,11 @@ mod error;
 pub mod flags;
 pub mod init;
 pub mod ledger;
+mod uptime;
 
 pub use error::{LedgerProblem, SpecError};
 use ledger::Balance;
+pub use uptime::UptimeFiles;
 
 use crate::{cli::Profile, hardfork::HardforkSpec};
 use anyhow::{bail, Context as _, Result};
@@ -97,6 +107,9 @@ pub enum Role {
     /// Archive Node API (GraphQL over the archive database), not a daemon:
     /// needs an archive node.
     ArchiveNodeApi,
+    /// Collects the block producers' uptime submissions, not a daemon;
+    /// docker mode only (native mode skips it).
+    UptimeServiceBackend,
 }
 
 impl Role {
@@ -109,7 +122,17 @@ impl Role {
             Role::SnarkCoordinator => "snark-coordinator",
             Role::Rosetta => "rosetta",
             Role::ArchiveNodeApi => "archive-node-api",
+            Role::UptimeServiceBackend => "uptime-service-backend",
         }
+    }
+
+    /// Whether nodes of the role are mina daemons (have libp2p keys, peers
+    /// and accounts).
+    pub fn is_daemon(&self) -> bool {
+        !matches!(
+            self,
+            Role::Rosetta | Role::ArchiveNodeApi | Role::UptimeServiceBackend
+        )
     }
 }
 
@@ -139,6 +162,10 @@ pub struct NodeGroup {
     /// Archive node api, native mode: the server's executable instead of the
     /// managed npm install.
     pub bin: Option<std::path::PathBuf>,
+    /// Uptime service backend: see [`UptimeFiles`].
+    pub app_config: Option<PathBuf>,
+    pub minasheets: Option<PathBuf>,
+    pub config_files: Option<Vec<PathBuf>>,
 }
 
 fn one() -> u16 {
@@ -165,6 +192,9 @@ impl Default for NodeGroup {
             node: None,
             version: None,
             bin: None,
+            app_config: None,
+            minasheets: None,
+            config_files: None,
         }
     }
 }
@@ -201,6 +231,8 @@ pub struct DockerSpec {
     pub rosetta_image: Option<String>,
     /// Default: ghcr.io/o1-labs/archive-node-api:<version>.
     pub archive_node_api_image: Option<String>,
+    /// No default: a network with an uptime service backend sets it.
+    pub uptime_service_backend_image: Option<String>,
 }
 
 impl DockerSpec {
@@ -225,6 +257,7 @@ pub struct PlannedNode {
     /// Archive node api: version and own executable.
     pub version: Option<String>,
     pub bin: Option<std::path::PathBuf>,
+    pub uptime: Option<UptimeFiles>,
 }
 
 impl PlannedNode {
@@ -232,7 +265,7 @@ impl PlannedNode {
     /// or a coordinator, whose public key receives the snark fees).
     /// Whether the node is a mina daemon (has libp2p keys and peers).
     pub fn is_daemon(&self) -> bool {
-        !matches!(self.role, Role::Rosetta | Role::ArchiveNodeApi)
+        self.role.is_daemon()
     }
 
     pub fn needs_key(&self) -> bool {
@@ -266,6 +299,9 @@ impl NetworkSpec {
         self.ledger.file.as_mut().map(resolve);
         for group in &mut self.nodes {
             group.bin.as_mut().map(resolve);
+            group.app_config.as_mut().map(resolve);
+            group.minasheets.as_mut().map(resolve);
+            group.config_files.iter_mut().flatten().for_each(resolve);
         }
         if let Some(postfork) = self.hardfork.as_mut().and_then(|h| h.postfork.as_mut()) {
             postfork.bin_path.as_mut().map(resolve);
@@ -294,7 +330,7 @@ impl NetworkSpec {
         }
     }
 
-    /// The network `network create` makes without a spec, flags, topology or ledger.
+    /// The network `network create` makes without a spec or flags.
     pub fn default_network() -> Self {
         let node = |role, name: &str, client_port| NodeGroup {
             role,
@@ -335,7 +371,11 @@ impl NetworkSpec {
         if count(Role::Seed) == 0 {
             bail!("the network spec has no seed; add a node with role = \"seed\"");
         }
-        for role in [Role::Archive, Role::SnarkCoordinator] {
+        for role in [
+            Role::Archive,
+            Role::SnarkCoordinator,
+            Role::UptimeServiceBackend,
+        ] {
             if count(role) > 1 {
                 bail!("the network spec has more than one {role:?} node; at most one is supported");
             }
@@ -385,8 +425,7 @@ impl NetworkSpec {
             if group.role != Role::Rosetta && group.node.is_some() {
                 bail!("{:?} nodes: `node` is for rosetta", group.role);
             }
-            let daemon = !matches!(group.role, Role::Rosetta | Role::ArchiveNodeApi);
-            if !daemon && group.balance.is_some() {
+            if !group.role.is_daemon() && group.balance.is_some() {
                 bail!(
                     "{:?} is not a daemon and has no account: remove `balance`",
                     group.role
@@ -400,13 +439,16 @@ impl NetworkSpec {
                     group.role
                 );
             }
+            let uptime = uptime_files(group, &self.docker)?;
             for _ in 0..group.count {
                 let prefix = group.role.default_name();
                 let n = index.entry(prefix).or_default();
                 *n += 1;
                 let name = group.name.clone().unwrap_or_else(|| match group.role {
                     // only one of each
-                    Role::Archive | Role::SnarkCoordinator => prefix.to_string(),
+                    Role::Archive | Role::SnarkCoordinator | Role::UptimeServiceBackend => {
+                        prefix.to_string()
+                    }
                     _ => format!("{prefix}-{n}"),
                 });
                 let client_port = group.client_port.unwrap_or_else(&mut auto_port);
@@ -432,6 +474,7 @@ impl NetworkSpec {
                     graphql_node: None,
                     version: group.version.clone(),
                     bin: group.bin.clone(),
+                    uptime: uptime.clone(),
                 });
             }
         }
@@ -509,6 +552,39 @@ impl NetworkSpec {
             .map(|t| serde_json::to_value(t).context("runtime_config is not valid JSON"))
             .transpose()
     }
+}
+
+/// The uptime files of `group`: required of the uptime service backend, and
+/// only for it.
+fn uptime_files(group: &NodeGroup, docker: &DockerSpec) -> Result<Option<UptimeFiles>> {
+    let given = (&group.app_config, &group.minasheets, &group.config_files);
+    if group.role != Role::UptimeServiceBackend {
+        if given != (&None, &None, &None) {
+            bail!(
+                "{:?} nodes: `app_config`, `minasheets` and `config_files` are for the \
+                 uptime service backend",
+                group.role
+            );
+        }
+        return Ok(None);
+    }
+    if group.client_port.is_some() {
+        bail!("the uptime service backend listens on 8080: remove `client_port`");
+    }
+    if docker.uptime_service_backend_image.is_none() {
+        bail!(
+            "the uptime service backend needs its image: set \
+             [docker] uptime_service_backend_image"
+        );
+    }
+    let (Some(app_config), Some(minasheets)) = (&group.app_config, &group.minasheets) else {
+        bail!("the uptime service backend needs `app_config` and `minasheets`");
+    };
+    Ok(Some(UptimeFiles {
+        app_config: app_config.clone(),
+        minasheets: minasheets.clone(),
+        config_files: group.config_files.clone().unwrap_or_default(),
+    }))
 }
 
 #[cfg(test)]
@@ -690,6 +766,58 @@ mod tests {
         );
         assert_eq!(plan[3].workers, ["mina-snark-worker-1"]);
         assert_eq!(plan[4].archive_port, Some(3086));
+    }
+
+    #[test]
+    fn the_uptime_service_backend_needs_its_files_and_image() {
+        let seed = "[[nodes]]\nrole = \"seed\"\n";
+        let uptime = "[[nodes]]\nrole = \"uptime-service-backend\"\n\
+                      app_config = \"/u/app.json\"\nminasheets = \"/u/sheets.json\"\n";
+        let image = "[docker]\nuptime_service_backend_image = \"uptime:1\"\n";
+        let err = |toml: &str| spec(toml).plan().unwrap_err().to_string();
+
+        let plan = spec(&format!("{seed}{uptime}{image}")).plan().unwrap();
+        let backend = &plan[1];
+        assert_eq!(backend.name, "uptime-service-backend");
+        assert!(!backend.is_daemon() && !backend.needs_key());
+        assert_eq!(
+            backend.uptime,
+            Some(UptimeFiles {
+                app_config: "/u/app.json".into(),
+                minasheets: "/u/sheets.json".into(),
+                config_files: vec![],
+            })
+        );
+
+        assert!(
+            err(&format!("{seed}{uptime}")).contains("set [docker] uptime_service_backend_image")
+        );
+        assert!(err(&format!(
+            "{seed}[[nodes]]\nrole = \"uptime-service-backend\"\nminasheets = \"/s\"\n{image}"
+        ))
+        .contains("needs `app_config` and `minasheets`"));
+        assert!(err(&format!("{seed}app_config = \"/a\"\n"))
+            .contains("are for the uptime service backend"));
+        assert!(err(&format!("{seed}{uptime}{uptime}{image}")).contains("more than one"));
+    }
+
+    #[test]
+    fn uptime_files_are_relative_to_the_spec() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("net.toml");
+        std::fs::write(
+            &path,
+            "[[nodes]]\nrole = \"uptime-service-backend\"\napp_config = \"u/app.json\"\n\
+             minasheets = \"/abs/sheets.json\"\nconfig_files = [\"u/other.json\"]\n",
+        )
+        .unwrap();
+        let group = &NetworkSpec::load(&path).unwrap().nodes[0];
+        assert_eq!(group.app_config, Some(dir.path().join("u/app.json")));
+        assert_eq!(group.minasheets, Some("/abs/sheets.json".into()));
+        assert_eq!(
+            group.config_files,
+            Some(vec![dir.path().join("u/other.json")])
+        );
     }
 
     #[test]
