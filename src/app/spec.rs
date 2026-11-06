@@ -2,13 +2,15 @@
 
 use crate::{
     cli::{SpecCommand, SpecInitArgs},
-    spec::{init::SpecDocument, NetworkSpec},
+    spec::{init::SpecInit, NetworkSpec},
 };
 use anyhow::Result;
+use askama::Template as _;
 
 pub fn run(cmd: SpecCommand) -> Result<()> {
     match cmd {
-        SpecCommand::Init(args) => print!("{}", spec_init(&args, &invocation())?),
+        // askama drops the template's last newline
+        SpecCommand::Init(args) => println!("{}", spec_init(&args, &invocation())?),
     }
     Ok(())
 }
@@ -36,7 +38,11 @@ fn spec_init(args: &SpecInitArgs, command: &str) -> Result<String> {
     spec.profile = args.profile;
     // a spec that `network create` would refuse is not written
     spec.plan()?;
-    Ok(SpecDocument::new(&spec)?.render(command))
+    Ok(SpecInit {
+        command,
+        spec: &spec,
+    }
+    .render()?)
 }
 
 #[cfg(test)]

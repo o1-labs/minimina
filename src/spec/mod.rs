@@ -60,6 +60,8 @@ use std::{
 
 /// Genesis balance in MINA of a block producer that sets none.
 pub const DEFAULT_BLOCK_PRODUCER_BALANCE: u64 = 11_550_000;
+/// Genesis balance in MINA of the funded test accounts of a spec that sets none.
+pub const DEFAULT_ACCOUNT_BALANCE: u64 = 1000;
 /// First client port of automatically placed daemons; each takes `PORT_STEP` ports.
 const FIRST_CLIENT_PORT: u16 = 3100;
 /// Client, rest, external, metrics, libp2p metrics, archive.

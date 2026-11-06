@@ -14,16 +14,13 @@ use crate::{
     service::{ServiceConfig, ServiceType},
     spec::{
         ledger::{Balance, LedgerAccount, LedgerFile, PublicKey},
-        NetworkSpec, PlannedNode, Role, SpecError,
+        NetworkSpec, PlannedNode, Role, SpecError, DEFAULT_ACCOUNT_BALANCE,
     },
     topology::Topology,
 };
 use anyhow::{bail, Context as _, Result};
 use log::info;
 use std::{collections::HashMap, path::Path};
-
-/// Balance in MINA of the funded test accounts of a spec that sets none.
-const DEFAULT_ACCOUNT_BALANCE: u64 = 1000;
 
 /// A network generated from a spec: its nodes and the keys made for them.
 pub struct SpecNetwork {
