@@ -177,6 +177,21 @@ pub fn fork_configs(
     })
 }
 
+/// The state hash of the best tip of a daemon.
+pub fn best_tip(service: &ServiceConfig) -> Result<String> {
+    let uri = service
+        .to_node_info()
+        .graphql_uri
+        .with_context(|| format!("'{}' has no GraphQL port", service.service_name))?;
+    let chain = runtime()?
+        .block_on(daemon_client(&uri).get_best_chain(Some(1)))
+        .map_err(|e| anyhow::anyhow!("best chain of '{}': {e}", service.service_name))?;
+    chain
+        .last()
+        .map(|block| block.state_hash.clone())
+        .with_context(|| format!("'{}' has an empty best chain", service.service_name))
+}
+
 /// Waits until every daemon reports SYNCED, asking every `interval`.
 pub fn wait_synced(
     services: &[ServiceConfig],
