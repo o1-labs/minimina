@@ -126,6 +126,7 @@ pub fn check_create(ctx: &Context, spec: &NetworkSpec) -> Result<Option<(Hardfor
                 archive_upgrade,
                 state: HardforkState::Planned,
                 prefork_bin_path: None,
+                archive_config: None,
             },
             schedule,
         ))),

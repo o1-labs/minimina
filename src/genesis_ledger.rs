@@ -150,7 +150,7 @@ pub fn update(network_path: &Path, overrides: &serde_json::Value) -> std::io::Re
 }
 
 /// Merges `overrides` into `base`: objects key by key, anything else replaced.
-fn merge_json(base: &mut serde_json::Value, overrides: &serde_json::Value) {
+pub(crate) fn merge_json(base: &mut serde_json::Value, overrides: &serde_json::Value) {
     match (base, overrides) {
         (serde_json::Value::Object(base), serde_json::Value::Object(overrides)) => {
             for (key, value) in overrides {

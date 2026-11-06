@@ -97,6 +97,17 @@ pub fn shared_postfork_config(prefork: &Value) -> Value {
     config
 }
 
+/// The runtime config of the postfork `mina-archive`: `shared` (the network
+/// constants) with the fork config on top, whose ledger and epoch ledgers
+/// list their accounts. From it the archive makes the same postfork genesis
+/// block as the daemons, which take the ledgers by hash (`daemon.json`), and
+/// records the fork ledger's accounts.
+pub fn archive_postfork_config(shared: &Value, fork_config: &Value) -> Value {
+    let mut config = shared.clone();
+    crate::genesis_ledger::merge_json(&mut config, fork_config);
+    config
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,6 +130,21 @@ mod tests {
             }
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn the_archive_gets_the_constants_and_the_fork_ledger_accounts() {
+        let shared = json!({"genesis": {"k": 10}, "proof": {"block_window_duration_ms": 30000}});
+        let config = archive_postfork_config(&shared, &fork_config());
+        assert_eq!(config["genesis"]["k"], 10);
+        assert_eq!(config["proof"]["block_window_duration_ms"], 30000);
+        assert_eq!(config["proof"]["fork"]["global_slot_since_genesis"], 52);
+        assert_eq!(
+            config["genesis"]["genesis_state_timestamp"],
+            "2026-10-28T19:32:29.685000Z"
+        );
+        assert!(config["ledger"]["accounts"].is_array());
+        assert_eq!(config["epoch_data"]["staking"]["seed"], "2va9");
     }
 
     #[test]

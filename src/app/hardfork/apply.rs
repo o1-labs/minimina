@@ -4,12 +4,15 @@
 
 use super::{
     daemon_help,
-    prepare::{Prepared, DAEMON_JSON, GENESIS_DIR, HARDFORK_DIR, SHARED_CONFIG_JSON},
+    prepare::{
+        Prepared, DAEMON_JSON, FORK_CONFIG_JSON, GENESIS_DIR, HARDFORK_DIR, SHARED_CONFIG_JSON,
+    },
     Context,
 };
 use crate::{
     daemon_args::DaemonFeatures,
-    genesis_ledger::{GENESIS_LEDGER_JSON, PREFORK_GENESIS_LEDGER_JSON},
+    genesis_ledger::{self, GENESIS_LEDGER_JSON, PREFORK_GENESIS_LEDGER_JSON},
+    hardfork::fork_config,
     native::manager::NativeManager,
     network_meta::{HardforkState, NetworkMeta},
     runner::check,
@@ -19,7 +22,14 @@ use crate::{
 use anyhow::{bail, Context as _, Result};
 use log::info;
 use serde::Serialize;
-use std::{fs, path::Path, time::Duration};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+/// The postfork `mina-archive` config, in the hardfork directory.
+pub const ARCHIVE_CONFIG_JSON: &str = "archive_config.json";
 
 #[derive(Debug, Serialize)]
 pub struct Applied {
@@ -90,6 +100,10 @@ pub fn apply(
         (Some(_), None) => bail!("the network has an archive but no archive upgrade script"),
         (None, _) => None,
     };
+    let archive_config = match ServiceConfig::get_archive_node(&services) {
+        Some(_) => Some(write_archive_config(&network_path)?),
+        None => None,
+    };
 
     let postfork = h.postfork_bin_path.clone();
     let features = DaemonFeatures::from_daemon_help(&daemon_help(ctx, &postfork));
@@ -97,6 +111,7 @@ pub fn apply(
     meta.features = features;
     if let Some(hf) = meta.hardfork.as_mut() {
         hf.prefork_bin_path = prefork_bin;
+        hf.archive_config = archive_config.clone();
         hf.state = HardforkState::Applied;
     }
     meta.save(&network_path)
@@ -109,6 +124,7 @@ pub fn apply(
     let typed = ctx.services::<Native>(network_id)?;
     NativeManager::new(&network_path, &postfork, &ctx.postgres_uri, ctx.profile)
         .with_features(features)
+        .with_archive_config(archive_config)
         .start_all(&typed, network_id, seed_timeout)
         .with_context(|| format!("Failed to start network '{network_id}' after the fork"))?;
     Ok(Applied {
@@ -117,6 +133,21 @@ pub fn apply(
         bin_path: postfork,
         archive_migration,
     })
+}
+
+/// Writes the postfork `mina-archive` config ([`fork_config::archive_postfork_config`]):
+/// the shared postfork config with the fork config on top.
+fn write_archive_config(network_path: &Path) -> Result<PathBuf> {
+    let dir = network_path.join(HARDFORK_DIR);
+    let shared = genesis_ledger::read_file(&dir.join(SHARED_CONFIG_JSON))?;
+    let fork = genesis_ledger::read_file(&dir.join(FORK_CONFIG_JSON))?;
+    let path = dir.join(ARCHIVE_CONFIG_JSON);
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&fork_config::archive_postfork_config(&shared, &fork))?,
+    )
+    .with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
 }
 
 /// Puts the fork data where the postfork daemon reads it: `daemon.json` in
@@ -173,4 +204,40 @@ fn upgrade_archive(ctx: &Context, native: &NativeManager, script: &Path) -> Resu
         bail!("the archive upgrade did not finish: migration_history says '{row}'");
     }
     Ok(row)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_archive_config_is_the_shared_config_with_the_fork_config() {
+        let net = tempfile::tempdir().unwrap();
+        let dir = net.path().join(HARDFORK_DIR);
+        fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, value: serde_json::Value| {
+            fs::write(dir.join(name), value.to_string()).unwrap();
+        };
+        write(SHARED_CONFIG_JSON, json!({"genesis": {"k": 10}}));
+        write(
+            FORK_CONFIG_JSON,
+            json!({
+                "genesis": {"genesis_state_timestamp": "2026-11-06T16:50:44.325000Z"},
+                "proof": {"fork": {"global_slot_since_genesis": 46}},
+                "ledger": {"hash": "jw", "accounts": [{"pk": "B62q", "balance": "1"}]}
+            }),
+        );
+
+        let path = write_archive_config(net.path()).unwrap();
+        assert_eq!(path, dir.join(ARCHIVE_CONFIG_JSON));
+        let config = genesis_ledger::read_file(&path).unwrap();
+        assert_eq!(config["genesis"]["k"], 10);
+        assert_eq!(
+            config["genesis"]["genesis_state_timestamp"],
+            "2026-11-06T16:50:44.325000Z"
+        );
+        assert_eq!(config["ledger"]["accounts"][0]["pk"], "B62q");
+        assert_eq!(config["proof"]["fork"]["global_slot_since_genesis"], 46);
+    }
 }

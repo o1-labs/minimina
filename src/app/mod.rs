@@ -20,9 +20,10 @@ use crate::{
     daemon_args::DaemonFeatures,
     directory_manager::DirectoryManager,
     docker::manager::DockerManager,
+    genesis_ledger::GENESIS_LEDGER_JSON,
     install,
     native::manager::{NativeManager, DEFAULT_POSTGRES_URI, DEFAULT_SHUTDOWN_TIMEOUT},
-    network_meta::NetworkMeta,
+    network_meta::{HardforkState, NetworkMeta},
     runner::{Runner, SystemRunner},
     service::typed::{self, Mode, Service},
 };
@@ -62,6 +63,8 @@ pub struct Context {
     pub profile: Profile,
     /// Version-dependent daemon flags recorded at create (probed again by create).
     pub features: DaemonFeatures,
+    /// The runtime config native `mina-archive` starts with; see [`archive_config`].
+    pub archive_config: Option<PathBuf>,
     pub runner: Rc<dyn Runner>,
 }
 
@@ -114,7 +117,8 @@ impl Context {
             &self.postgres_uri,
             self.profile,
         )
-        .with_features(self.features))
+        .with_features(self.features)
+        .with_archive_config(self.archive_config.clone()))
     }
 
     /// The services of a network from its `services.json`, checked for mode `M`.
@@ -201,6 +205,10 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
         .and_then(|m| m.hardfork.as_ref())
         .map(|h| h.postfork_bin_path.clone());
     let features = stored.as_ref().map(|m| m.features).unwrap_or_default();
+    let archive_config = cli
+        .command
+        .network_id()
+        .and_then(|id| archive_config(stored.as_ref(), &dirs.network_path(id)));
     let profile = created_profile
         .flatten()
         .or(stored.as_ref().map(|m| m.profile))
@@ -231,6 +239,7 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
         postgres_uri,
         profile,
         features,
+        archive_config,
         runner,
     };
 
@@ -241,6 +250,18 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
         Command::Node(cmd) => node::run(&ctx, cmd),
         Command::Mina(cmd) => mina::run(&ctx.dirs, ctx.runner.as_ref(), &install::mina::Http, cmd),
         Command::Spec(cmd) => spec::run(cmd),
+    }
+}
+
+/// The runtime config of a network's `mina-archive`: the network's genesis
+/// config, from which it inserts the genesis block (as canonical) and records
+/// the genesis accounts. After a hardfork, the postfork config `apply`
+/// recorded; none for a network forked before minimina wrote one, since its
+/// genesis config then has no ledger.
+fn archive_config(stored: Option<&NetworkMeta>, network_path: &Path) -> Option<PathBuf> {
+    match stored.and_then(|m| m.hardfork.as_ref()) {
+        Some(h) if h.state == HardforkState::Applied => h.archive_config.clone(),
+        _ => Some(network_path.join(GENESIS_LEDGER_JSON)),
     }
 }
 
@@ -276,3 +297,62 @@ fn shutdown_timeout(timeout: &ShutdownTimeout) -> Duration {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod archive_config_tests {
+    use super::*;
+    use crate::{
+        hardfork::HardforkMode,
+        network_meta::{HardforkMeta, HardforkState},
+    };
+
+    fn plain() -> NetworkMeta {
+        NetworkMeta {
+            mode: ExecutionMode::Native,
+            bin_path: None,
+            mina_version: None,
+            postgres_uri: None,
+            profile: Profile::Devnet,
+            features: DaemonFeatures::default(),
+            genesis_pending: false,
+            hardfork: None,
+        }
+    }
+
+    fn meta(state: HardforkState, archive_config: Option<&str>) -> NetworkMeta {
+        NetworkMeta {
+            hardfork: Some(HardforkMeta {
+                mode: HardforkMode::Manual,
+                method: None,
+                postfork_bin_path: "/post".into(),
+                archive_upgrade: None,
+                state,
+                prefork_bin_path: None,
+                archive_config: archive_config.map(PathBuf::from),
+            }),
+            ..plain()
+        }
+    }
+
+    #[test]
+    fn the_archive_reads_the_genesis_config_until_a_fork_is_applied() {
+        let net = Path::new("/n");
+        let genesis = Some(PathBuf::from("/n/genesis_ledger.json"));
+        // a new network, a plain one, a fork not applied yet
+        assert_eq!(archive_config(None, net), genesis);
+        assert_eq!(archive_config(Some(&plain()), net), genesis);
+        let prepared = meta(HardforkState::Prepared, None);
+        assert_eq!(archive_config(Some(&prepared), net), genesis);
+        // applied: the recorded postfork config, or none (forked before it existed)
+        let applied = meta(
+            HardforkState::Applied,
+            Some("/n/hardfork/archive_config.json"),
+        );
+        assert_eq!(
+            archive_config(Some(&applied), net),
+            Some(PathBuf::from("/n/hardfork/archive_config.json"))
+        );
+        let old = meta(HardforkState::Applied, None);
+        assert_eq!(archive_config(Some(&old), net), None);
+    }
+}

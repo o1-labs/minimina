@@ -926,6 +926,7 @@ fn hardfork_network_gets_its_schedule_and_status() {
             postgres_uri: String::new(),
             profile: Profile::Devnet,
             features: Default::default(),
+            archive_config: None,
             runner: h.fake.clone(),
         };
         if let Some(now) = now {

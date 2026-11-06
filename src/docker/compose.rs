@@ -8,6 +8,7 @@ use crate::cli::{ExecutionMode, Profile};
 use crate::daemon_args::{
     rosetta_args, DaemonFeatures, Layout, PRECOMPUTED_BLOCKS_DIR, ROSETTA_ENV,
 };
+use crate::genesis_ledger::GENESIS_LEDGER_JSON;
 use crate::native::binary::Binary;
 use crate::service::typed::{self, Daemon, Docker, Kind, Role};
 use log::debug;
@@ -201,8 +202,11 @@ impl DockerCompose {
                             ComposeService {
                                 container_name: archive_service.clone(),
                                 image: image.clone(),
+                                // the genesis config: the archive inserts the genesis block
+                                // as canonical and records the genesis accounts
                                 command: Some(format!(
-                                    "mina-archive run --postgres-uri {archive_uri} --server-port {port}"
+                                    "mina-archive run --postgres-uri {archive_uri} --server-port {port} \
+                                     --config-file /local-network/{GENESIS_LEDGER_JSON}"
                                 )),
                                 volumes: Some(vec![
                                     format!("{name}:/data"),
@@ -692,5 +696,10 @@ mod tests {
         assert!(docker_compose.contains("postgres-data"));
         assert!(docker_compose.contains("/data"));
         assert!(docker_compose.contains("-archive-address mina-archive777-service-network-id:8304"));
+        // the archive reads the genesis config the daemons read
+        assert!(docker_compose.contains(
+            "mina-archive run --postgres-uri postgres://postgres:postgres@postgres-network-id:5432/archive \
+             --server-port 8304 --config-file /local-network/genesis_ledger.json"
+        ));
     }
 }

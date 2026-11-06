@@ -27,7 +27,8 @@ use std::{
 /// Directory of the postfork data in the network directory.
 pub const HARDFORK_DIR: &str = "hardfork";
 const PREPARED_JSON: &str = "prepared.json";
-const FORK_CONFIG_JSON: &str = "fork_config.json";
+/// The fork config of the daemon `prepare` took the fork point from.
+pub const FORK_CONFIG_JSON: &str = "fork_config.json";
 const LEDGER_HASHES_JSON: &str = "ledger_hashes.json";
 /// The postfork runtime config of a node, as the hardfork tools name it.
 pub const DAEMON_JSON: &str = "daemon.json";
