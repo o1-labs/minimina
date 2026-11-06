@@ -24,6 +24,8 @@
 //! [ledger]                        # funded accounts for tests: account-1 ...
 //! accounts = 5
 //! balance = "1000"
+//! # file = "accounts.csv"         # given accounts: a runtime config ledger (.json)
+//!                                 # or public_key,balance[,private_key,delegate] (.csv)
 //!
 //! [runtime_config]                # merged into the genesis runtime config
 //! proof = { block_window_duration_ms = 30000 }
@@ -34,19 +36,38 @@
 //! postfork = { bin_path = "/opt/mina-postfork/bin" }
 //! ```
 
+//!
+//! - [`flags`]: the node flags of `network create` and `spec init`, on top
+//!   of a spec.
+//! - [`ledger`]: the accounts of `[ledger] file`.
+//! - [`init`]: a spec written as commented TOML (`spec init`).
+
+mod error;
+pub mod flags;
+pub mod init;
+pub mod ledger;
+
+pub use error::{LedgerProblem, SpecError};
+use ledger::Balance;
+
 use crate::{cli::Profile, hardfork::HardforkSpec};
 use anyhow::{bail, Context as _, Result};
-use serde::Deserialize;
-use std::{collections::BTreeSet, path::Path};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
-/// Genesis balance of a block producer that sets none.
-pub const DEFAULT_BLOCK_PRODUCER_BALANCE: &str = "11550000";
+/// Genesis balance in MINA of a block producer that sets none.
+pub const DEFAULT_BLOCK_PRODUCER_BALANCE: u64 = 11_550_000;
+/// Genesis balance in MINA of the funded test accounts of a spec that sets none.
+pub const DEFAULT_ACCOUNT_BALANCE: u64 = 1000;
 /// First client port of automatically placed daemons; each takes `PORT_STEP` ports.
 const FIRST_CLIENT_PORT: u16 = 3100;
 /// Client, rest, external, metrics, libp2p metrics, archive.
 const PORT_STEP: u16 = 10;
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkSpec {
     pub profile: Option<Profile>,
@@ -56,13 +77,14 @@ pub struct NetworkSpec {
     pub ledger: LedgerSpec,
     /// Merged into the generated genesis runtime config (`genesis`, `proof`, `daemon`, ...).
     pub runtime_config: Option<toml::Table>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "DockerSpec::is_empty")]
     pub docker: DockerSpec,
     /// A fork of the network to postfork binaries (see [`crate::hardfork`]).
     pub hardfork: Option<HardforkSpec>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+/// In the order a network lists them.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
 pub enum Role {
     Seed,
@@ -78,7 +100,7 @@ pub enum Role {
 }
 
 impl Role {
-    fn default_name(&self) -> &'static str {
+    pub fn default_name(&self) -> &'static str {
         match self {
             Role::Seed => "seed",
             Role::BlockProducer => "bp",
@@ -91,17 +113,17 @@ impl Role {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NodeGroup {
     pub role: Role,
     /// Name of the node; only for `count = 1`. Default: `<role>-<n>`.
     pub name: Option<String>,
-    #[serde(default = "one")]
+    #[serde(default = "one", skip_serializing_if = "is_one")]
     pub count: u16,
     /// Genesis balance of each node. Block producers default to
     /// [`DEFAULT_BLOCK_PRODUCER_BALANCE`]; other nodes get no account.
-    pub balance: Option<String>,
+    pub balance: Option<Balance>,
     /// Client port (others follow it). Default: the next free block from 3100.
     pub client_port: Option<u16>,
     /// Archive node: port of the `mina-archive` process. Default: client port + 5.
@@ -123,17 +145,55 @@ fn one() -> u16 {
     1
 }
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+fn is_one(count: &u16) -> bool {
+    *count == 1
+}
+
+/// One seed with nothing else set, as a spec without settings means it; the
+/// base of `NodeGroup { role, ..Default::default() }`.
+impl Default for NodeGroup {
+    fn default() -> Self {
+        NodeGroup {
+            role: Role::Seed,
+            name: None,
+            count: 1,
+            balance: None,
+            client_port: None,
+            archive_port: None,
+            workers: None,
+            fee: None,
+            node: None,
+            version: None,
+            bin: None,
+        }
+    }
+}
+
+impl NodeGroup {
+    /// `count` nodes of `role`, with nothing else set.
+    pub fn new(role: Role, count: u16) -> Self {
+        NodeGroup {
+            role,
+            count,
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LedgerSpec {
     /// Funded accounts with generated keys (`account-1`, ...), for transactions in tests.
     #[serde(default)]
     pub accounts: u16,
-    pub balance: Option<String>,
+    pub balance: Option<Balance>,
+    /// Accounts to start with (see [`ledger`]); the generated ones are
+    /// added to them. A relative path is relative to the spec file.
+    pub file: Option<PathBuf>,
 }
 
 /// Images of docker mode; the built-in images when not set.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DockerSpec {
     pub daemon_image: Option<String>,
@@ -143,12 +203,18 @@ pub struct DockerSpec {
     pub archive_node_api_image: Option<String>,
 }
 
+impl DockerSpec {
+    fn is_empty(&self) -> bool {
+        *self == DockerSpec::default()
+    }
+}
+
 /// One node of the network, with its name and ports decided.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlannedNode {
     pub name: String,
     pub role: Role,
-    pub balance: Option<String>,
+    pub balance: Option<Balance>,
     pub client_port: u16,
     pub archive_port: Option<u16>,
     /// Snark coordinator: names of its workers.
@@ -175,26 +241,66 @@ impl PlannedNode {
 }
 
 impl NetworkSpec {
+    /// Reads a spec file. Relative paths in it are made absolute from the
+    /// file's directory, so the spec means the same wherever it is used.
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading network spec {}", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("parsing network spec {}", path.display()))
+        let mut spec: NetworkSpec = toml::from_str(&text)
+            .with_context(|| format!("parsing network spec {}", path.display()))?;
+        // `net.toml` has an empty parent: make the path absolute first
+        let absolute =
+            std::path::absolute(path).with_context(|| format!("resolving {}", path.display()))?;
+        if let Some(base) = absolute.parent() {
+            spec.resolve_paths(base);
+        }
+        Ok(spec)
     }
 
-    /// The network `network create` makes without a spec, topology or ledger.
+    fn resolve_paths(&mut self, base: &Path) {
+        let resolve = |p: &mut PathBuf| {
+            if p.is_relative() {
+                *p = base.join(&*p);
+            }
+        };
+        self.ledger.file.as_mut().map(resolve);
+        for group in &mut self.nodes {
+            group.bin.as_mut().map(resolve);
+        }
+        if let Some(postfork) = self.hardfork.as_mut().and_then(|h| h.postfork.as_mut()) {
+            postfork.bin_path.as_mut().map(resolve);
+            postfork.archive_upgrade.as_mut().map(resolve);
+        }
+    }
+
+    /// The spec as TOML, as `network create` keeps it in the network directory.
+    pub fn to_toml(&self) -> Result<String> {
+        toml::to_string_pretty(self).context("writing the network spec as TOML")
+    }
+
+    /// The network of node flags without a spec: a seed and a block producer,
+    /// which the flags change.
+    pub fn flags_base() -> Self {
+        NetworkSpec {
+            profile: None,
+            nodes: vec![
+                NodeGroup::new(Role::Seed, 1),
+                NodeGroup::new(Role::BlockProducer, 1),
+            ],
+            ledger: LedgerSpec::default(),
+            runtime_config: None,
+            docker: DockerSpec::default(),
+            hardfork: None,
+        }
+    }
+
+    /// The network `network create` makes without a spec, flags, topology or ledger.
     pub fn default_network() -> Self {
         let node = |role, name: &str, client_port| NodeGroup {
             role,
             name: Some(name.into()),
-            count: 1,
-            balance: None,
             client_port: Some(client_port),
-            archive_port: None,
-            workers: None,
-            fee: None,
-            node: None,
-            version: None,
-            bin: None,
+            ..Default::default()
         };
         let mut archive = node(Role::Archive, "mina-archive", 5005);
         archive.archive_port = Some(3086);
@@ -306,7 +412,7 @@ impl NetworkSpec {
                 let client_port = group.client_port.unwrap_or_else(&mut auto_port);
                 let balance = group.balance.clone().or_else(|| {
                     (group.role == Role::BlockProducer)
-                        .then(|| DEFAULT_BLOCK_PRODUCER_BALANCE.to_string())
+                        .then(|| Balance::mina(DEFAULT_BLOCK_PRODUCER_BALANCE))
                 });
                 let workers = (1..=group.workers.unwrap_or(0))
                     .map(|i| match name.strip_suffix("coordinator") {
@@ -442,14 +548,20 @@ mod tests {
         let plan = s.plan().unwrap();
         let summary: Vec<_> = plan
             .iter()
-            .map(|n| (n.name.as_str(), n.client_port, n.balance.as_deref()))
+            .map(|n| {
+                (
+                    n.name.as_str(),
+                    n.client_port,
+                    n.balance.as_ref().map(Balance::as_str),
+                )
+            })
             .collect();
         assert_eq!(
             summary,
             vec![
                 ("seed-1", 3100, None),
-                ("bp-1", 3110, Some(DEFAULT_BLOCK_PRODUCER_BALANCE)),
-                ("bp-2", 3120, Some(DEFAULT_BLOCK_PRODUCER_BALANCE)),
+                ("bp-1", 3110, Some("11550000")),
+                ("bp-2", 3120, Some("11550000")),
                 ("node-1", 3130, None),
                 ("archive", 3140, None),
                 ("snark-coordinator", 3150, None),
@@ -598,5 +710,12 @@ mod tests {
         assert!(err("[[nodes]]\nrole = \"seed\"\nworkers = 1").contains("for snark coordinators"));
         assert!(toml::from_str::<NetworkSpec>("[[nodes]]\nrole = \"seed\"\ncolour = 1").is_err());
         assert!(toml::from_str::<NetworkSpec>("[[nodes]]\nrole = \"wizard\"").is_err());
+        let bad_balance = toml::from_str::<NetworkSpec>("[ledger]\nbalance = \"1e9\"")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            bad_balance.contains("balance '1e9' is not an amount of MINA"),
+            "{bad_balance}"
+        );
     }
 }

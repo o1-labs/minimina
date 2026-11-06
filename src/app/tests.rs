@@ -76,6 +76,12 @@ fn non_probe_calls(fake: &FakeRunner) -> Vec<String> {
         .collect()
 }
 
+/// A public key the fake `generate-keypair` prints: `B62q`, `i`, and zeros
+/// to the 55 characters of a real one.
+fn test_pk(i: usize) -> String {
+    format!("B62q{i:0<51}")
+}
+
 fn fake_mina_dir() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("mina"), "").unwrap();
@@ -327,7 +333,8 @@ fn native_archive_uses_the_schema_of_its_package() {
     std::fs::create_dir_all(&schema_dir).unwrap();
     std::fs::write(schema_dir.join("create_schema.sql"), "-- packaged").unwrap();
     for _ in 0..3 {
-        h.fake.reply(0, "Public key: B62qtest\n", "");
+        h.fake
+            .reply(0, &format!("Public key: {}\n", test_pk(0)), "");
     }
     for i in 0..5 {
         h.fake
@@ -362,7 +369,8 @@ fn native_default_network_generates_keys_with_mina() {
     let h = Harness::new();
     let bin = fake_mina_dir();
     for _ in 0..3 {
-        h.fake.reply(0, "Public key: B62qtest\n", "");
+        h.fake
+            .reply(0, &format!("Public key: {}\n", test_pk(0)), "");
     }
     for i in 0..5 {
         h.fake
@@ -419,7 +427,7 @@ fn native_default_network_generates_keys_with_mina() {
 
     let net = h.dirs.network_path("def");
     let ledger = std::fs::read_to_string(net.join("genesis_ledger.json")).unwrap();
-    assert!(ledger.contains("B62qtest"));
+    assert!(ledger.contains(&test_pk(0)));
     // only the two block producers hold stake
     assert_eq!(ledger.matches("\"pk\"").count(), 2, "{ledger}");
 }
@@ -451,7 +459,8 @@ fn native_spec_network() {
     .unwrap();
     // keys: bp-1, bp-2, account-1, account-2; libp2p: seed-1, bp-1, bp-2, node-1
     for i in 0..4 {
-        h.fake.reply(0, &format!("Public key: B62q{i}\n"), "");
+        h.fake
+            .reply(0, &format!("Public key: {}\n", test_pk(i)), "");
     }
     for i in 0..4 {
         h.fake
@@ -491,10 +500,10 @@ fn native_spec_network() {
     assert_eq!(
         balances,
         [
-            ("B62q0", "500"),
-            ("B62q1", "500"),
-            ("B62q2", "1000"),
-            ("B62q3", "1000")
+            (test_pk(0).as_str(), "500"),
+            (test_pk(1).as_str(), "500"),
+            (test_pk(2).as_str(), "1000"),
+            (test_pk(3).as_str(), "1000")
         ]
     );
     assert_eq!(ledger["proof"]["block_window_duration_ms"], 30000);
@@ -1225,4 +1234,127 @@ fn native_start_refuses_binaries_that_cannot_load() {
         [format!("ldd {}/mina", bin.path().display())]
     );
     assert!(!h.dirs.network_path("x").exists());
+}
+
+#[test]
+fn flags_change_the_spec_and_the_resolved_spec_is_kept() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let pk = "B62qrPN5Y5yq8kGE3FbVKbGTdTAJNdtNtB5sNVpxyRwWGcDEhpMzc8g";
+    std::fs::write(
+        dir.path().join("given.csv"),
+        format!("public_key,balance\n{pk},42.5\n"),
+    )
+    .unwrap();
+    let spec = dir.path().join("net.toml");
+    std::fs::write(
+        &spec,
+        "[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"block-producer\"\nbalance = \"500\"\n\
+         [ledger]\nfile = \"given.csv\"\n",
+    )
+    .unwrap();
+    // --bps 2 replaces the spec's one block producer; --accounts 1 adds an account
+    // keys: bp-1, bp-2, account-1; libp2p: seed-1, bp-1, bp-2
+    for i in 0..3 {
+        h.fake
+            .reply(0, &format!("Public key: {}\n", test_pk(i)), "");
+    }
+    for i in 0..3 {
+        h.fake
+            .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");
+    }
+    h.run(&native_args(
+        &bin,
+        &[
+            "network",
+            "create",
+            "-n",
+            "f",
+            "--spec",
+            path_arg(&spec),
+            "--block-producers",
+            "2",
+            "--accounts",
+            "1",
+        ],
+    ))
+    .unwrap();
+
+    let net = h.dirs.network_path("f");
+    let ledger: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(net.join("genesis_ledger.json")).unwrap())
+            .unwrap();
+    let balances: Vec<_> = ledger["ledger"]["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| (a["pk"].as_str().unwrap(), a["balance"].as_str().unwrap()))
+        .collect();
+    // the given account first, then the generated ones
+    assert_eq!(
+        balances,
+        [
+            (pk, "42.5"),
+            (test_pk(0).as_str(), "500"),
+            (test_pk(1).as_str(), "500"),
+            (test_pk(2).as_str(), "1000")
+        ]
+    );
+
+    // network.toml is the spec as resolved, with the ledger file's absolute path
+    let kept = crate::spec::NetworkSpec::load(&h.dirs.spec_path("f")).unwrap();
+    assert_eq!(kept.nodes[1].count, 2);
+    assert_eq!(kept.ledger.accounts, 1);
+    assert_eq!(kept.ledger.file, Some(dir.path().join("given.csv")));
+}
+
+#[test]
+fn flags_alone_make_a_network() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    // keys: bp-1; libp2p: seed-1, bp-1, node-1
+    h.fake
+        .reply(0, &format!("Public key: {}\n", test_pk(0)), "");
+    for i in 0..3 {
+        h.fake
+            .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");
+    }
+    h.run(&native_args(
+        &bin,
+        &["network", "create", "-n", "f", "--plains", "1"],
+    ))
+    .unwrap();
+    let kept = crate::spec::NetworkSpec::load(&h.dirs.spec_path("f")).unwrap();
+    let roles: Vec<_> = kept.nodes.iter().map(|g| (g.role, g.count)).collect();
+    use crate::spec::Role;
+    assert_eq!(
+        roles,
+        [(Role::Seed, 1), (Role::BlockProducer, 1), (Role::Plain, 1)]
+    );
+}
+
+#[test]
+fn flags_and_the_legacy_files_do_not_mix() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let err = h
+        .run(&native_args(
+            &bin,
+            &[
+                "network",
+                "create",
+                "-n",
+                "f",
+                "-t",
+                SMALL_TOPOLOGY,
+                "-g",
+                SMALL_LEDGER,
+                "--bps",
+                "2",
+            ],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("cannot be combined with -t/-g"), "{err}");
 }

@@ -1,0 +1,103 @@
+# minimina network spec, written by `{{ command }}`.
+# Create the network: minimina network create -n <network> --spec <this file>
+#
+# minimina generates the keys, ports, peers and genesis ledger. Node names
+# default to <role>-<n> (seed-1, bp-1, node-1, ...); client ports are
+# assigned from 3100 in steps of 10 unless a node sets `client_port`.
+# A node with `count = 1` can set `name` and `client_port`.
+
+# Build profile of the mina binaries: dev, devnet, lightnet or mainnet.
+# --profile overrides it.
+{% match spec.profile -%}
+{% when Some(profile) -%}
+profile = {{ profile|toml }}
+{% when None -%}
+# profile = "devnet"
+{% endmatch -%}
+{% for node in spec.nodes %}
+[[nodes]]
+{% match node.role -%}
+{% when Role::Seed -%}
+# Peers find each other through the seeds.
+{% when Role::BlockProducer -%}
+# Produce blocks. `balance`: genesis balance in MINA (default "{{ crate::spec::DEFAULT_BLOCK_PRODUCER_BALANCE }}").
+{% when Role::Plain -%}
+# Follow the chain and produce no blocks.
+{% when Role::Archive -%}
+# A daemon with mina-archive and a postgres database.
+{% when Role::SnarkCoordinator -%}
+# Hands out snark work to `workers` snark workers; `fee`: MINA per snark work.
+{% when Role::Rosetta -%}
+# Reads the archive and the GraphQL API of `node` (default: the archive).
+{% when Role::ArchiveNodeApi -%}
+# GraphQL over the archive database (events, actions); `version`: of the
+# npm package or docker image, `bin`: own executable (native mode).
+{% endmatch -%}
+role = {{ node.role|toml }}
+{% if node.count != 1 -%}
+count = {{ node.count }}
+{% endif -%}
+{% if let Some(name) = node.name -%}
+name = {{ name|toml }}
+{% endif -%}
+{% if let Some(balance) = node.balance -%}
+balance = {{ balance|toml }}
+{% endif -%}
+{% if let Some(port) = node.client_port -%}
+client_port = {{ port }}
+{% endif -%}
+{% if let Some(port) = node.archive_port -%}
+archive_port = {{ port }}
+{% endif -%}
+{% if let Some(workers) = node.workers -%}
+workers = {{ workers }}
+{% endif -%}
+{% if let Some(fee) = node.fee -%}
+fee = {{ fee|toml }}
+{% endif -%}
+{% if let Some(daemon) = node.node -%}
+node = {{ daemon|toml }}
+{% endif -%}
+{% if let Some(version) = node.version -%}
+version = {{ version|toml }}
+{% endif -%}
+{% if let Some(bin) = node.bin -%}
+bin = {{ bin|toml }}
+{% endif -%}
+{% endfor %}
+# Funded accounts for transactions in tests: account-1 .. account-N, with
+# `balance` MINA each; keys are in <network dir>/network-keypairs.
+# `file` gives accounts to start with; the generated ones are added after them:
+#   .json: a runtime config ledger (ledger.accounts), as -g takes it
+#   .csv:  a header line, then public_key,balance[,private_key,delegate] per
+#          line; balances in MINA
+# A relative `file` is relative to this file.
+[ledger]
+accounts = {{ spec.ledger.accounts }}
+{% match spec.ledger.balance -%}
+{% when Some(balance) -%}
+balance = {{ balance|toml }}
+{% when None -%}
+# balance = "{{ crate::spec::DEFAULT_ACCOUNT_BALANCE }}"
+{% endmatch -%}
+{% match spec.ledger.file -%}
+{% when Some(file) -%}
+file = {{ file|toml }}
+{% when None -%}
+# file = "accounts.csv"
+{% endmatch %}
+# Merged into the generated genesis runtime config.
+# [runtime_config.genesis]
+# k = 10
+# [runtime_config.proof]
+# block_window_duration_ms = 30000
+
+# Docker mode images (defaults: the built-in images).
+# [docker]
+# daemon_image = "minaprotocol/mina-daemon:..."
+
+# A fork to postfork binaries (native mode only); see the README.
+# [hardfork]
+# mode = "manual"
+# at = { slot = 42 }
+# postfork = { mina_version = "4.0.4" }

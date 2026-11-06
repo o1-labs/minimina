@@ -27,6 +27,8 @@ mina-sdk = { version = "=0.4.0-rc.3", default-features = false, features = ["rus
 mina-archive-sdk = { version = "=2.1.0", default-features = false, features = ["rustls-tls"] }
 tokio = { version = "1", features = ["rt", "time"] }
 sha2 = "0.10"
+# no `config`: it reads askama.toml (unused) with the unmaintained basic-toml
+askama = { version = "0.16", default-features = false, features = ["derive", "std"] }
 
 [dev-dependencies]
 assert_cmd = "2"

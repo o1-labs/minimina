@@ -12,15 +12,15 @@ use crate::{
     keys::{KeysManager, NodeKey},
     native::keys::NativeKeysManager,
     service::{ServiceConfig, ServiceType},
-    spec::{NetworkSpec, PlannedNode, Role},
+    spec::{
+        ledger::{Balance, LedgerAccount, LedgerFile, PublicKey},
+        NetworkSpec, PlannedNode, Role, SpecError, DEFAULT_ACCOUNT_BALANCE,
+    },
     topology::Topology,
 };
 use anyhow::{bail, Context as _, Result};
 use log::info;
 use std::{collections::HashMap, path::Path};
-
-/// Balance of the funded test accounts of a spec that sets none.
-const DEFAULT_ACCOUNT_BALANCE: &str = "1000";
 
 /// A network generated from a spec: its nodes and the keys made for them.
 pub struct SpecNetwork {
@@ -32,12 +32,18 @@ pub struct SpecNetwork {
     pub libp2p: HashMap<String, NodeKey>,
 }
 
-/// The spec of `network create`: `--spec`, else the default network.
+/// The spec of `network create`: the node flags on top of `--spec`, else of
+/// [`NetworkSpec::flags_base`]; with neither, the default network.
 pub fn create_spec(cmd: &CreateNetworkArgs) -> Result<NetworkSpec> {
-    cmd.spec
-        .as_deref()
-        .map(NetworkSpec::load)
-        .unwrap_or_else(|| Ok(NetworkSpec::default_network()))
+    if !cmd.nodes.is_empty() && cmd.uses_legacy_files() {
+        return Err(SpecError::FlagsWithLegacyFiles.into());
+    }
+    let spec = match (&cmd.spec, cmd.nodes.is_empty()) {
+        (Some(path), _) => NetworkSpec::load(path)?,
+        (None, false) => NetworkSpec::flags_base(),
+        (None, true) => NetworkSpec::default_network(),
+    };
+    Ok(spec.with_flags(&cmd.nodes))
 }
 
 /// Handles `network_id`'s genesis ledger: copies the given one, or generates
@@ -60,11 +66,11 @@ pub fn handle_genesis_ledger(
         }
         None => {
             let network_path = dirs.network_path(network_id);
-            if let Some(spec_path) = &cmd.spec {
-                std::fs::copy(spec_path, dirs.spec_path(network_id))
-                    .with_context(|| format!("copying {}", spec_path.display()))?;
-            }
-            generate_from_spec(ctx, &network_path, create_spec(cmd)?).map(Some)
+            let spec = create_spec(cmd)?;
+            // the spec as resolved, to create the network again with --spec
+            std::fs::write(dirs.spec_path(network_id), spec.to_toml()?)
+                .context("writing the network spec")?;
+            generate_from_spec(ctx, &network_path, spec).map(Some)
         }
     }
 }
@@ -123,24 +129,31 @@ fn generate_from_spec(
     let bp = bp.context("Failed to generate key pairs for mina services")?;
     let libp2p = libp2p.context("Failed to generate libp2p key pairs for mina services")?;
 
-    let pk = |name: &str| {
-        bp.get(name)
-            .map(|k| k.key_string.clone())
-            .with_context(|| format!("no key generated for '{name}'"))
+    let pk = |name: &str| -> Result<PublicKey> {
+        let key = bp
+            .get(name)
+            .with_context(|| format!("no key generated for '{name}'"))?;
+        key.key_string
+            .parse()
+            .with_context(|| format!("the key generated for '{name}'"))
     };
     let account_balance = spec
         .ledger
         .balance
-        .as_deref()
-        .unwrap_or(DEFAULT_ACCOUNT_BALANCE);
-    let mut ledger = Vec::new();
+        .clone()
+        .unwrap_or(Balance::mina(DEFAULT_ACCOUNT_BALANCE));
+    // the accounts of the ledger file first, then the generated ones
+    let mut ledger = match &spec.ledger.file {
+        Some(file) => LedgerFile::load(file)?.accounts,
+        None => vec![],
+    };
     for node in &nodes {
         if let Some(balance) = &node.balance {
-            ledger.push((pk(&node.name)?, balance.clone()));
+            ledger.push(LedgerAccount::new(pk(&node.name)?, balance.clone()));
         }
     }
     for account in &accounts {
-        ledger.push((pk(account)?, account_balance.to_string()));
+        ledger.push(LedgerAccount::new(pk(account)?, account_balance.clone()));
     }
     default::LedgerGenerator::generate(network_path, &ledger, spec.runtime_config_json()?.as_ref())
         .context("Error generating genesis ledger")?;

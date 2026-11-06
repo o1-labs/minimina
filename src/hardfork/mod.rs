@@ -31,7 +31,7 @@ use std::path::PathBuf;
 pub const MIN_LEAD: Duration = Duration::minutes(10);
 const DEFAULT_GENESIS_SLOT_DELTA: u32 = 10;
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HardforkSpec {
     pub mode: HardforkMode,
@@ -70,7 +70,7 @@ pub enum ForkMethod {
     Advanced,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(untagged)]
 pub enum ForkAt {
     Slot {
@@ -80,7 +80,7 @@ pub enum ForkAt {
     Date(String),
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PostforkSpec {
     /// Directory with the postfork `mina`, `mina-archive`, `mina-rosetta`, ...
