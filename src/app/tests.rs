@@ -1,6 +1,7 @@
 //! Handler tests: real filesystem under a temp `MINIMINA_HOME`, fake `docker`/`mina`.
 
 use super::run_with;
+use crate::archive_db::fake::FakeArchive;
 use crate::{
     cli::{Cli, Profile},
     directory_manager::DirectoryManager,
@@ -24,6 +25,7 @@ struct Harness {
     home: tempfile::TempDir,
     dirs: DirectoryManager,
     fake: Rc<FakeRunner>,
+    archive: Rc<FakeArchive>,
 }
 
 impl Harness {
@@ -34,6 +36,7 @@ impl Harness {
             home,
             dirs,
             fake: Rc::new(FakeRunner::default()),
+            archive: Rc::new(FakeArchive::default()),
         }
     }
 
@@ -47,7 +50,12 @@ impl Harness {
     fn run(&self, args: &[&str]) -> anyhow::Result<()> {
         let cli =
             Cli::try_parse_from(std::iter::once("minimina").chain(args.iter().copied())).unwrap();
-        run_with(cli, self.dirs.clone(), self.fake.clone())
+        run_with(
+            cli,
+            self.dirs.clone(),
+            self.fake.clone(),
+            self.archive.clone(),
+        )
     }
 
     fn compose(&self, network_id: &str, rest: &str) -> String {
@@ -932,6 +940,7 @@ fn hardfork_network_gets_its_schedule_and_status() {
             profile: Profile::Devnet,
             features: Default::default(),
             archive_config: None,
+            archive_db: h.archive.clone(),
             runner: h.fake.clone(),
         };
         if let Some(now) = now {
@@ -1016,6 +1025,111 @@ fn invalid_hardfork_is_refused_before_the_old_network_goes() {
         .unwrap()
         .hardfork
         .is_some());
+}
+
+#[test]
+fn native_replayer_takes_two_passes_after_a_fork() {
+    use crate::genesis_ledger::{GENESIS_LEDGER_JSON, PREFORK_GENESIS_LEDGER_JSON};
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let post = postfork_dir(&[
+        "mina",
+        "mina-archive",
+        "mina-create-genesis",
+        "mina-archive-hardfork-toolbox",
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    let spec = hardfork_spec(
+        dir.path(),
+        &post.bin,
+        "mode = \"manual\"\nat = { slot = 42 }",
+    );
+    queue_hardfork_create(&h);
+    h.run(&native_args(
+        &bin,
+        &["network", "create", "-n", "hf", "--spec", path_arg(&spec)],
+    ))
+    .unwrap();
+    let net = h.dirs.network_path("hf");
+    let work = net.join("replayer");
+    let archive =
+        crate::service::ServiceConfig::get_archive_node(&h.dirs.get_services_info("hf").unwrap())
+            .unwrap()
+            .service_name
+            .clone();
+    let replay = |extra: &[&str]| {
+        let calls = h.fake.lines().len();
+        let mut args = vec![
+            "node",
+            "run-replayer",
+            "-n",
+            "hf",
+            "-i",
+            &archive,
+            "-s",
+            "0",
+        ];
+        args.extend_from_slice(extra);
+        let result = h.run(&args);
+        (result, h.fake.lines()[calls..].to_vec())
+    };
+
+    // before the fork: one pass, with the prefork binaries
+    let (result, lines) = replay(&[]);
+    result.unwrap();
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    assert!(lines[0].starts_with(&format!(
+        "{}/mina-replayer --input-file {}/replayer_input.json --archive-uri ",
+        bin.path().display(),
+        net.display()
+    )));
+    assert!(lines[0].ends_with(&format!(
+        "--genesis-ledger-dir {w} --checkpoint-output-folder {w}",
+        w = work.display()
+    )));
+    assert!(work.is_dir());
+    let (result, lines) = replay(&["--hard-fork-target", "mesa"]);
+    assert!(format!("{:#}", result.unwrap_err())
+        .contains("--hard-fork-target is for a network after `network hardfork apply`"));
+    assert!(lines.is_empty());
+
+    // after the fork: the target from the archive, then two passes with the
+    // postfork binaries
+    std::fs::copy(
+        net.join(GENESIS_LEDGER_JSON),
+        net.join(PREFORK_GENESIS_LEDGER_JSON),
+    )
+    .unwrap();
+    let mut meta = NetworkMeta::load(&net).unwrap().unwrap();
+    meta.bin_path = Some(post.bin.clone());
+    meta.hardfork.as_mut().unwrap().state = crate::network_meta::HardforkState::Applied;
+    meta.save(&net).unwrap();
+    *h.archive.prefork_transaction_version.borrow_mut() = Some(4);
+    let (result, lines) = replay(&[]);
+    result.unwrap();
+    assert_eq!(
+        h.archive.calls.borrow()[1..],
+        ["prefork_transaction_version 52"]
+    );
+    assert_eq!(lines.len(), 2, "{lines:#?}");
+    let replayer = format!("{}/mina-replayer --input-file", post.bin.display());
+    assert!(lines[0].starts_with(&replayer), "{}", lines[0]);
+    assert!(lines[0].ends_with(&format!(
+        "--stop-slot-config-file {} --hard-fork-output-file {} --hard-fork-target compatible",
+        net.join(PREFORK_GENESIS_LEDGER_JSON).display(),
+        work.join("postfork_input.json").display()
+    )));
+    assert!(lines[1].starts_with(&format!(
+        "{replayer} {}",
+        work.join("postfork_input.json").display()
+    )));
+
+    // a given target skips the archive; a ledger mismatch fails the command
+    h.fake.reply(1, "", "ledger hash mismatch at slot 30");
+    let (result, lines) = replay(&["--hard-fork-target", "mesa"]);
+    assert!(format!("{:#}", result.unwrap_err()).contains("ledger hash mismatch at slot 30"));
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    assert!(lines[0].ends_with("--hard-fork-target mesa"));
 }
 
 #[test]

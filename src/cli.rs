@@ -485,6 +485,13 @@ pub struct ReplayerArgs {
     #[clap(short = 's', long)]
     pub start_slot_since_genesis: u64,
 
+    /// After `network hardfork apply`: what the prefork pass does to the
+    /// ledger for the postfork pass [default: `compatible` when the archive's
+    /// blocks have one transaction protocol version on both sides of the
+    /// fork, else `mesa`]
+    #[clap(long, value_enum)]
+    pub hard_fork_target: Option<crate::replayer::HardForkTarget>,
+
     #[clap(flatten)]
     pub node_args: NodeCommandArgs,
 }

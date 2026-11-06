@@ -244,7 +244,7 @@ pub mod node {
 
     #[derive(Debug, Serialize, PartialEq)]
     pub struct ReplayerLogs {
-        pub logs: String,
+        pub passes: Vec<crate::replayer::PassLog>,
         pub network_id: String,
         pub node_id: String,
     }

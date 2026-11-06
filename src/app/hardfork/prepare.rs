@@ -3,10 +3,11 @@
 
 use super::{status, Context};
 use crate::{
+    archive_db::ArchiveBlock,
     genesis_ledger,
     hardfork::{
         fork_config::{self, ForkPoint, LedgerHashes},
-        toolbox::{ArchiveBlock, Toolbox},
+        toolbox::Toolbox,
         ForkMethod, HardforkMode,
     },
     native::{self, binary::Binary},

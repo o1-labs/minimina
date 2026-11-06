@@ -377,6 +377,31 @@ ledger's accounts from `archive_config.json`.
 A manual fork of a network with an archive needs
 `mina-archive-hardfork-toolbox` in the postfork `bin_path`.
 
+#### Replaying the archive
+
+```bash
+minimina node run-replayer -n mynet -i <archive node> -s 0
+```
+
+`node run-replayer` replays the archive's transactions and fails on the first
+ledger hash that does not match (no `--continue-on-error`). In native mode its
+ledger tarballs and checkpoints go to `<network dir>/replayer/`. Before
+`apply` it runs one pass. After `apply`, the replayer stops at the fork
+boundary, so it runs two passes with the postfork `mina-replayer`:
+
+1. genesis → fork block, with `--stop-slot-config-file
+   genesis_ledger.prefork.json`. It writes the postfork input
+   `replayer/postfork_input.json` (`--hard-fork-output-file`);
+2. fork genesis → tip, from that input.
+
+`--hard-fork-target` of pass 1 says what the replayer does to the prefork
+ledger: `compatible` leaves it, `mesa` migrates a Berkeley ledger to Mesa.
+minimina takes it from the archive's prefork blocks: Mesa ones (transaction
+protocol version 4 or later) give `compatible`, older ones `mesa`.
+`--hard-fork-target mesa|compatible` sets it.
+Pass 2 replays to the tip of the canonical chain, which `apply` repairs (see
+step 6).
+
 ### Checks
 
 Checks of a running network, for example after a hardfork. Each prints a
