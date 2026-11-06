@@ -55,6 +55,10 @@ pub struct HardforkMeta {
     /// Directory of the prefork binaries, after `hardfork apply` switched `bin_path`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefork_bin_path: Option<PathBuf>,
+    /// The postfork `mina-archive` config `hardfork apply` wrote. Unset for
+    /// networks without an archive, and those forked before minimina wrote one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_config: Option<PathBuf>,
 }
 
 /// How far the manual hardfork went.
@@ -119,6 +123,7 @@ mod tests {
                 archive_upgrade: None,
                 state: HardforkState::Prepared,
                 prefork_bin_path: None,
+                archive_config: None,
             }),
         };
         meta.save(dir.path()).unwrap();

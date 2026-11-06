@@ -340,7 +340,11 @@ minimina network hardfork apply -n mynet            # before the fork genesis
    ledgers to `<config dir>/<chain id>/genesis`;
 3. applies the postfork `upgrade.sql` to the archive database, and checks
    that the last `migration_history` row says `applied`;
-4. records the postfork `bin_path` and starts the network with it.
+4. writes the postfork archive config `hardfork/archive_config.json`: the
+   shared config with `fork_config.json` (the fork ledger's accounts) on top.
+   From it `mina-archive` makes the same postfork genesis block as the
+   daemons and records the fork ledger's accounts;
+5. records the postfork `bin_path` and starts the network with it.
 
 ---
 
@@ -391,7 +395,7 @@ minimina network stop -n local
 - Logs are appended to `<network>/logs/<node>.log`; `node logs`, `node dump-precomputed-blocks`, `node dump-archive-data` and `node run-replayer` work in both modes.
 - Daemons advertise `127.0.0.1` (`-external-ip`). Daemons that have `-precomputed-blocks-dir` (4.0.2+) write one file per block to `config-directory/<node>/precomputed_blocks`; older ones append to `precomputed_blocks.log`.
 - The archive schema comes from the archive package next to `mina` (`<root>/etc/mina/archive/create_schema.sql` for `<root>/usr/local/bin`); minimina downloads it from GitHub only when the package has none.
-- Archive nodes run `mina-archive` (from the same directory as `mina`) against a database `minimina_<network_id>`, recreated on every `network create`. The postgres server is `postgres://postgres:postgres@localhost:5432` unless `MINIMINA_POSTGRES_URI` is set at create time; `psql`, `pg_dump` and `mina-replayer` must be installed.
+- Archive nodes run `mina-archive` (from the same directory as `mina`) against a database `minimina_<network_id>`, recreated on every `network create`. `mina-archive` gets the network's genesis config (`--config-file`, in both modes; after a hardfork, `hardfork/archive_config.json`): it inserts the genesis block as canonical and records the genesis accounts. It marks later blocks canonical with the `k` its profile was compiled with (devnet, mainnet: 290), not the runtime config's, so a network with a smaller `k` keeps its blocks `pending`. The postgres server is `postgres://postgres:postgres@localhost:5432` unless `MINIMINA_POSTGRES_URI` is set at create time; `psql`, `pg_dump` and `mina-replayer` must be installed.
 
 ### mina versions
 

@@ -44,6 +44,10 @@ pub struct NativeManager {
     pub profile: Profile,
     /// Version-dependent daemon flags, probed at `network create`.
     pub features: DaemonFeatures,
+    /// The runtime config `mina-archive` starts with (`--config-file`): it
+    /// inserts the genesis block as canonical and records the genesis
+    /// accounts. `None`: no config.
+    pub archive_config: Option<PathBuf>,
 }
 
 /// A tracked process and whether it is still running.
@@ -62,11 +66,17 @@ impl NativeManager {
             postgres_uri: postgres_uri.trim_end_matches('/').to_string(),
             profile,
             features: DaemonFeatures::default(),
+            archive_config: None,
         }
     }
 
     pub fn with_features(mut self, features: DaemonFeatures) -> Self {
         self.features = features;
+        self
+    }
+
+    pub fn with_archive_config(mut self, config: Option<PathBuf>) -> Self {
+        self.archive_config = config;
         self
     }
 
@@ -317,13 +327,20 @@ impl NativeManager {
     }
 
     fn archive_args(&self, port: u16) -> Vec<String> {
-        vec![
+        let mut args = vec![
             "run".into(),
             "--postgres-uri".into(),
             self.archive_db_uri(),
             "--server-port".into(),
             port.to_string(),
-        ]
+        ];
+        if let Some(config) = &self.archive_config {
+            args.extend([
+                "--config-file".into(),
+                config.to_string_lossy().into_owned(),
+            ]);
+        }
+        args
     }
 
     fn spawn(&self, name: &str, binary: &Path, args: &[String]) -> Result<()> {
@@ -1010,7 +1027,9 @@ exec sleep 300"#
     #[test]
     fn archive_node_runs_mina_archive_first() {
         let sandbox = Sandbox::new("echo \"$0 $*\"; exec sleep 300");
-        let native = sandbox.manager();
+        let native = sandbox
+            .manager()
+            .with_archive_config(Some("/net/genesis_ledger.json".into()));
         let archive_port = free_port();
         let archive = archive("arch", archive_port);
 
@@ -1021,7 +1040,9 @@ exec sleep 300"#
         assert!(log.contains(
             "mina-archive run --postgres-uri postgres://postgres:postgres@localhost:5432/minimina_"
         ));
-        assert!(log.contains(&format!("--server-port {archive_port}")));
+        assert!(log.contains(&format!(
+            "--server-port {archive_port} --config-file /net/genesis_ledger.json"
+        )));
 
         native.stop_service("arch", Duration::from_secs(5)).unwrap();
         assert!(native.status().unwrap().is_empty());
