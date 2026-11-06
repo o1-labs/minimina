@@ -330,6 +330,14 @@ minimina network hardfork apply -n mynet            # before the fork genesis
    the hardfork ledger, and the postfork daemon cannot load the data.
 5. The postfork `mina internal chain-id` must give one chain id for all
    nodes. This also checks that the ledger files are there.
+6. With an archive, the postfork `mina-archive-hardfork-toolbox` checks the
+   prefork archive: `fork-candidate last-filled-block` must give the fork
+   block of step 1, and `fork-candidate is-in-best-chain` must find it on the
+   best chain. `fork-candidate confirmations` (k blocks after the fork block,
+   up to the best tip of the daemon of step 1) only warns: the k + 2 slots
+   from `slot_tx_end` to `slot_chain_end` often hold fewer than k blocks.
+   `fork-candidate no-commands-after` does not run: in 4.0.4 it always fails
+   ([MinaProtocol/mina#19982](https://github.com/MinaProtocol/mina/issues/19982)).
 
 `apply` stops the network and then:
 
@@ -338,13 +346,29 @@ minimina network hardfork apply -n mynet            # before the fork genesis
    `genesis.genesis_state_timestamp`);
 2. copies `daemon.json` to the config directory of each daemon, and the
    ledgers to `<config dir>/<chain id>/genesis`;
-3. applies the postfork `upgrade.sql` to the archive database, and checks
-   that the last `migration_history` row says `applied`;
+3. applies the postfork `upgrade.sql` to the archive database, checks that
+   the last `migration_history` row says `applied`, and runs the toolbox's
+   `verify-upgrade` with its versions;
 4. writes the postfork archive config `hardfork/archive_config.json`: the
    shared config with `fork_config.json` (the fork ledger's accounts) on top.
    From it `mina-archive` makes the same postfork genesis block as the
    daemons and records the fork ledger's accounts;
-5. records the postfork `bin_path` and starts the network with it.
+5. records the postfork `bin_path` and starts the network with it;
+6. with an archive, waits for the archive to insert the postfork genesis
+   block, then runs the toolbox's `validate-fork` on that block and
+   `convert-chain-to-canonical`. This marks the prefork chain canonical up to
+   the fork block and its other blocks orphaned, which the archive does not do
+   on a network with a smaller k than its compiled one
+   ([MinaProtocol/mina#19986](https://github.com/MinaProtocol/mina/issues/19986)).
+   The network is running by then, so a failure here leaves it on the
+   postfork binaries.
+
+A failed upgrade or `verify-upgrade` stops `apply` before the network starts.
+`populate-genesis-accounts` is not needed: the archive records the fork
+ledger's accounts from `archive_config.json`.
+
+A manual fork of a network with an archive needs
+`mina-archive-hardfork-toolbox` in the postfork `bin_path`.
 
 ---
 

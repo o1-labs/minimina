@@ -6,6 +6,7 @@ use crate::{
     genesis_ledger,
     hardfork::{
         fork_config::{self, ForkPoint, LedgerHashes},
+        toolbox::{ArchiveBlock, Toolbox},
         ForkMethod, HardforkMode,
     },
     native::{self, binary::Binary},
@@ -47,6 +48,9 @@ pub struct Prepared {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     pub fork: ForkPoint,
+    /// The fork block in the prefork archive (`fork-candidate last-filled-block`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_fork_block: Option<ArchiveBlock>,
     /// Hash of the postfork genesis ledger.
     pub ledger_hash: String,
     /// The chain id every node computes for the postfork chain.
@@ -109,7 +113,7 @@ pub fn prepare(
     let services = ctx.dirs.get_services_info(network_id)?;
     let daemons: Vec<&ServiceConfig> = services.iter().filter(|s| s.is_chain_daemon()).collect();
     let configs = node_client::fork_configs(&services)?;
-    let (source, fork, warnings) = fork_point(&configs, source)?;
+    let (source, fork, mut warnings) = fork_point(&configs, source)?;
     let fork_config = configs[&source]
         .as_ref()
         .map_err(|e| anyhow::anyhow!(e.clone()))?;
@@ -130,7 +134,8 @@ pub fn prepare(
         serde_json::to_string_pretty(fork_config)?,
     )?;
 
-    let fork_genesis = status(ctx, network_id, Utc::now())?.fork_genesis;
+    let schedule = status(ctx, network_id, Utc::now())?;
+    let fork_genesis = schedule.fork_genesis;
     if fork.global_slot_since_genesis != fork_genesis.slot {
         bail!(
             "the fork config starts the postfork chain at slot {}, the schedule at slot {}",
@@ -198,6 +203,26 @@ pub fn prepare(
                 .join(", ")
         ));
     }
+    let archive_fork_block = match ServiceConfig::get_archive_node(&services) {
+        Some(_) => {
+            let db = ctx.native(network_id)?.archive_db_uri();
+            let toolbox = Toolbox::new(ctx.runner.as_ref(), postfork_bin, &db, ctx.profile);
+            let tip = daemons
+                .iter()
+                .find(|d| d.service_name == source)
+                .context("the source daemon is not in services.json")
+                .and_then(|d| node_client::best_tip(d));
+            check_fork_candidate(
+                &toolbox,
+                &fork,
+                tip,
+                schedule.k,
+                &mut problems,
+                &mut warnings,
+            )
+        }
+        None => None,
+    };
     if !problems.is_empty() {
         bail!(
             "The postfork config of network '{network_id}' is not valid:\n  - {}",
@@ -210,6 +235,7 @@ pub fn prepare(
         source,
         warnings,
         fork,
+        archive_fork_block,
         ledger_hash: hashes.ledger.hash,
         chain_id: ids
             .first()
@@ -227,6 +253,50 @@ pub fn prepare(
     meta.save(&network_path)
         .context("Failed to record the prepared hardfork")?;
     Ok(prepared)
+}
+
+/// The `fork-candidate` checks of the toolbox on the prefork archive: its
+/// last filled block is the fork block of the fork config, on its best chain.
+/// Too few confirmations of the fork block is a warning: the window from
+/// `slot_tx_end` to `slot_chain_end` (k + 2 slots by default) often has fewer
+/// than k blocks on a test network. `no-commands-after` is left out: it
+/// always fails in 4.0.4 (MinaProtocol/mina#19982).
+fn check_fork_candidate(
+    toolbox: &Toolbox,
+    fork: &ForkPoint,
+    tip: Result<String>,
+    k: u32,
+    problems: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) -> Option<ArchiveBlock> {
+    let block = match toolbox.last_filled_block() {
+        Ok(block) => block,
+        Err(e) => {
+            problems.push(format!("archive: {e}"));
+            return None;
+        }
+    };
+    if block.state_hash != fork.state_hash || block.height != fork.blockchain_length {
+        problems.push(format!(
+            "archive: the last filled block is {} (height {}), the fork block of the fork \
+             config {} (height {})",
+            block.state_hash, block.height, fork.state_hash, fork.blockchain_length
+        ));
+        return Some(block);
+    }
+    if let Err(e) = toolbox.is_in_best_chain(&block) {
+        problems.push(format!("archive: {e}"));
+    }
+    let confirmations = tip.map_err(|e| format!("no best tip to count confirmations: {e:#}"));
+    if let Err(e) = confirmations.and_then(|tip| {
+        toolbox
+            .confirmations(&block, &tip, k)
+            .map_err(|e| e.to_string())
+    }) {
+        warn!("archive: {e}");
+        warnings.push(format!("archive: {e}"));
+    }
+    Some(block)
 }
 
 /// The daemon whose fork config is used and its fork point. Without
@@ -443,6 +513,7 @@ fn utf8(path: &Path) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{cli::Profile, runner::fake::FakeRunner};
     use serde_json::json;
 
     fn config(state_hash: &str) -> std::result::Result<serde_json::Value, String> {
@@ -476,6 +547,85 @@ mod tests {
         let (source, fork, warnings) = fork_point(&agree, None).unwrap();
         assert_eq!((source.as_str(), fork.state_hash.as_str()), ("a", "3NLn"));
         assert!(warnings.is_empty());
+    }
+
+    fn fork() -> ForkPoint {
+        ForkPoint {
+            state_hash: "3NLPHX".into(),
+            blockchain_length: 12,
+            global_slot_since_genesis: 46,
+        }
+    }
+
+    const LAST_FILLED: &str =
+        "{\"state_hash\":\"3NLPHX\",\"slot_since_genesis\":23,\"height\":12}\n";
+
+    fn fork_candidate(
+        fake: &FakeRunner,
+        tip: Result<String>,
+    ) -> (Option<ArchiveBlock>, Vec<String>, Vec<String>) {
+        let toolbox = Toolbox::new(fake, Path::new("/post"), "postgres://db", Profile::Devnet);
+        let (mut problems, mut warnings) = (Vec::new(), Vec::new());
+        let block = check_fork_candidate(&toolbox, &fork(), tip, 10, &mut problems, &mut warnings);
+        (block, problems, warnings)
+    }
+
+    #[test]
+    fn the_archive_fork_block_is_the_fork_config_one() {
+        let fake = FakeRunner::default();
+        fake.reply(0, LAST_FILLED, "")
+            .reply(0, "", "")
+            .reply(0, "", "");
+        let (block, problems, warnings) = fork_candidate(&fake, Ok("3NLVYR".into()));
+        assert_eq!(block.unwrap().slot_since_genesis, 23);
+        assert!(problems.is_empty() && warnings.is_empty());
+        let lines = fake.lines();
+        assert!(lines[1]
+            .contains("is-in-best-chain --fork-state-hash 3NLPHX --fork-height 12 --fork-slot 23"));
+        assert!(lines[2]
+            .contains("--latest-state-hash 3NLVYR --fork-slot 23 --required-confirmations 10"));
+    }
+
+    #[test]
+    fn another_fork_block_is_a_problem_and_few_confirmations_a_warning() {
+        let fake = FakeRunner::default();
+        fake.reply(
+            0,
+            "{\"state_hash\":\"3NKother\",\"slot_since_genesis\":20,\"height\":11}\n",
+            "",
+        );
+        let (_, problems, _) = fork_candidate(&fake, Ok("3NLVYR".into()));
+        assert_eq!(
+            problems,
+            [
+                "archive: the last filled block is 3NKother (height 11), the fork block of the \
+              fork config 3NLPHX (height 12)"
+            ]
+        );
+        assert_eq!(fake.lines().len(), 1);
+
+        let fake = FakeRunner::default();
+        fake.reply(0, LAST_FILLED, "")
+            .reply(1, "❌ [1.B] Best chain validation: FAILED\n", "")
+            .reply(1, "❌ [2.C] Confirmation count check: FAILED\n", "");
+        let (_, problems, warnings) = fork_candidate(&fake, Ok("3NLVYR".into()));
+        assert_eq!(
+            problems,
+            ["archive: fork-candidate is-in-best-chain failed: [1.B] Best chain validation: FAILED"]
+        );
+        assert_eq!(
+            warnings,
+            ["archive: fork-candidate confirmations failed: [2.C] Confirmation count check: FAILED"]
+        );
+
+        let fake = FakeRunner::default();
+        fake.reply(0, LAST_FILLED, "").reply(0, "", "");
+        let (_, problems, warnings) = fork_candidate(&fake, Err(anyhow::anyhow!("down")));
+        assert!(problems.is_empty());
+        assert_eq!(
+            warnings,
+            ["archive: no best tip to count confirmations: down"]
+        );
     }
 
     #[test]

@@ -174,6 +174,10 @@ fn check_postfork(
     let mut needed = vec![Binary::Mina];
     if has(Role::Archive) {
         needed.push(Binary::Archive);
+        // manual mode: `hardfork prepare` and `apply` check and repair the archive
+        if method.is_some() {
+            needed.push(Binary::ArchiveHardforkToolbox);
+        }
     }
     if has(Role::Rosetta) {
         needed.push(Binary::Rosetta);

@@ -11,6 +11,8 @@ pub enum Binary {
     /// `runtime_genesis_ledger`: makes genesis ledgers from a runtime config.
     CreateGenesis,
     Libp2pHelper,
+    /// The archive database checks and repairs of a hardfork.
+    ArchiveHardforkToolbox,
 }
 
 impl Binary {
@@ -21,6 +23,7 @@ impl Binary {
             Binary::Rosetta => "mina-rosetta",
             Binary::CreateGenesis => "mina-create-genesis",
             Binary::Libp2pHelper => "coda-libp2p_helper",
+            Binary::ArchiveHardforkToolbox => "mina-archive-hardfork-toolbox",
         }
     }
 

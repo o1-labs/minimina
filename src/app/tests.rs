@@ -889,7 +889,12 @@ fn postfork_dir(files: &[&str]) -> PostforkPackage {
 fn hardfork_network_gets_its_schedule_and_status() {
     let h = Harness::new();
     let bin = fake_mina_dir();
-    let post = postfork_dir(&["mina", "mina-archive", "mina-create-genesis"]);
+    let post = postfork_dir(&[
+        "mina",
+        "mina-archive",
+        "mina-create-genesis",
+        "mina-archive-hardfork-toolbox",
+    ]);
     let dir = tempfile::tempdir().unwrap();
     let spec = hardfork_spec(
         dir.path(),
@@ -961,7 +966,12 @@ fn invalid_hardfork_is_refused_before_the_old_network_goes() {
     let h = Harness::new();
     let bin = fake_mina_dir();
     let dir = tempfile::tempdir().unwrap();
-    let ok_post = postfork_dir(&["mina", "mina-archive", "mina-create-genesis"]);
+    let ok_post = postfork_dir(&[
+        "mina",
+        "mina-archive",
+        "mina-create-genesis",
+        "mina-archive-hardfork-toolbox",
+    ]);
     let spec = hardfork_spec(
         dir.path(),
         &ok_post.bin,
@@ -1009,6 +1019,34 @@ fn invalid_hardfork_is_refused_before_the_old_network_goes() {
 }
 
 #[test]
+fn a_manual_fork_with_an_archive_needs_the_toolbox() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let post = postfork_dir(&["mina", "mina-archive", "mina-create-genesis"]);
+    let spec = hardfork_spec(
+        dir.path(),
+        &post.bin,
+        "mode = \"manual\"\nat = { slot = 42 }",
+    );
+    queue_hardfork_create(&h);
+    let err = h
+        .run(&native_args(
+            &bin,
+            &["network", "create", "-n", "hf", "--spec", path_arg(&spec)],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(&format!(
+            "postfork bin_path {} has no mina-archive-hardfork-toolbox",
+            post.bin.display()
+        )),
+        "{err}"
+    );
+}
+
+#[test]
 fn hardfork_needs_postfork_binaries_and_native_mode() {
     let h = Harness::new();
     h.docker_ok();
@@ -1037,7 +1075,12 @@ fn hardfork_needs_postfork_binaries_and_native_mode() {
 fn prepare_and_apply_refuse_out_of_order() {
     let h = Harness::new();
     let bin = fake_mina_dir();
-    let post = postfork_dir(&["mina", "mina-archive", "mina-create-genesis"]);
+    let post = postfork_dir(&[
+        "mina",
+        "mina-archive",
+        "mina-create-genesis",
+        "mina-archive-hardfork-toolbox",
+    ]);
     let dir = tempfile::tempdir().unwrap();
     let spec = hardfork_spec(
         dir.path(),
@@ -1069,7 +1112,12 @@ fn hardfork_with_archive_needs_an_upgrade_script() {
     let h = Harness::new();
     let bin = fake_mina_dir();
     let post = tempfile::tempdir().unwrap();
-    for file in ["mina", "mina-archive", "mina-create-genesis"] {
+    for file in [
+        "mina",
+        "mina-archive",
+        "mina-create-genesis",
+        "mina-archive-hardfork-toolbox",
+    ] {
         std::fs::write(post.path().join(file), "").unwrap();
     }
     let dir = tempfile::tempdir().unwrap();
@@ -1096,7 +1144,12 @@ fn installed_mina(h: &Harness, version: &str) -> std::path::PathBuf {
     let dir = crate::install::mina::root(&h.dirs.tools_root()).join(version);
     let bin = dir.join(crate::install::mina::BIN_DIR);
     std::fs::create_dir_all(&bin).unwrap();
-    for file in ["mina", "mina-archive", "mina-create-genesis"] {
+    for file in [
+        "mina",
+        "mina-archive",
+        "mina-create-genesis",
+        "mina-archive-hardfork-toolbox",
+    ] {
         std::fs::write(bin.join(file), "").unwrap();
     }
     // the archive scripts of the package
