@@ -34,10 +34,7 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
 
             // everything given is read and checked before the old network is gone
             let inputs = CreateInputs::read(&cmd)?;
-            let hardfork = match inputs.spec() {
-                Some(spec) => hardfork::check_create(ctx, spec)?,
-                None => None,
-            };
+            let hardfork = hardfork::check_create(ctx, &inputs.spec)?;
             check_setup_network(ctx, &docker, &network_id)?;
             let network_path = ctx.dirs.network_path(&network_id);
             let mut meta = ctx.meta();
@@ -46,10 +43,7 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             meta.save(&network_path)
                 .context("Failed to record network mode")?;
 
-            let mut services = match inputs {
-                CreateInputs::Legacy(legacy) => setup::legacy_network(ctx, &legacy, &network_id)?,
-                CreateInputs::Spec(spec) => setup::spec_network(ctx, *spec, &network_id)?,
-            };
+            let mut services = setup::spec_network(ctx, inputs, &network_id)?;
             if let Some((_, schedule)) = &hardfork {
                 genesis_ledger::update(
                     &network_path,

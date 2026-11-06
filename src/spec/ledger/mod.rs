@@ -1,6 +1,6 @@
 //! The accounts of `[ledger] file`, which the genesis ledger starts with.
 //!
-//! - `.json`: a runtime config (`ledger.accounts`, as `-g` takes it), a
+//! - `.json`: a runtime config (`ledger.accounts`), a
 //!   `{"accounts": [...]}` object, or the array of accounts. Fields the
 //!   [`LedgerAccount`] model does not name (permissions, ...) are kept as
 //!   they are.

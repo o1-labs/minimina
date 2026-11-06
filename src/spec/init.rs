@@ -87,6 +87,9 @@ mod tests {
             node: Some("bp-1".into()),
             version: Some("1.2.3".into()),
             bin: Some("/opt/a b/server".into()),
+            app_config: Some("/u/app.json".into()),
+            minasheets: Some("/u/sheets.json".into()),
+            config_files: Some(vec!["/u/a.json".into(), "/u/b c.json".into()]),
         };
         let spec = NetworkSpec {
             profile: Some(Profile::Lightnet),

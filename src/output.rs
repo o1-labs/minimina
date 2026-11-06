@@ -450,7 +450,6 @@ mod tests {
             service_type: ServiceType::BlockProducer,
             service_name: "BP".to_string(),
             docker_image: Some("bp-image".to_string()),
-            git_build: None,
             client_port: Some(8080),
             public_key: Some("B62qjVQQTbzsoC8AJMPdJERChzy2y49JzykPVeNKpeXqfeZcwwK5SwF".to_string()),
             public_key_path: None,

@@ -17,8 +17,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-const SMALL_TOPOLOGY: &str = "tests/data/small_network/topology.json";
-const SMALL_LEDGER: &str = "tests/data/small_network/genesis_ledger.json";
+/// The small network: a seed `seed-0` and a block producer `receiver`.
+const SMALL_SPEC: &str = r#"
+[[nodes]]
+role = "seed"
+name = "seed-0"
+[[nodes]]
+role = "block-producer"
+name = "receiver"
+"#;
 const DEFAULT_IMAGE: &str = "minaprotocol/mina-daemon:4.0.1-1e9d141-bookworm-devnet-generic";
 /// Daemon start (genesis proof) plus a few 2-minute slots, with room for slow runners.
 /// `MINIMINA_E2E_TIMEOUT_SECS` overrides it.
@@ -54,7 +61,7 @@ impl Network {
         serde_json::from_str(&stdout).unwrap_or(Value::Null)
     }
 
-    fn create(id: &'static str, mode_args: Vec<String>, topology: &Path) -> (Self, Value) {
+    fn create(id: &'static str, mode_args: Vec<String>, spec: &Path) -> (Self, Value) {
         let (home, temp) = match std::env::var("MINIMINA_E2E_KEEP") {
             Ok(keep) => {
                 let home = Path::new(&keep).join(id);
@@ -78,10 +85,8 @@ impl Network {
             "create",
             "-n",
             id,
-            "-t",
-            topology.to_str().unwrap(),
-            "-g",
-            SMALL_LEDGER,
+            "--spec",
+            spec.to_str().unwrap(),
         ]);
         let created = net.minimina(&args);
         (net, created)
@@ -236,7 +241,10 @@ fn native_small_network_produces_blocks() {
     if let Ok(bin) = std::env::var("MINIMINA_E2E_BIN_PATH") {
         mode_args.extend(["--bin-path".to_string(), bin]);
     }
-    let (net, created) = Network::create("e2e-native", mode_args, Path::new(SMALL_TOPOLOGY));
+    let dir = tempfile::tempdir().unwrap();
+    let spec = dir.path().join("small.toml");
+    fs::write(&spec, SMALL_SPEC).unwrap();
+    let (net, created) = Network::create("e2e-native", mode_args, &spec);
     net.minimina(&["network", "start", "-n", net.id]);
 
     let length = net.wait_for_block(&Network::graphql_uri(&created, "seed-0"));
@@ -263,15 +271,14 @@ fn native_small_network_produces_blocks() {
 fn docker_small_network_produces_blocks() {
     let image = std::env::var("MINIMINA_E2E_IMAGE").unwrap_or_else(|_| DEFAULT_IMAGE.into());
     let dir = tempfile::tempdir().unwrap();
-    let mut topology: Value =
-        serde_json::from_str(&fs::read_to_string(SMALL_TOPOLOGY).unwrap()).unwrap();
-    for node in topology.as_object_mut().unwrap().values_mut() {
-        node["docker_image"] = Value::String(image.clone());
-    }
-    let topology_path = dir.path().join("topology.json");
-    fs::write(&topology_path, topology.to_string()).unwrap();
+    let spec = dir.path().join("small.toml");
+    fs::write(
+        &spec,
+        format!("{SMALL_SPEC}[docker]\ndaemon_image = \"{image}\"\n"),
+    )
+    .unwrap();
 
-    let (net, created) = Network::create("e2e-docker", vec![], &topology_path);
+    let (net, created) = Network::create("e2e-docker", vec![], &spec);
     net.minimina(&["network", "start", "-n", net.id]);
 
     let length = net.wait_for_block(&Network::graphql_uri(&created, "seed-0"));

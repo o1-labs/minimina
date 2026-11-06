@@ -1,8 +1,7 @@
 //! Genesis ledger, keys and service configs for `network create`.
 
 use super::{
-    inputs::{LegacyInputs, SpecInputs},
-    Context, DEFAULT_ARCHIVE_DOCKER_IMAGE, DEFAULT_DAEMON_DOCKER_IMAGE,
+    inputs::CreateInputs, Context, DEFAULT_ARCHIVE_DOCKER_IMAGE, DEFAULT_DAEMON_DOCKER_IMAGE,
     DEFAULT_ROSETTA_DOCKER_IMAGE, IMAGE_COMMIT_HASH,
 };
 use crate::{
@@ -17,7 +16,6 @@ use crate::{
         ledger::{Balance, LedgerAccount, PublicKey},
         NetworkSpec, PlannedNode, Role, DEFAULT_ACCOUNT_BALANCE,
     },
-    topology::Topology,
 };
 use anyhow::{Context as _, Result};
 use log::info;
@@ -33,48 +31,32 @@ pub struct SpecNetwork {
     pub libp2p: HashMap<String, NodeKey>,
 }
 
-/// Services of a network from `-t`/`-g`: the genesis ledger as given, with
-/// a genesis of now, and the topology's nodes and keys.
-pub fn legacy_network(
-    ctx: &Context,
-    inputs: &LegacyInputs,
-    network_id: &str,
-) -> Result<Vec<ServiceConfig>> {
-    let dirs = &ctx.dirs;
-    info!(
-        "Copying genesis ledger from '{}' to network directory.",
-        inputs.genesis_ledger.display()
-    );
-    dirs.copy_genesis_ledger(network_id, &inputs.genesis_ledger)?;
-    dirs.overwrite_genesis_timestamp(network_id, &inputs.genesis_ledger)?;
-    info!(
-        "Generating services from the topology '{}'.",
-        inputs.topology_path.display()
-    );
-    std::fs::copy(&inputs.topology_path, dirs.topology_file_path(network_id))?;
-    create_services(ctx, &inputs.topology, network_id)
-}
-
 /// Services of a spec network: its keys and genesis ledger are generated, and
 /// the spec as resolved is kept to create the network again with --spec.
 pub fn spec_network(
     ctx: &Context,
-    inputs: SpecInputs,
+    inputs: CreateInputs,
     network_id: &str,
 ) -> Result<Vec<ServiceConfig>> {
     std::fs::write(ctx.dirs.spec_path(network_id), inputs.spec.to_toml()?)
         .context("writing the network spec")?;
     let network = generate_from_spec(ctx, &ctx.dirs.network_path(network_id), inputs)?;
-    spec_services(&network, network_id, ctx.mode)
+    let services = spec_services(&network, network_id, ctx.mode)?;
+    if let Some(backend) = ServiceConfig::get_uptime_service_backend(&services) {
+        ctx.dirs
+            .copy_uptime_service_config(network_id, backend)
+            .context("Failed to copy uptime service config")?;
+    }
+    Ok(services)
 }
 
 /// Generates the keys of every node and the genesis ledger of a spec network.
 fn generate_from_spec(
     ctx: &Context,
     network_path: &Path,
-    inputs: SpecInputs,
+    inputs: CreateInputs,
 ) -> Result<SpecNetwork> {
-    let SpecInputs { spec, nodes, given } = inputs;
+    let CreateInputs { spec, nodes, given } = inputs;
     let daemons: Vec<&str> = nodes
         .iter()
         .filter(|n| n.is_daemon())
@@ -189,25 +171,6 @@ pub fn install_archive_node_api(ctx: &Context, services: &mut [ServiceConfig]) -
     Ok(())
 }
 
-/// Service configs of the nodes of `topology`, with its seeds (it has one,
-/// see [`LegacyInputs::read`]) as the network's peers.
-fn create_services(
-    ctx: &Context,
-    topology: &Topology,
-    network_id: &str,
-) -> Result<Vec<ServiceConfig>> {
-    let dirs = &ctx.dirs;
-    let services = topology.services(&dirs.peer_list_file(network_id));
-    let peers: Vec<&ServiceConfig> = ServiceConfig::get_seeds(&services);
-    dirs.create_peer_list_file(network_id, &peers, ctx.mode)?;
-    if let Some(uptime_service_backend) = ServiceConfig::get_uptime_service_backend(&services) {
-        dirs.copy_uptime_service_config(network_id, uptime_service_backend)
-            .context("Failed to copy uptime service config")?;
-        info!("Successfully copied uptime service config.");
-    }
-    Ok(services)
-}
-
 /// Service configs of a spec network; every non-seed daemon dials every seed.
 fn spec_services(
     net: &SpecNetwork,
@@ -316,6 +279,21 @@ fn spec_services(
                     client_port: Some(node.client_port),
                     archive_node_api_version: Some(version),
                     archive_node_api_bin: node.bin.clone(),
+                    ..Default::default()
+                }
+            }
+            Role::UptimeServiceBackend => {
+                let files = node
+                    .uptime
+                    .as_ref()
+                    .with_context(|| format!("'{}' has no uptime files", node.name))?;
+                ServiceConfig {
+                    service_type: ServiceType::UptimeServiceBackend,
+                    service_name: node.name.clone(),
+                    docker_image: net.spec.docker.uptime_service_backend_image.clone(),
+                    uptime_service_backend_app_config: Some(files.app_config.clone()),
+                    uptime_service_backend_minasheets: Some(files.minasheets.clone()),
+                    uptime_service_other_config_files: Some(files.config_files.clone()),
                     ..Default::default()
                 }
             }
