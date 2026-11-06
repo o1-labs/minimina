@@ -190,6 +190,64 @@ fn topology_without_genesis_ledger_is_rejected() {
     assert!(!h.dirs.network_path_exists("x"));
 }
 
+/// A mistake in what create is given is found before the old network of the
+/// same name is stopped and deleted.
+#[test]
+fn bad_inputs_leave_the_old_network_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, text: &str| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, text).unwrap();
+        path.display().to_string()
+    };
+    // a name for two nodes, found when the nodes are planned
+    let named_pair = write(
+        "pair.toml",
+        "[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"block-producer\"\ncount = 2\nname = \"bp\"\n",
+    );
+    // a ledger file with a bad key, found when it is read
+    write("bad.csv", "public_key,balance\nB62qbad,10\n");
+    let bad_ledger = write(
+        "ledger.toml",
+        "[[nodes]]\nrole = \"seed\"\n[ledger]\nfile = \"bad.csv\"\n",
+    );
+    // a topology without its seed
+    let mut topology: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(SMALL_TOPOLOGY).unwrap()).unwrap();
+    topology.as_object_mut().unwrap().remove("seed-0");
+    let no_seed = write("topology.json", &topology.to_string());
+
+    let cases: [(&[&str], &str); 3] = [
+        (&["--spec", &named_pair], "need count = 1"),
+        (
+            &["--spec", &bad_ledger],
+            "'B62qbad' is not a mina public key",
+        ),
+        (
+            &["-t", &no_seed, "-g", SMALL_LEDGER],
+            "There are no seed nodes declared",
+        ),
+    ];
+    for (inputs, problem) in cases {
+        let h = Harness::new();
+        let old = h.dirs.network_path("x");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("services.json"), "old").unwrap();
+        h.docker_ok();
+
+        let mut args = vec!["network", "create", "-n", "x"];
+        args.extend(inputs);
+        let err = h.run(&args).unwrap_err();
+        assert!(format!("{err:#}").contains(problem), "{err:#}");
+        // nothing but the environment check ran: no compose down
+        assert_eq!(h.fake.lines().len(), 2, "{:?}", h.fake.lines());
+        assert_eq!(
+            std::fs::read_to_string(old.join("services.json")).unwrap(),
+            "old"
+        );
+    }
+}
+
 #[test]
 fn docker_start_stop_delete_drive_compose() {
     let h = Harness::new();

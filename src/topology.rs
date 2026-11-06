@@ -169,6 +169,15 @@ impl Topology {
         serde_json::from_str(&contents).map_err(std::io::Error::from)
     }
 
+    /// Whether a node is a seed: the other nodes find their peers through it.
+    pub fn has_seed(&self) -> bool {
+        self.topology.values().any(|info| match info {
+            TopologyInfo::Node(node) => node.service_type == ServiceType::Seed,
+            TopologyInfo::SnarkCoordinator(snark) => snark.service_type == ServiceType::Seed,
+            TopologyInfo::Archive(_) | TopologyInfo::UptimeServiceBackend(_) => false,
+        })
+    }
+
     pub fn services(&self, peer_list_file: &Path) -> Vec<ServiceConfig> {
         let mut client_port = 7070;
         let archive_port = 3086;

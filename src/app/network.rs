@@ -1,6 +1,6 @@
 //! `minimina network ...` handlers.
 
-use super::{hardfork, setup, shutdown_timeout, Context};
+use super::{hardfork, inputs::CreateInputs, setup, shutdown_timeout, Context};
 use crate::{
     cli::{
         CommandWithNetworkId, ExecutionMode, HardforkCommand, NetworkCommand, Profile,
@@ -32,19 +32,12 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             let network_id = cmd.network_id().to_string();
             let docker = ctx.docker(&network_id);
 
-            // custom keys live in the topology and must match the ledger's accounts
-            match (&cmd.topology, &cmd.genesis_ledger) {
-                (None, Some(_)) => bail!(
-                    "Must provide a topology file with a genesis ledger, keys will be incompatible otherwise."
-                ),
-                (Some(_), None) => bail!(
-                    "Must provide a genesis ledger with a topology file, keys will be incompatible otherwise."
-                ),
-                _ => {}
-            }
-
-            // a bad [hardfork] stops create before the old network is gone
-            let hardfork = hardfork::check_create(ctx, &cmd)?;
+            // everything given is read and checked before the old network is gone
+            let inputs = CreateInputs::read(&cmd)?;
+            let hardfork = match inputs.spec() {
+                Some(spec) => hardfork::check_create(ctx, spec)?,
+                None => None,
+            };
             check_setup_network(ctx, &docker, &network_id)?;
             let network_path = ctx.dirs.network_path(&network_id);
             let mut meta = ctx.meta();
@@ -53,8 +46,10 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             meta.save(&network_path)
                 .context("Failed to record network mode")?;
 
-            // consume the genesis ledger (and generate keys for the default network)
-            let keys = setup::handle_genesis_ledger(ctx, &cmd, &network_id)?;
+            let mut services = match inputs {
+                CreateInputs::Legacy(legacy) => setup::legacy_network(ctx, &legacy, &network_id)?,
+                CreateInputs::Spec(spec) => setup::spec_network(ctx, *spec, &network_id)?,
+            };
             if let Some((_, schedule)) = &hardfork {
                 genesis_ledger::update(
                     &network_path,
@@ -62,11 +57,7 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
                 )
                 .context("Failed to write the fork schedule")?;
             }
-
-            // build services from topology file
-            let mut services = setup::handle_topology(ctx, &cmd, &network_id, keys)?;
             setup::install_archive_node_api(ctx, &mut services)?;
-
             // copy libp2p + network keys
             ctx.dirs
                 .copy_all_network_keys(&network_id, &services)

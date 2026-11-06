@@ -1,13 +1,8 @@
 use std::path::PathBuf;
 
-/// Why a spec, its flags or its ledger file cannot make a network.
+/// Why a spec's ledger file cannot make a network.
 #[derive(Debug, thiserror::Error)]
 pub enum SpecError {
-    #[error(
-        "the node flags (--seeds, --block-producers, ...) cannot be combined with -t/-g: \
-         the legacy topology and ledger files bring their own nodes and keys; use --spec instead"
-    )]
-    FlagsWithLegacyFiles,
     #[error("ledger file {}: {problem}", .file.display())]
     LedgerFile {
         file: PathBuf,

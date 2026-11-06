@@ -1,24 +1,25 @@
 //! Genesis ledger, keys and service configs for `network create`.
 
 use super::{
+    inputs::{LegacyInputs, SpecInputs},
     Context, DEFAULT_ARCHIVE_DOCKER_IMAGE, DEFAULT_DAEMON_DOCKER_IMAGE,
     DEFAULT_ROSETTA_DOCKER_IMAGE, IMAGE_COMMIT_HASH,
 };
 use crate::{
     archive_node_api,
-    cli::{CreateNetworkArgs, ExecutionMode},
+    cli::ExecutionMode,
     genesis_ledger::default,
     install::Installer,
     keys::{KeysManager, NodeKey},
     native::keys::NativeKeysManager,
     service::{ServiceConfig, ServiceType},
     spec::{
-        ledger::{Balance, LedgerAccount, LedgerFile, PublicKey},
-        NetworkSpec, PlannedNode, Role, SpecError, DEFAULT_ACCOUNT_BALANCE,
+        ledger::{Balance, LedgerAccount, PublicKey},
+        NetworkSpec, PlannedNode, Role, DEFAULT_ACCOUNT_BALANCE,
     },
     topology::Topology,
 };
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result};
 use log::info;
 use std::{collections::HashMap, path::Path};
 
@@ -32,56 +33,48 @@ pub struct SpecNetwork {
     pub libp2p: HashMap<String, NodeKey>,
 }
 
-/// The spec of `network create`: the node flags on top of `--spec`, else of
-/// [`NetworkSpec::flags_base`]; with neither, the default network.
-pub fn create_spec(cmd: &CreateNetworkArgs) -> Result<NetworkSpec> {
-    if !cmd.nodes.is_empty() && cmd.uses_legacy_files() {
-        return Err(SpecError::FlagsWithLegacyFiles.into());
-    }
-    let spec = match (&cmd.spec, cmd.nodes.is_empty()) {
-        (Some(path), _) => NetworkSpec::load(path)?,
-        (None, false) => NetworkSpec::flags_base(),
-        (None, true) => NetworkSpec::default_network(),
-    };
-    Ok(spec.with_flags(&cmd.nodes))
+/// Services of a network from `-t`/`-g`: the genesis ledger as given, with
+/// a genesis of now, and the topology's nodes and keys.
+pub fn legacy_network(
+    ctx: &Context,
+    inputs: &LegacyInputs,
+    network_id: &str,
+) -> Result<Vec<ServiceConfig>> {
+    let dirs = &ctx.dirs;
+    info!(
+        "Copying genesis ledger from '{}' to network directory.",
+        inputs.genesis_ledger.display()
+    );
+    dirs.copy_genesis_ledger(network_id, &inputs.genesis_ledger)?;
+    dirs.overwrite_genesis_timestamp(network_id, &inputs.genesis_ledger)?;
+    info!(
+        "Generating services from the topology '{}'.",
+        inputs.topology_path.display()
+    );
+    std::fs::copy(&inputs.topology_path, dirs.topology_file_path(network_id))?;
+    create_services(ctx, &inputs.topology, network_id)
 }
 
-/// Handles `network_id`'s genesis ledger: copies the given one, or generates
-/// keys and a ledger from the spec. `None` when a topology brings its own keys.
-pub fn handle_genesis_ledger(
+/// Services of a spec network: its keys and genesis ledger are generated, and
+/// the spec as resolved is kept to create the network again with --spec.
+pub fn spec_network(
     ctx: &Context,
-    cmd: &CreateNetworkArgs,
+    inputs: SpecInputs,
     network_id: &str,
-) -> Result<Option<SpecNetwork>> {
-    let dirs = &ctx.dirs;
-    match &cmd.genesis_ledger {
-        Some(genesis_ledger_path) => {
-            info!(
-                "Copying genesis ledger from '{}' to network directory.",
-                genesis_ledger_path.display()
-            );
-            dirs.copy_genesis_ledger(network_id, genesis_ledger_path)?;
-            dirs.overwrite_genesis_timestamp(network_id, genesis_ledger_path)?;
-            Ok(None)
-        }
-        None => {
-            let network_path = dirs.network_path(network_id);
-            let spec = create_spec(cmd)?;
-            // the spec as resolved, to create the network again with --spec
-            std::fs::write(dirs.spec_path(network_id), spec.to_toml()?)
-                .context("writing the network spec")?;
-            generate_from_spec(ctx, &network_path, spec).map(Some)
-        }
-    }
+) -> Result<Vec<ServiceConfig>> {
+    std::fs::write(ctx.dirs.spec_path(network_id), inputs.spec.to_toml()?)
+        .context("writing the network spec")?;
+    let network = generate_from_spec(ctx, &ctx.dirs.network_path(network_id), inputs)?;
+    spec_services(&network, network_id, ctx.mode)
 }
 
 /// Generates the keys of every node and the genesis ledger of a spec network.
 fn generate_from_spec(
     ctx: &Context,
     network_path: &Path,
-    spec: NetworkSpec,
+    inputs: SpecInputs,
 ) -> Result<SpecNetwork> {
-    let nodes = spec.plan()?;
+    let SpecInputs { spec, nodes, given } = inputs;
     let daemons: Vec<&str> = nodes
         .iter()
         .filter(|n| n.is_daemon())
@@ -143,10 +136,7 @@ fn generate_from_spec(
         .clone()
         .unwrap_or(Balance::mina(DEFAULT_ACCOUNT_BALANCE));
     // the accounts of the ledger file first, then the generated ones
-    let mut ledger = match &spec.ledger.file {
-        Some(file) => LedgerFile::load(file)?.accounts,
-        None => vec![],
-    };
+    let mut ledger = given;
     for node in &nodes {
         if let Some(balance) = &node.balance {
             ledger.push(LedgerAccount::new(pk(&node.name)?, balance.clone()));
@@ -164,30 +154,6 @@ fn generate_from_spec(
         bp,
         libp2p,
     })
-}
-
-/// Creates service configs for the nodes specified in the topology file of the given `cmd`
-pub fn handle_topology(
-    ctx: &Context,
-    cmd: &CreateNetworkArgs,
-    network_id: &str,
-    generated: Option<SpecNetwork>,
-) -> Result<Vec<ServiceConfig>> {
-    match &cmd.topology {
-        Some(topology_path) => {
-            info!(
-                "Generating services from the topology '{}'.",
-                topology_path.display()
-            );
-
-            std::fs::copy(topology_path, ctx.dirs.topology_file_path(network_id))?;
-            create_services(ctx, topology_path, network_id)
-        }
-        None => {
-            let generated = generated.context("Keys of the network spec were not generated.")?;
-            spec_services(&generated, network_id, ctx.mode)
-        }
-    }
 }
 
 /// Installs what the archive node api needs to run.
@@ -223,19 +189,13 @@ pub fn install_archive_node_api(ctx: &Context, services: &mut [ServiceConfig]) -
     Ok(())
 }
 
-/// Creates the list of docker service configs from the topology file at `topology_path`
-/// using the seed nodes as the list of network peers (at least 1 seed node must be declared)
+/// Service configs of the nodes of `topology`, with its seeds (it has one,
+/// see [`LegacyInputs::read`]) as the network's peers.
 fn create_services(
     ctx: &Context,
-    topology_path: &Path,
+    topology: &Topology,
     network_id: &str,
 ) -> Result<Vec<ServiceConfig>> {
-    let topology = Topology::new(topology_path).with_context(|| {
-        format!(
-            "Error occured while parsing the topology file:\npath: {}",
-            topology_path.display()
-        )
-    })?;
     let dirs = &ctx.dirs;
     let services = topology.services(&dirs.peer_list_file(network_id));
     let peers: Vec<&ServiceConfig> = ServiceConfig::get_seeds(&services);
@@ -244,9 +204,6 @@ fn create_services(
         dirs.copy_uptime_service_config(network_id, uptime_service_backend)
             .context("Failed to copy uptime service config")?;
         info!("Successfully copied uptime service config.");
-    }
-    if peers.is_empty() {
-        bail!("There are no seed nodes declared in this network. You must include seed nodes.");
     }
     Ok(services)
 }
