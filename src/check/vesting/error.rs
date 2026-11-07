@@ -3,10 +3,10 @@
 pub enum VestingError {
     #[error("timing.{field} '{value}' is not valid")]
     Field { field: &'static str, value: String },
-    #[error("account {public_key}: {source}")]
+    #[error("account {public_key}: {cause}")]
     Account {
         public_key: String,
-        source: Box<VestingError>,
+        cause: Box<VestingError>,
     },
     #[error(
         "the genesis ledger of network '{0}' has no timed accounts: give accounts a `timing` in \

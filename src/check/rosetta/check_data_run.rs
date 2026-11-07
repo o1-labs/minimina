@@ -25,19 +25,19 @@ impl CheckDataRun {
     pub fn run(&self, runner: &dyn Runner) -> Result<CheckDataResult, RosettaError> {
         let io = |path: &Path| {
             let path = path.to_path_buf();
-            move |source| RosettaError::Io { path, source }
+            move |cause| RosettaError::Io { path, cause }
         };
         let template = &self.template;
         let text = fs::read_to_string(template).map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => RosettaError::NoTemplate(template.clone()),
             _ => RosettaError::Io {
                 path: template.clone(),
-                source: e,
+                cause: e,
             },
         })?;
-        let template_json = serde_json::from_str(&text).map_err(|source| RosettaError::Json {
+        let template_json = serde_json::from_str(&text).map_err(|cause| RosettaError::Json {
             path: template.clone(),
-            source,
+            cause,
         })?;
         let dir = &self.dir;
         let data = dir.join("data");
@@ -70,17 +70,17 @@ impl CheckDataRun {
                 &["check:data", "--configuration-file", &config_arg],
                 &[],
             )
-            .map_err(|source| match source.kind() {
+            .map_err(|cause| match cause.kind() {
                 io::ErrorKind::NotFound => RosettaError::CliMissing(program.clone()),
                 _ => RosettaError::Cli {
                     program: program.clone(),
-                    source,
+                    cause,
                 },
             })?;
         match fs::read_to_string(&results) {
-            Ok(text) => serde_json::from_str(&text).map_err(|source| RosettaError::Json {
+            Ok(text) => serde_json::from_str(&text).map_err(|cause| RosettaError::Json {
                 path: results,
-                source,
+                cause,
             }),
             // it stopped before writing results: its last words say why
             Err(_) => Ok(CheckDataResult {

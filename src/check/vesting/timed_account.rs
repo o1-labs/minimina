@@ -23,7 +23,7 @@ impl TimedAccount {
                         })
                         .map_err(|e| VestingError::Account {
                             public_key: a.pk.to_string(),
-                            source: Box::new(e),
+                            cause: Box::new(e),
                         }),
                 )
             })

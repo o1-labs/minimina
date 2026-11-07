@@ -19,9 +19,9 @@ impl RosettaClient {
         let http = reqwest::blocking::Client::builder()
             .timeout(TIMEOUT)
             .build()
-            .map_err(|source| RosettaError::Http {
+            .map_err(|cause| RosettaError::Http {
                 path: "client",
-                source,
+                cause,
             })?;
         Ok(RosettaClient {
             url: format!("http://localhost:{port}"),
@@ -65,7 +65,7 @@ impl RosettaClient {
         path: &'static str,
         body: Value,
     ) -> Result<T, RosettaError> {
-        let http = |source| RosettaError::Http { path, source };
+        let http = |cause| RosettaError::Http { path, cause };
         let response = self
             .http
             .post(format!("{}{path}", self.url))
