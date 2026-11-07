@@ -1,6 +1,8 @@
 //! `minimina network ...` handlers.
 
-use super::{check, hardfork, inputs::CreateInputs, load, setup, shutdown_timeout, Context};
+use super::{
+    check, fork_check, hardfork, inputs::CreateInputs, load, setup, shutdown_timeout, Context,
+};
 use crate::{
     cli::{
         CheckCommand, CommandWithNetworkId, ExecutionMode, HardforkCommand, NetworkCommand,
@@ -245,6 +247,18 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             ensure!(
                 report.passed,
                 "a vesting check of network '{}' failed",
+                cmd.network_id
+            );
+            Ok(())
+        }
+
+        NetworkCommand::Check(CheckCommand::Fork(cmd)) => {
+            ctx.ensure_network_exists(&cmd.network_id)?;
+            let report = fork_check::run(ctx, &cmd.network_id)?;
+            println!("{report}");
+            ensure!(
+                report.passed,
+                "a fork check of network '{}' failed",
                 cmd.network_id
             );
             Ok(())

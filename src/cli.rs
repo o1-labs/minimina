@@ -323,6 +323,11 @@ pub enum CheckCommand {
     /// rosetta-cli check:data: every balance change of every block, across a
     /// hardfork, reconciled against rosetta's /account/balance
     Rosetta(RosettaCheckArgs),
+    /// After `hardfork apply`: every daemon runs the postfork genesis prepare
+    /// made, the archive's genesis accounts are the fork ledger, the archive
+    /// has one migrated chain across the fork, and the loads' payments are
+    /// where they should be on both sides of it
+    Fork(NetworkId),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -695,7 +700,9 @@ impl Command {
                 | NetworkCommand::Hardfork(HardforkCommand::Status(args)) => Some(&args.network_id),
                 NetworkCommand::Hardfork(HardforkCommand::Prepare(args)) => Some(args.network_id()),
                 NetworkCommand::Hardfork(HardforkCommand::Apply(args)) => Some(args.network_id()),
-                NetworkCommand::Check(CheckCommand::Vesting(args)) => Some(&args.network_id),
+                NetworkCommand::Check(CheckCommand::Vesting(args) | CheckCommand::Fork(args)) => {
+                    Some(&args.network_id)
+                }
                 NetworkCommand::Check(CheckCommand::Rosetta(args)) => Some(args.network_id()),
                 NetworkCommand::Load(LoadCommand::Start(args)) => Some(args.network_id()),
                 NetworkCommand::Load(LoadCommand::List(args)) => Some(&args.network_id),

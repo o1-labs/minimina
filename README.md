@@ -378,7 +378,32 @@ JSON report and exits with 1 when a check fails.
 ```bash
 minimina network check vesting -n mynet
 minimina network check rosetta -n mynet [--wait] [--start-index N] [--rosetta-cli PATH]
+minimina network check fork -n mynet
 ```
+
+`check fork`, after `hardfork apply`, holds the postfork chain against what
+`hardfork prepare` made (`hardfork/prepared.json`, `ledger_hashes.json` and
+`fork_config.json`):
+
+- chain: every daemon runs the same postfork genesis; its parent is the fork
+  block, its height the next one, its slot the fork slot, and its ledger and
+  staking ledger hashes are the ones prepare made; the best tip is above it;
+- ledger: the accounts the archive recorded for the postfork genesis are
+  the MINA accounts of the fork ledger (balance, nonce, receipt chain hash,
+  delegate, vesting schedule), and no others;
+- archive: `migration_history` says the upgrade is applied, and one chain
+  runs from the highest block through the postfork genesis and the fork
+  block down to the first block, canonical up to the postfork genesis;
+- payments, with [payment loads](#payment-loads): a payment sent before the
+  fork is in a block up to the fork block, or in none (it was in the pool at
+  `slot_tx_end`, which the fork drops), never after it; each sender's nonce
+  in the fork ledger follows its last prefork payment in a block; a payment
+  sent after the fork is in a postfork block or still pending. A load started
+  before the fork with `--across-fork` gives both. Without payments, the
+  report notes what to run.
+
+The ledger, archive and payment checks read the archive database of a
+native network.
 
 `check vesting` checks every timed account of the (prefork) genesis ledger,
 the accounts with a `timing` in the `[ledger] file`:
