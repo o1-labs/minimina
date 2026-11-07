@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod archive_node_api;
+pub mod check;
 pub mod cli;
 pub mod daemon_args;
 pub mod directory_manager;

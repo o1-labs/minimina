@@ -3,6 +3,7 @@
 //! Handlers return errors instead of exiting; `main` turns an error into the
 //! JSON `{"error_message": ...}` object and a non-zero exit code.
 
+mod check;
 mod env;
 mod hardfork;
 mod inputs;
@@ -218,13 +219,14 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
         .or_else(|| std::env::var(POSTGRES_URI_ENV).ok())
         .unwrap_or_else(|| DEFAULT_POSTGRES_URI.to_string());
 
-    // list, info and hardfork status only read ~/.minimina
+    // list, info, hardfork status and the checks run no mina binary
     let reads_files_only = matches!(
         cli.command,
         Command::Network(
             NetworkCommand::List
                 | NetworkCommand::Info(_)
                 | NetworkCommand::Hardfork(HardforkCommand::Status(_))
+                | NetworkCommand::Check(_)
         )
     );
     if !reads_files_only {
