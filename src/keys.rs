@@ -26,6 +26,9 @@ use crate::cli::Profile;
 use crate::runner::{check, Runner};
 use crate::utils::get_current_user_uid_gid;
 
+/// Password of the keys minimina generates (`MINA_PRIVKEY_PASS`).
+pub const KEY_PASSWORD: &str = "naughty blue worm";
+
 /// Parses `mina advanced generate-keypair` output: `Public key: <B62...>`.
 pub fn parse_public_key(stdout: &str) -> Option<String> {
     stdout

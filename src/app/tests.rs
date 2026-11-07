@@ -1398,3 +1398,49 @@ fn the_checks_say_what_the_network_lacks() {
         .starts_with("the genesis ledger of network 'nat' has no timed accounts"));
     assert!(err(&["network", "check", "vesting", "-n", "none"]).contains("none"));
 }
+
+#[test]
+fn a_load_says_what_it_cannot_send() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    h.create_small_native(&bin, "nat").unwrap();
+    let err = |args: &[&str]| h.run(args).unwrap_err().to_string();
+    h.run(&["network", "load", "list", "-n", "nat"]).unwrap();
+    assert_eq!(
+        err(&["network", "load", "status", "-n", "nat", "load-1"]),
+        "network 'nat' has no load 'load-1'"
+    );
+    // the small network has no test accounts
+    assert!(err(&["network", "load", "start", "-n", "nat"])
+        .starts_with("network 'nat' has no test accounts"));
+    let keys = h.dirs.network_path("nat").join("network-keypairs");
+    std::fs::write(keys.join("account-1"), "secret").unwrap();
+    std::fs::write(keys.join("account-1.pub"), "B62qone\n").unwrap();
+    assert_eq!(
+        err(&[
+            "network",
+            "load",
+            "start",
+            "-n",
+            "nat",
+            "--senders",
+            "account-2"
+        ]),
+        "network 'nat' has no test account 'account-2'; it has account-1"
+    );
+    assert_eq!(
+        err(&["network", "load", "start", "-n", "nat", "--count", "0"]),
+        "--count must be at least 1"
+    );
+    assert_eq!(
+        err(&["network", "load", "start", "-n", "nat", "--node", "nope"]),
+        "network 'nat' has no daemon 'nope'"
+    );
+    let bad_amount = Cli::try_parse_from(["minimina", "network", "load", "start", "--amount", "x"]);
+    assert!(bad_amount.err().unwrap().to_string().contains("--amount"));
+    // nothing was started
+    assert!(!h.dirs.network_path("nat").join("load/load-1").exists());
+    // a network stops with no loads to stop
+    h.run(&["network", "load", "stop", "-n", "nat", "--all"])
+        .unwrap();
+}
