@@ -11,6 +11,7 @@ use crate::{
     native::{self, binary::Binary},
     node_client,
     output::{self, node},
+    replayer::{self, Fork, HardForkTarget, PassKind, PassLog, Replay, Replayer, ReplayerError},
     runner::check,
     service::{typed::Native, ServiceConfig},
     utils::TIMEOUT_IN_SECS,
@@ -243,23 +244,36 @@ pub fn run(ctx: &Context, cmd: NodeCommand) -> Result<()> {
             genesis_ledger::set_slot_since_genesis(&network_path, start_slot)
                 .with_context(|| format!("Failed to set slot since genesis for {context}"))?;
 
-            let output = match ctx.mode {
-                ExecutionMode::Docker => ctx
-                    .docker(network_id)
-                    .compose_run_replayer(&format!("{node_id}-service"), network_id),
-                ExecutionMode::Native => run_replayer_native(ctx, network_id),
-            }
-            .with_context(|| format!("Error while running replayer for {context}"))?;
-            let output = check(output, &format!("running replayer for {context}"))?;
+            let passes = match ctx.mode {
+                ExecutionMode::Docker => {
+                    // docker networks do not fork
+                    if cmd.hard_fork_target.is_some() {
+                        return Err(ReplayerError::TargetWithoutFork.into());
+                    }
+                    let output = ctx
+                        .docker(network_id)
+                        .compose_run_replayer(&format!("{node_id}-service"), network_id)
+                        .with_context(|| format!("Error while running replayer for {context}"))?;
+                    let output = check(output, &format!("running replayer for {context}"))?;
+                    vec![PassLog {
+                        pass: PassKind::Chain,
+                        logs: String::from_utf8_lossy(&output.stdout).into(),
+                    }]
+                }
+                ExecutionMode::Native => replay_native(ctx, network_id, cmd.hard_fork_target)
+                    .with_context(|| format!("running replayer for {context}"))?,
+            };
 
             info!("Successfully ran replayer for {context}");
             if cmd.node_args.raw_output {
-                println!("{}", String::from_utf8_lossy(&output.stdout));
+                for pass in &passes {
+                    println!("{}", pass.logs);
+                }
             } else {
                 println!(
                     "{}",
                     output::node::ReplayerLogs {
-                        logs: String::from_utf8_lossy(&output.stdout).into(),
+                        passes,
                         network_id: network_id.into(),
                         node_id: node_id.into(),
                     }
@@ -363,25 +377,31 @@ fn start_native(
     Ok(native.start_service(service, network_id)?)
 }
 
-fn run_replayer_native(ctx: &Context, network_id: &str) -> std::io::Result<Output> {
-    let native = ctx
-        .native(network_id)
-        .map_err(|e| std::io::Error::other(format!("{e:#}")))?;
-    let input = ctx.dirs.network_path(network_id).join(REPLAYER_INPUT_JSON);
-    let mina_env = native::mina_env(&native.bin_path, ctx.profile);
-    ctx.runner.run(
-        native.bin_path.join("mina-replayer").as_os_str(),
-        &[
-            "--continue-on-error",
-            "--input-file",
-            &input.to_string_lossy(),
-            "--archive-uri",
-            &native.archive_db_uri(),
-            "--output-file",
-            "/dev/null",
-        ],
-        &native::env_refs(&[], &mina_env),
-    )
+/// Replays the archive of a native network: across the hardfork after
+/// `hardfork apply` (see [`replayer`]).
+fn replay_native(
+    ctx: &Context,
+    network_id: &str,
+    target: Option<HardForkTarget>,
+) -> Result<Vec<PassLog>> {
+    let native = ctx.native(network_id)?;
+    let network_path = ctx.dirs.network_path(network_id);
+    let archive_uri = native.archive_db_uri();
+    let applied = super::hardfork::applied_fork(ctx, network_id)?;
+    let fork = Fork::resolve(applied, target, || ctx.archive_db.connect(&archive_uri))?;
+    if let Some(fork) = &fork {
+        info!(
+            "Replaying across the hardfork with --hard-fork-target {}",
+            fork.target
+        );
+    }
+    let replay = Replay {
+        input_file: network_path.join(REPLAYER_INPUT_JSON),
+        archive_uri,
+        work_dir: network_path.join(replayer::REPLAYER_DIR),
+        fork,
+    };
+    Ok(Replayer::new(ctx.runner.as_ref(), &native.bin_path, ctx.profile).run(&replay)?)
 }
 
 fn ensure_archive_node(ctx: &Context, network_id: &str, node_id: &str) -> Result<()> {

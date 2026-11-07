@@ -272,8 +272,7 @@ impl DockerManager {
 
     /// Execute archive service replayer
     pub fn compose_run_replayer(&self, node_id: &str, network_id: &str) -> Result<Output> {
-        // -input-file PATH (genesis ledger)
-        // -output-file PATH (output ledger)
+        // no --continue-on-error: a ledger hash mismatch fails the run
         let service = format!("{node_id}-{network_id}");
         let pg_archive_uri =
             format!("postgres://postgres:postgres@postgres-{network_id}:5432/archive");
@@ -281,13 +280,10 @@ impl DockerManager {
             "exec",
             &service,
             "mina-replayer",
-            "--continue-on-error",
             "--input-file",
             &format!("/local-network/{}", REPLAYER_INPUT_JSON),
             "--archive-uri",
             &pg_archive_uri,
-            "--output-file",
-            "/dev/null",
         ];
         self.run_docker_compose(cmd)
     }
@@ -492,7 +488,7 @@ mod tests {
         let lines = fake.lines();
         assert!(lines[0].ends_with("exec postgres-net pg_dump --insert -U postgres archive"));
         assert!(lines[1].contains(
-            "exec arch-service-net mina-replayer --continue-on-error --input-file /local-network/replayer_input.json"
+            "exec arch-service-net mina-replayer --input-file /local-network/replayer_input.json --archive-uri"
         ));
         assert!(lines[1].contains("postgres://postgres:postgres@postgres-net:5432/archive"));
         assert!(lines[2].ends_with(
