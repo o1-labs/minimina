@@ -919,7 +919,7 @@ fn hardfork_network_gets_its_schedule_and_status() {
     let ledger = crate::genesis_ledger::read(&net).unwrap();
     assert_eq!(
         ledger["daemon"],
-        serde_json::json!({"slot_tx_end": 30, "slot_chain_end": 42, "hard_fork_genesis_slot_delta": 10})
+        serde_json::json!({"slot_tx_end": 34, "slot_chain_end": 42, "hard_fork_genesis_slot_delta": 20})
     );
 
     let ctx_status = |now| {
@@ -943,18 +943,18 @@ fn hardfork_network_gets_its_schedule_and_status() {
     let before = ctx_status(None);
     assert_eq!(before.phase, crate::hardfork::Phase::NotStarted);
     assert_eq!(before.slot_chain_end.slot, 42);
-    assert_eq!(before.fork_genesis.slot, 52);
+    assert_eq!(before.fork_genesis.slot, 62);
     assert!(before.slot_chain_end.time.is_none());
 
-    // the first start sets the genesis; 16 min 15 s later it is past slot_tx_end
-    let started = chrono::Utc::now() + chrono::Duration::seconds(16 * 60 + 15);
+    // the first start sets the genesis; 17 min 15 s later it is past slot_tx_end
+    let started = chrono::Utc::now() + chrono::Duration::seconds(17 * 60 + 15);
     let status = ctx_status(Some(started));
     assert_eq!(status.phase, crate::hardfork::Phase::TxEnd);
-    assert_eq!(status.slot, Some(32));
+    assert_eq!(status.slot, Some(34));
     let next = status.next.unwrap();
     assert_eq!(next.phase, crate::hardfork::Phase::ChainEnd);
     assert!(
-        (280..=285).contains(&next.in_seconds),
+        (220..=225).contains(&next.in_seconds),
         "{}",
         next.in_seconds
     );
@@ -1002,7 +1002,7 @@ fn invalid_hardfork_is_refused_before_the_old_network_goes() {
         .to_string();
     for part in [
         "method is for mode = \"manual\"",
-        "slot_tx_end 8 is 240 s after the genesis",
+        "slot_tx_end 12 is 360 s after the genesis",
         "has no mina-archive",
         "does not run: libssl.so.3",
         "needs a prefork daemon with --hardfork-handling",

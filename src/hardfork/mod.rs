@@ -5,8 +5,8 @@
 //! [hardfork]
 //! mode = "manual"                  # or "auto": --hardfork-handling migrate-exit
 //! at = { slot = 42 }               # or an RFC 3339 date: at = "2026-10-29T14:00:00Z"
-//! tx_end_before = 12               # slot_tx_end = slot_chain_end - 12 [default: k + 2]
-//! genesis_slot_delta = 10          # fork genesis slot = slot_chain_end + 10
+//! tx_end_before = 8                # slot_tx_end = slot_chain_end - 8 [default: k - 2]
+//! genesis_slot_delta = 20          # fork genesis slot = slot_chain_end + 20
 //! method = "legacy"                # manual only: legacy | advanced [default: legacy]
 //!
 //! [hardfork.postfork]
@@ -30,14 +30,15 @@ use std::path::PathBuf;
 /// start their provers and sync before they produce blocks (about 12 minutes
 /// for 5 nodes with 30 s slots).
 pub const MIN_LEAD: Duration = Duration::minutes(10);
-const DEFAULT_GENESIS_SLOT_DELTA: u32 = 10;
+const DEFAULT_GENESIS_SLOT_DELTA: u32 = 20;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HardforkSpec {
     pub mode: HardforkMode,
     pub at: ForkAt,
-    /// Slots from `slot_tx_end` to `slot_chain_end`; must be more than k.
+    /// Slots from `slot_tx_end` to `slot_chain_end`; must be less than k:
+    /// see [`HardforkSpec::schedule`].
     pub tx_end_before: Option<u32>,
     #[serde(default = "default_genesis_slot_delta")]
     pub genesis_slot_delta: u32,
@@ -213,12 +214,18 @@ impl HardforkSpec {
             },
         };
 
-        let before = self.tx_end_before.unwrap_or(c.k + 2);
-        if before <= c.k {
+        // After slot_chain_end, a daemon makes its fork config from the last
+        // block before slot_tx_end, which it finds in its transition frontier:
+        // k blocks below the best tip. Up to tx_end_before + 1 blocks follow
+        // that block (one per slot from slot_tx_end to slot_chain_end), so
+        // it stays in the frontier only when tx_end_before is less than k.
+        let before = self.tx_end_before.unwrap_or(c.k.saturating_sub(2).max(1));
+        if before == 0 || before >= c.k {
             problems.push(format!(
-                "[hardfork] tx_end_before = {before} must be more than k = {}: the blocks \
-                 after slot_tx_end must be final before slot_chain_end",
-                c.k
+                "[hardfork] tx_end_before = {before} must be from 1 to k - 1 = {}: after \
+                 slot_chain_end the daemons make the fork config from the last block before \
+                 slot_tx_end, which must still be one of the k blocks below the best tip",
+                c.k.saturating_sub(1)
             ));
         }
         let schedule = slot_chain_end.and_then(|chain_end| {
@@ -333,12 +340,12 @@ mod tests {
         assert_eq!(
             s,
             Schedule {
-                slot_tx_end: 30,
+                slot_tx_end: 34,
                 slot_chain_end: 42,
-                genesis_slot_delta: 10
+                genesis_slot_delta: 20
             }
         );
-        assert_eq!(s.fork_genesis_slot(), 52);
+        assert_eq!(s.fork_genesis_slot(), 62);
         assert_eq!(Schedule::from_daemon(&s.into()), Some(s));
     }
 
@@ -347,7 +354,7 @@ mod tests {
         // 21 min 10 s after the genesis: slot 42.33 -> 43
         let h = hardfork("mode = \"auto\"\nat = \"2026-10-29T11:21:10Z\"");
         let s = h.schedule(genesis(), C, &Default::default()).unwrap();
-        assert_eq!((s.slot_tx_end, s.slot_chain_end), (31, 43));
+        assert_eq!((s.slot_tx_end, s.slot_chain_end), (35, 43));
     }
 
     #[test]
@@ -365,7 +372,7 @@ mod tests {
             "daemon.slot_chain_end conflicts",
             "method is for mode = \"manual\"",
             "genesis_slot_delta must be at least 1",
-            "tx_end_before = 10 must be more than k = 10",
+            "tx_end_before = 10 must be from 1 to k - 1 = 9",
             "slot_tx_end 5 is 150 s after the genesis",
             "move [hardfork] at 15 slots later",
         ] {
@@ -383,7 +390,7 @@ mod tests {
         };
         assert!(err("tomorrow").contains("is not an RFC 3339 date"));
         assert!(err("2026-10-29T10:00:00Z").contains("is not after the genesis"));
-        assert!(err("2026-10-29T11:05:00Z").contains("must be after tx_end_before = 12"));
+        assert!(err("2026-10-29T11:03:00Z").contains("must be after tx_end_before = 8"));
     }
 
     #[test]

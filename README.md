@@ -264,8 +264,8 @@ proof = { block_window_duration_ms = 30000 }
 [hardfork]
 mode = "manual"                  # or "auto": the daemons run --hardfork-handling migrate-exit
 at = { slot = 42 }               # slot_chain_end, or an RFC 3339 date: at = "2026-10-29T14:00:00Z"
-# tx_end_before = 12             # slot_tx_end = slot_chain_end - tx_end_before [default: k + 2]
-# genesis_slot_delta = 10        # fork genesis slot = slot_chain_end + genesis_slot_delta
+# tx_end_before = 8              # slot_tx_end = slot_chain_end - tx_end_before [default: k - 2]
+# genesis_slot_delta = 20        # fork genesis slot = slot_chain_end + genesis_slot_delta
 # method = "legacy"              # manual only: legacy (GraphQL fork_config) | advanced
 
 [hardfork.postfork]
@@ -279,8 +279,8 @@ bin_path = "/opt/mina-postfork/bin"   # relative to the spec file
 refuses the spec, with a list of all problems, before it changes anything, if:
 
 - `genesis.k` or `proof.block_window_duration_ms` is not set;
-- `tx_end_before` is not more than k, or `slot_tx_end` is less than 10 minutes
-  after the genesis (the daemons need this time to start and sync);
+- `tx_end_before` is not from 1 to k - 1 (see `prepare` below), or
+  `slot_tx_end` is less than 10 minutes after the genesis (the daemons need this time to start and sync);
 - `[runtime_config]` also sets one of the three `daemon` keys;
 - neither `bin_path` nor `mina_version` is set, both are, `mina_version` is
   not installed, or the directory does not have `mina` (and `mina-archive`,
@@ -320,6 +320,12 @@ minimina network hardfork apply -n mynet            # before the fork genesis
 
 1. It gets `fork_config` (GraphQL) from every daemon. All daemons must give
    the same fork point (the state hash and height of the last prefork block).
+   A daemon makes it from the last block before `slot_tx_end`, which it finds
+   in its transition frontier: the k blocks below its best tip. Up to
+   `tx_end_before + 1` blocks follow that block, so `tx_end_before` must be
+   less than k, as in mina's own hardfork test (k = 10, 8 slots). With more,
+   the daemons answer `Block with state hash ... not found in transition
+   frontier` whenever most slots get a block.
 2. The postfork `mina-create-genesis` (`runtime_genesis_ledger`) makes the
    postfork ledgers and `ledger_hashes.json` from the fork config.
 3. It writes `daemon.json`: the fork point, the epoch seeds, the ledger
@@ -334,8 +340,9 @@ minimina network hardfork apply -n mynet            # before the fork genesis
    prefork archive: `fork-candidate last-filled-block` must give the fork
    block of step 1, and `fork-candidate is-in-best-chain` must find it on the
    best chain. `fork-candidate confirmations` (k blocks after the fork block,
-   up to the best tip of the daemon of step 1) only warns: the k + 2 slots
-   from `slot_tx_end` to `slot_chain_end` often hold fewer than k blocks.
+   up to the best tip of the daemon of step 1) only warns: with fewer than k
+   slots from `slot_tx_end` to `slot_chain_end`, fewer than k blocks follow
+   the fork block.
    `fork-candidate no-commands-after` does not run: in 4.0.4 it always fails
    ([MinaProtocol/mina#19982](https://github.com/MinaProtocol/mina/issues/19982)).
 

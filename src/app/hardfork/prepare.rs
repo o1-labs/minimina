@@ -258,7 +258,7 @@ pub fn prepare(
 /// The `fork-candidate` checks of the toolbox on the prefork archive: its
 /// last filled block is the fork block of the fork config, on its best chain.
 /// Too few confirmations of the fork block is a warning: the window from
-/// `slot_tx_end` to `slot_chain_end` (k + 2 slots by default) often has fewer
+/// `slot_tx_end` to `slot_chain_end` (fewer than k slots) always has fewer
 /// than k blocks on a test network. `no-commands-after` is left out: it
 /// always fails in 4.0.4 (MinaProtocol/mina#19982).
 fn check_fork_candidate(
