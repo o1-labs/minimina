@@ -416,19 +416,8 @@ binary is linked statically, so one deb serves every codename; it can also be
 installed with apt (`apt-get install mina-rosetta-cli`, from the repository
 in [Installing from Deb Package](#installing-from-deb-package)).
 
-mesh-cli no longer changes, so the deb is baked by hand, once per
-architecture, and uploaded by hand:
-
-```bash
-GO=<go 1.19>/bin/go CC=<static musl C compiler> ARCH=amd64 scripts/rosetta-cli-deb.sh out/
-for codename in bookworm jammy noble; do
-  deb-s3 upload --s3-region=us-west-2 --bucket packages.o1test.net --lock --preserve-versions \
-    --component stable --codename "$codename" out/mina-rosetta-cli_*.deb
-done
-```
-
-The script says where to get a static C compiler. Another mesh-cli version
-or patch tag needs a new deb and `VERSION` in `src/install/rosetta_cli`.
+Another mesh-cli version or patch tag needs a new deb and `VERSION` in
+`src/install/rosetta_cli`.
 
 ### Payment loads
 

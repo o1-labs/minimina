@@ -1,8 +1,8 @@
 //! rosetta-cli for `network check rosetta`: coinbase mesh-cli built with
 //! Mina's patch of rosetta-sdk-go, as mina CI builds it. Its deb,
-//! `mina-rosetta-cli` (baked by `scripts/rosetta-cli-deb.sh`, linked
-//! statically), is in the stable channel of packages.o1test.net; it is
-//! unpacked once into the tools directory, as the mina debs are.
+//! `mina-rosetta-cli` (linked statically), is in the stable channel of
+//! packages.o1test.net; it is unpacked once into the tools directory, as the
+//! mina debs are.
 
 mod error;
 
