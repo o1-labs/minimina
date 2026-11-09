@@ -18,6 +18,7 @@ use crate::{
 };
 use anyhow::{Context as _, Result};
 use log::info;
+use mina_rosetta_sdk::AccountBalanceResponse;
 use mina_sdk::Currency;
 use std::{
     collections::BTreeMap,
@@ -42,11 +43,7 @@ pub fn vesting(ctx: &Context, network_id: &str) -> Result<VestingReport> {
         .or_else(|| services.iter().find(|s| s.is_chain_daemon()))
         .with_context(|| format!("network '{network_id}' has no daemon"))?;
     let rosetta = match rosetta_service(&services) {
-        Some(service) => {
-            let client = RosettaClient::new(rosetta_port(service)?)?;
-            let network = client.network()?;
-            Some((client, network))
-        }
+        Some(service) => Some(RosettaClient::connect(rosetta_port(service)?)?),
         None => None,
     };
     let slot = node_client::tip(daemon)?.global_slot_since_genesis;
@@ -60,10 +57,7 @@ pub fn vesting(ctx: &Context, network_id: &str) -> Result<VestingReport> {
             locked: data.balance.locked,
         };
         let rosetta_view = match &rosetta {
-            Some((client, network)) => Some(rosetta_view(
-                client.balance(network, &account.public_key)?,
-                daemon,
-            )?),
+            Some(client) => Some(rosetta_view(client.balance(&account.public_key)?, daemon)?),
             None => None,
         };
         let fork_schedule = fork.as_ref().map(|f| {
@@ -98,11 +92,10 @@ pub fn rosetta(
         .ok_or_else(|| RosettaError::NoRosetta(network_id.to_string()))?;
     let daemon = rosetta_daemon(&services)
         .with_context(|| format!("rosetta of network '{network_id}' reads no daemon"))?;
-    let client = RosettaClient::new(rosetta_port(service)?)?;
-    let network = client.network()?;
+    let client = RosettaClient::connect(rosetta_port(service)?)?;
     let applied = hardfork::is_applied(ctx, network_id)?;
     if applied {
-        wait_for_postfork_tip(ctx, network_id, &client, &network, daemon, wait)?;
+        wait_for_postfork_tip(ctx, network_id, &client, daemon, wait)?;
     }
     let meta = NetworkMeta::load(&network_path)?
         .with_context(|| format!("network '{network_id}' has no minimina.json"))?;
@@ -134,7 +127,7 @@ pub fn rosetta(
         template,
         dir: dir.clone(),
         online_url: client.url().to_string(),
-        network,
+        network: client.network().clone(),
         start_index,
     }
     .run(ctx.runner.as_ref())?;
@@ -148,7 +141,6 @@ fn wait_for_postfork_tip(
     ctx: &Context,
     network_id: &str,
     client: &RosettaClient,
-    network: &rosetta::api::NetworkIdentifier,
     daemon: &ServiceConfig,
     wait: bool,
 ) -> Result<()> {
@@ -156,7 +148,7 @@ fn wait_for_postfork_tip(
         hardfork::status(ctx, network_id, chrono::Utc::now())?.slot_duration_ms,
     );
     loop {
-        let status = client.status(network)?;
+        let status = client.status()?;
         let tip = node_client::tip(daemon)?.height;
         match rosetta::orphaned_tip(&status, tip) {
             None => return Ok(()),
@@ -213,16 +205,17 @@ fn fork_schedules(network_path: &Path) -> Result<Option<BTreeMap<String, ForkSch
     ))
 }
 
-fn rosetta_view(
-    balance: rosetta::api::AccountBalance,
-    daemon: &ServiceConfig,
-) -> Result<RosettaView> {
-    let block = balance.block_identifier;
+fn rosetta_view(balance: AccountBalanceResponse, daemon: &ServiceConfig) -> Result<RosettaView> {
     let meta = balance
-        .balances
-        .first()
-        .and_then(|b| b.metadata)
-        .with_context(|| format!("rosetta gives no balance metadata at block {}", block.index))?;
+        .balance()
+        .and_then(|b| b.metadata.clone())
+        .with_context(|| {
+            format!(
+                "rosetta gives no balance metadata at block {}",
+                balance.block_identifier.index
+            )
+        })?;
+    let block = balance.block_identifier;
     // the daemon knows the blocks of its frontier, where rosetta's tip is
     let slot = node_client::block(daemon, &block.hash)
         .ok()

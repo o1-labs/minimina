@@ -25,6 +25,7 @@ toml = "0.8"
 thiserror = "2"
 mina-sdk = { version = "=0.4.0-rc.3", default-features = false, features = ["rustls-tls"] }
 mina-archive-sdk = { version = "=2.1.0", default-features = false, features = ["rustls-tls"] }
+mina-rosetta-sdk = { version = "=0.1.0", default-features = false, features = ["rustls-tls"] }
 tokio = { version = "1", features = ["rt", "time"] }
 sha2 = "0.10"
 # no `config`: it reads askama.toml (unused) with the unmaintained basic-toml

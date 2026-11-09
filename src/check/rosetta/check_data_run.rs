@@ -1,5 +1,6 @@
-use super::{api::NetworkIdentifier, CheckDataConfig, CheckDataResult, RosettaError};
+use super::{CheckDataConfig, CheckDataResult, RosettaError};
 use crate::runner::Runner;
+use mina_rosetta_sdk::NetworkIdentifier;
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -110,10 +111,7 @@ mod tests {
     use crate::runner::fake::FakeRunner;
 
     fn testnet() -> NetworkIdentifier {
-        NetworkIdentifier {
-            blockchain: "mina".into(),
-            network: "testnet".into(),
-        }
+        NetworkIdentifier::mina("testnet")
     }
 
     #[test]
