@@ -10,6 +10,7 @@ use crate::{
         },
     },
     genesis_ledger::{self, GENESIS_LEDGER_JSON, PREFORK_GENESIS_LEDGER_JSON},
+    install::{apt, mina, rosetta_cli},
     network_meta::NetworkMeta,
     node_client,
     service::{ServiceConfig, ServiceType},
@@ -115,7 +116,13 @@ pub fn rosetta(
     // prefork genesis: block 2 is the first that crosses the fork
     let start_index = start_index.or(applied.then_some(2));
     let dir = network_path.join(ROSETTA_CLI_DIR);
-    let program = rosetta::find_cli(&ctx.dirs.tools_root(), rosetta_cli);
+    let program = rosetta_cli::resolve(
+        &ctx.dirs.tools_root(),
+        rosetta_cli,
+        Path::new(apt::OS_RELEASE),
+        &mina::Http,
+        ctx.runner.as_ref(),
+    )?;
     info!(
         "rosetta-cli check:data on {} with {}, from block {}",
         client.url(),

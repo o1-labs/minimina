@@ -13,6 +13,7 @@ pub mod ldd;
 pub mod mina;
 pub mod npm;
 pub mod requirement;
+pub mod rosetta_cli;
 
 pub use requirement::{require, Tool, ToolError};
 

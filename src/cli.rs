@@ -336,7 +336,7 @@ pub struct RosettaCheckArgs {
     pub network_id: NetworkId,
 
     /// rosetta-cli to run [default: the last one under ~/.minimina/.tools/rosetta-cli,
-    /// else rosetta-cli on the PATH]
+    /// else one installed there from the mina-rosetta-cli deb]
     #[clap(long)]
     pub rosetta_cli: Option<PathBuf>,
 

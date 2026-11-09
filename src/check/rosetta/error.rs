@@ -11,10 +11,8 @@ pub enum RosettaError {
     #[error("starting the runtime for rosetta queries: {cause}")]
     Runtime { cause: io::Error },
     #[error(
-        "{0} is not installed: build it as mina CI does \
-         (buildkite/scripts/tests/rosetta/install-cli.sh: mesh-cli v0.10.1 with \
-         MinaProtocol/rosetta-sdk-go stake-delegation-v1) into \
-         ~/.minimina/.tools/rosetta-cli/<version>/rosetta-cli, or give --rosetta-cli"
+        "{0} is not found: give the path of a rosetta-cli to --rosetta-cli, or leave it out to \
+         download one"
     )]
     CliMissing(PathBuf),
     #[error("running {program}: {cause}")]

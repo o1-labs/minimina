@@ -3,7 +3,10 @@
 use anyhow::{bail, Context as _, Result};
 use std::path::Path;
 
-/// `VERSION_CODENAME` of an `os-release` file (`/etc/os-release`).
+/// The os-release file of this machine.
+pub const OS_RELEASE: &str = "/etc/os-release";
+
+/// `VERSION_CODENAME` of an `os-release` file ([`OS_RELEASE`]).
 pub fn host_codename(os_release: &Path) -> Result<String> {
     let text = std::fs::read_to_string(os_release)
         .with_context(|| format!("reading {}", os_release.display()))?;

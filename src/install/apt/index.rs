@@ -47,6 +47,13 @@ impl Index {
         })
     }
 
+    /// `package` at `version`.
+    pub fn entry(&self, package: &str, version: &str) -> Option<&Entry> {
+        self.entries
+            .iter()
+            .find(|e| e.package == package && e.version == version)
+    }
+
     /// The releases `wanted` (`4.0.2`, `4.0.2-84b8d96` or `latest`) names.
     pub fn select(&self, wanted: &str) -> Vec<Release> {
         let versions = self.versions();
