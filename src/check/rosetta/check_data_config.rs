@@ -1,4 +1,4 @@
-use super::api::NetworkIdentifier;
+use mina_rosetta_sdk::NetworkIdentifier;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -47,10 +47,7 @@ mod tests {
         });
         let config = CheckDataConfig {
             online_url: "http://localhost:3140".into(),
-            network: NetworkIdentifier {
-                blockchain: "mina".into(),
-                network: "testnet".into(),
-            },
+            network: NetworkIdentifier::mina("testnet"),
             data_directory: "/net/rosetta-cli/data".into(),
             results_file: "/net/rosetta-cli/results.json".into(),
             start_index: Some(2),

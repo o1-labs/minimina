@@ -6,19 +6,10 @@ use std::{io, path::PathBuf};
 pub enum RosettaError {
     #[error("network '{0}' has no rosetta")]
     NoRosetta(String),
-    #[error("rosetta {path}: {cause}")]
-    Http {
-        path: &'static str,
-        cause: reqwest::Error,
-    },
-    #[error("rosetta {path}: HTTP {status}: {body}")]
-    Status {
-        path: &'static str,
-        status: u16,
-        body: String,
-    },
-    #[error("rosetta serves no network (/network/list is empty)")]
-    NoNetwork,
+    #[error("rosetta {cause}")]
+    Api { cause: mina_rosetta_sdk::Error },
+    #[error("starting the runtime for rosetta queries: {cause}")]
+    Runtime { cause: io::Error },
     #[error(
         "{0} is not installed: build it as mina CI does \
          (buildkite/scripts/tests/rosetta/install-cli.sh: mesh-cli v0.10.1 with \
@@ -47,7 +38,7 @@ pub enum RosettaError {
          blocks, so check:data fails. Run again when the best tip is above height {index}, or \
          add --wait"
     )]
-    OrphanedTip { index: u64, hash: String, tip: u64 },
+    OrphanedTip { index: i64, hash: String, tip: u64 },
 }
 
 #[cfg(test)]

@@ -9,8 +9,6 @@
 //! is taller than the orphaned prefork tip, rosetta answers with orphaned
 //! prefork blocks (MinaProtocol/mina#19984), so the check waits for that.
 
-pub mod api;
-
 mod check_data_config;
 mod check_data_result;
 mod check_data_run;
@@ -29,7 +27,7 @@ pub use end_condition::EndCondition;
 pub use error::RosettaError;
 pub use report::RosettaReport;
 
-use api::NetworkStatus;
+use mina_rosetta_sdk::NetworkStatusResponse;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -59,9 +57,10 @@ pub fn find_cli(tools_root: &Path, given: Option<&Path>) -> PathBuf {
 
 /// After a hardfork, rosetta's current block is an orphaned prefork one
 /// while it is above the best tip.
-pub fn orphaned_tip(status: &NetworkStatus, best_tip_height: u64) -> Option<RosettaError> {
+pub fn orphaned_tip(status: &NetworkStatusResponse, best_tip_height: u64) -> Option<RosettaError> {
     let current = &status.current_block_identifier;
-    (current.index > best_tip_height).then(|| RosettaError::OrphanedTip {
+    let above = u64::try_from(current.index).is_ok_and(|index| index > best_tip_height);
+    above.then(|| RosettaError::OrphanedTip {
         index: current.index,
         hash: current.hash.clone(),
         tip: best_tip_height,
@@ -71,16 +70,17 @@ pub fn orphaned_tip(status: &NetworkStatus, best_tip_height: u64) -> Option<Rose
 #[cfg(test)]
 mod tests {
     use super::*;
-    use api::BlockIdentifier;
+    use mina_rosetta_sdk::BlockIdentifier;
 
-    fn status(index: u64) -> NetworkStatus {
+    fn status(index: i64) -> NetworkStatusResponse {
         let block = |index| BlockIdentifier {
             index,
             hash: format!("3N{index}"),
         };
-        NetworkStatus {
+        NetworkStatusResponse {
             current_block_identifier: block(index),
             genesis_block_identifier: block(19),
+            ..Default::default()
         }
     }
 

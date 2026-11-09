@@ -4,7 +4,7 @@ use mina_sdk::Currency;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RosettaView {
     /// Height of the block rosetta answered for.
-    pub block_index: u64,
+    pub block_index: i64,
     pub block_hash: String,
     /// Global slot since genesis of that block; none when the daemon does
     /// not know the block.
