@@ -111,10 +111,7 @@ async fn ask(probe: Probe) -> Health {
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("starting the runtime for node queries")
+    crate::utils::sdk_runtime().context("starting the runtime for node queries")
 }
 
 /// Health of every service that can report it, by service name. All are

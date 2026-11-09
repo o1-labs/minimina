@@ -14,46 +14,27 @@ mod check_data_result;
 mod check_data_run;
 mod check_data_stats;
 mod client;
+mod data_config;
 mod end_condition;
 mod error;
 mod report;
+mod rosetta_cli_config;
 
 pub use check_data_config::CheckDataConfig;
 pub use check_data_result::CheckDataResult;
 pub use check_data_run::CheckDataRun;
 pub use check_data_stats::CheckDataStats;
 pub use client::RosettaClient;
+pub use data_config::DataConfig;
 pub use end_condition::EndCondition;
 pub use error::RosettaError;
 pub use report::RosettaReport;
+pub use rosetta_cli_config::RosettaCliConfig;
 
 use mina_rosetta_sdk::NetworkStatusResponse;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
 
-/// rosetta-cli under the tools directory: `rosetta-cli/<version>/rosetta-cli`.
-pub const TOOL: &str = "rosetta-cli";
 /// The rosetta-cli config of a mina package, under its root.
 pub const TEMPLATE: &str = "etc/mina/rosetta/rosetta-cli-config/config.json";
-
-/// The rosetta-cli to run: `given`, else the last version under
-/// `<tools>/rosetta-cli`, else `rosetta-cli` on the PATH.
-pub fn find_cli(tools_root: &Path, given: Option<&Path>) -> PathBuf {
-    if let Some(given) = given {
-        return given.to_path_buf();
-    }
-    let mut installed: Vec<PathBuf> = fs::read_dir(tools_root.join(TOOL))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path().join(TOOL))
-        .filter(|path| path.is_file())
-        .collect();
-    installed.sort();
-    installed.pop().unwrap_or_else(|| PathBuf::from(TOOL))
-}
 
 /// After a hardfork, rosetta's current block is an orphaned prefork one
 /// while it is above the best tip.
@@ -89,24 +70,5 @@ mod tests {
         assert!(orphaned_tip(&status(25), 25).is_none());
         let err = orphaned_tip(&status(25), 22).unwrap().to_string();
         assert!(err.contains("current block is 25 (3N25), above the best tip at height 22"));
-    }
-
-    #[test]
-    fn the_last_installed_rosetta_cli_is_found() {
-        let tools = tempfile::tempdir().unwrap();
-        assert_eq!(find_cli(tools.path(), None), PathBuf::from("rosetta-cli"));
-        for v in ["v0.10.1-stake-delegation-v1", "v0.10.3"] {
-            let dir = tools.path().join(TOOL).join(v);
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join(TOOL), "").unwrap();
-        }
-        assert_eq!(
-            find_cli(tools.path(), None),
-            tools.path().join("rosetta-cli/v0.10.3/rosetta-cli")
-        );
-        assert_eq!(
-            find_cli(tools.path(), Some(Path::new("/opt/rc"))),
-            PathBuf::from("/opt/rc")
-        );
     }
 }

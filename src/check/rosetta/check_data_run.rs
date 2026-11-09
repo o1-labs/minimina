@@ -1,13 +1,15 @@
-use super::{CheckDataConfig, CheckDataResult, RosettaError};
+use super::{CheckDataConfig, CheckDataResult, RosettaCliConfig, RosettaError};
 use crate::runner::Runner;
 use mina_rosetta_sdk::NetworkIdentifier;
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    process::Output,
 };
 
 const CONFIG_JSON: &str = "config.json";
 const RESULTS_JSON: &str = "results.json";
+const DATA_DIR: &str = "data";
 
 /// One `rosetta-cli check:data` run in `dir`: its config is made from the
 /// package's `template`, and its data directory is new.
@@ -24,51 +26,61 @@ pub struct CheckDataRun {
 impl CheckDataRun {
     /// Writes the config, runs rosetta-cli and reads its results file.
     pub fn run(&self, runner: &dyn Runner) -> Result<CheckDataResult, RosettaError> {
-        let io = |path: &Path| {
-            let path = path.to_path_buf();
-            move |cause| RosettaError::Io { path, cause }
-        };
-        let template = &self.template;
-        let text = fs::read_to_string(template).map_err(|e| match e.kind() {
-            io::ErrorKind::NotFound => RosettaError::NoTemplate(template.clone()),
-            _ => RosettaError::Io {
-                path: template.clone(),
-                cause: e,
-            },
-        })?;
-        let template_json = serde_json::from_str(&text).map_err(|cause| RosettaError::Json {
-            path: template.clone(),
-            cause,
-        })?;
-        let dir = &self.dir;
-        let data = dir.join("data");
+        let template = RosettaCliConfig::read(&self.template)?;
+        self.clear_last_run()?;
+        self.config(template).write(&self.config_path())?;
+        let out = self.run_cli(runner)?;
+        self.read_results(&out)
+    }
+
+    fn config_path(&self) -> PathBuf {
+        self.dir.join(CONFIG_JSON)
+    }
+
+    fn results_path(&self) -> PathBuf {
+        self.dir.join(RESULTS_JSON)
+    }
+
+    fn data_dir(&self) -> PathBuf {
+        self.dir.join(DATA_DIR)
+    }
+
+    /// Removes the data and results of the last run, so this one syncs anew.
+    fn clear_last_run(&self) -> Result<(), RosettaError> {
+        let data = self.data_dir();
         if data.exists() {
-            fs::remove_dir_all(&data).map_err(io(&data))?;
+            fs::remove_dir_all(&data).map_err(io_error(&data))?;
         }
-        fs::create_dir_all(dir).map_err(io(dir))?;
-        let results = dir.join(RESULTS_JSON);
-        let _ = fs::remove_file(&results);
-        let config = CheckDataConfig {
+        fs::create_dir_all(&self.dir).map_err(io_error(&self.dir))?;
+        let results = self.results_path();
+        match fs::remove_file(&results) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(io_error(&results)(e)),
+            _ => Ok(()),
+        }
+    }
+
+    fn config(&self, template: RosettaCliConfig) -> RosettaCliConfig {
+        CheckDataConfig {
             online_url: self.online_url.clone(),
             network: self.network.clone(),
-            data_directory: data,
-            results_file: results.clone(),
+            data_directory: self.data_dir(),
+            results_file: self.results_path(),
             start_index: self.start_index,
         }
-        .apply(template_json);
-        let config_path = dir.join(CONFIG_JSON);
-        fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&config).unwrap_or_default(),
-        )
-        .map_err(io(&config_path))?;
+        .apply(template)
+    }
 
+    fn run_cli(&self, runner: &dyn Runner) -> Result<Output, RosettaError> {
         let program = &self.program;
-        let config_arg = config_path.to_string_lossy();
-        let out = runner
+        let config = self.config_path();
+        runner
             .run(
                 program.as_os_str(),
-                &["check:data", "--configuration-file", &config_arg],
+                &[
+                    "check:data",
+                    "--configuration-file",
+                    &config.to_string_lossy(),
+                ],
                 &[],
             )
             .map_err(|cause| match cause.kind() {
@@ -77,23 +89,29 @@ impl CheckDataRun {
                     program: program.clone(),
                     cause,
                 },
-            })?;
-        match fs::read_to_string(&results) {
-            Ok(text) => serde_json::from_str(&text).map_err(|cause| RosettaError::Json {
-                path: results,
-                cause,
-            }),
-            // it stopped before writing results: its last words say why
-            Err(_) => Ok(CheckDataResult {
-                error: last_line(&out.stderr)
+            })
+    }
+
+    /// The results file; when rosetta-cli stopped before writing it, its
+    /// last words say why.
+    fn read_results(&self, out: &Output) -> Result<CheckDataResult, RosettaError> {
+        let path = self.results_path();
+        match fs::read_to_string(&path) {
+            Ok(text) => {
+                serde_json::from_str(&text).map_err(|cause| RosettaError::Json { path, cause })
+            }
+            Err(_) => Ok(CheckDataResult::stopped(
+                last_line(&out.stderr)
                     .or_else(|| last_line(&out.stdout))
                     .unwrap_or_else(|| format!("rosetta-cli exited with {}", out.status)),
-                end_condition: None,
-                tests: Default::default(),
-                stats: None,
-            }),
+            )),
         }
     }
+}
+
+fn io_error(path: &Path) -> impl FnOnce(io::Error) -> RosettaError {
+    let path = path.to_path_buf();
+    move |cause| RosettaError::Io { path, cause }
 }
 
 fn last_line(bytes: &[u8]) -> Option<String> {
@@ -160,6 +178,6 @@ mod tests {
         fake.reply_err(io::ErrorKind::NotFound);
         run.program = "rosetta-cli".into();
         let err = run.run(&fake).unwrap_err().to_string();
-        assert!(err.starts_with("rosetta-cli is not installed"), "{err}");
+        assert!(err.starts_with("rosetta-cli is not found"), "{err}");
     }
 }

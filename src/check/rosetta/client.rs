@@ -3,8 +3,11 @@ use mina_rosetta_sdk::{AccountBalanceResponse, NetworkIdentifier, NetworkStatusR
 use tokio::runtime::Runtime;
 
 /// The Rosetta API of a network's `mina-rosetta`, through `mina-rosetta-sdk`.
-/// The SDK is async and minimina is not: the client runs its calls on a
-/// runtime of its own.
+///
+/// The SDK is async and minimina is not, so each method blocks: the client
+/// keeps a single-threaded tokio runtime and waits on it for the SDK's
+/// future (`Runtime::block_on`), as [`crate::node_client`] does for the
+/// daemon and archive SDKs.
 pub struct RosettaClient {
     client: mina_rosetta_sdk::RosettaClient,
     runtime: Runtime,
@@ -14,10 +17,8 @@ impl RosettaClient {
     /// The rosetta at `port`, for the network it serves (the first of
     /// `/network/list`).
     pub fn connect(port: u16) -> Result<Self, RosettaError> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|cause| RosettaError::Runtime { cause })?;
+        let runtime =
+            crate::utils::sdk_runtime().map_err(|cause| RosettaError::Runtime { cause })?;
         let client = runtime
             .block_on(mina_rosetta_sdk::RosettaClient::discover(format!(
                 "http://localhost:{port}"

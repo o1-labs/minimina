@@ -407,15 +407,28 @@ data and results are in `<network dir>/rosetta-cli`. After a hardfork:
 rosetta-cli is mesh-cli v0.10.1 built with Mina's
 `MinaProtocol/rosetta-sdk-go@stake-delegation-v1`, as
 `buildkite/scripts/tests/rosetta/install-cli.sh` of the mina repository
-builds it (go 1.19 and a C compiler). minimina takes the last one under
-`~/.minimina/.tools/rosetta-cli/<version>/rosetta-cli`, else `rosetta-cli` on
-the PATH, or `--rosetta-cli`:
+builds it. Nothing needs to be built: minimina runs `--rosetta-cli` if given,
+else `~/.minimina/.tools/rosetta-cli/<version>/usr/bin/rosetta-cli`, which it
+installs from the `mina-rosetta-cli` deb in the stable channel of
+packages.o1test.net the first time, as it installs mina: the deb is checked
+against the repository index and unpacked with `dpkg-deb`, without root. The
+binary is linked statically, so one deb serves every codename; it can also be
+installed with apt (`apt-get install mina-rosetta-cli`, from the repository
+in [Installing from Deb Package](#installing-from-deb-package)).
+
+mesh-cli no longer changes, so the deb is baked by hand, once per
+architecture, and uploaded by hand:
 
 ```bash
-SUDO= GO=<go 1.19>/bin/go CI_CACHE_MOUNT=/nonexistent \
-  ROSETTA_CLI_INSTALL_PATH=$HOME/.minimina/.tools/rosetta-cli/v0.10.1-stake-delegation-v1/rosetta-cli \
-  bash buildkite/scripts/tests/rosetta/install-cli.sh
+GO=<go 1.19>/bin/go CC=<static musl C compiler> ARCH=amd64 scripts/rosetta-cli-deb.sh out/
+for codename in bookworm jammy noble; do
+  deb-s3 upload --s3-region=us-west-2 --bucket packages.o1test.net --lock --preserve-versions \
+    --component stable --codename "$codename" out/mina-rosetta-cli_*.deb
+done
 ```
+
+The script says where to get a static C compiler. Another mesh-cli version
+or patch tag needs a new deb and `VERSION` in `src/install/rosetta_cli`.
 
 ### Payment loads
 

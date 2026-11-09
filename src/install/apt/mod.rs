@@ -25,7 +25,7 @@ pub use channel::Channel;
 pub use control_file::ControlFile;
 pub use dependency::Dependency;
 pub use entry::Entry;
-pub use host::{host_arch, host_codename};
+pub use host::{host_arch, host_codename, OS_RELEASE};
 pub use index::Index;
 pub use package_version::{select, PackageVersion};
 pub use release::Release;

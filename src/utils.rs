@@ -127,6 +127,15 @@ pub fn fetch_schema(source: &str, network_path: PathBuf) -> io::Result<PathBuf> 
     Ok(file_path)
 }
 
+/// A runtime for one call into the async Mina SDKs. minimina is not async:
+/// it starts a small runtime on the current thread and blocks on the call
+/// (`Runtime::block_on`) until it is done.
+pub fn sdk_runtime() -> io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
