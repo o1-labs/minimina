@@ -16,6 +16,16 @@ pub struct CheckDataResult {
 }
 
 impl CheckDataResult {
+    /// A run that stopped before writing its results, with why.
+    pub fn stopped(error: String) -> Self {
+        CheckDataResult {
+            error,
+            end_condition: None,
+            tests: BTreeMap::new(),
+            stats: None,
+        }
+    }
+
     /// No error, no failed test, no failed reconciliation.
     pub fn passed(&self) -> bool {
         self.error.is_empty()
