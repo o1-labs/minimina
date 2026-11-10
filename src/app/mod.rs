@@ -7,6 +7,7 @@ mod check;
 mod env;
 mod hardfork;
 mod inputs;
+mod load;
 mod mina;
 mod network;
 mod node;
@@ -227,7 +228,7 @@ pub fn run_with(
         .or_else(|| std::env::var(POSTGRES_URI_ENV).ok())
         .unwrap_or_else(|| DEFAULT_POSTGRES_URI.to_string());
 
-    // list, info, hardfork status and the checks run no mina binary
+    // list, info, hardfork status, the checks and the loads run no mina binary
     let reads_files_only = matches!(
         cli.command,
         Command::Network(
@@ -235,6 +236,7 @@ pub fn run_with(
                 | NetworkCommand::Info(_)
                 | NetworkCommand::Hardfork(HardforkCommand::Status(_))
                 | NetworkCommand::Check(_)
+                | NetworkCommand::Load(_)
         )
     );
     if !reads_files_only {
