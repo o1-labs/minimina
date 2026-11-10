@@ -208,6 +208,41 @@ pub enum NetworkCommand {
     /// Hardfork of a network whose spec has [hardfork]
     #[clap(subcommand)]
     Hardfork(HardforkCommand),
+    /// Check a running network (for example after a hardfork); exits 1 when a check fails
+    #[clap(subcommand)]
+    Check(CheckCommand),
+}
+
+#[derive(Subcommand)]
+pub enum CheckCommand {
+    /// The timed accounts of the genesis ledger: the same vesting schedule in
+    /// the fork config and on the daemon, and the locked balance of that
+    /// schedule on the daemon and rosetta
+    Vesting(NetworkId),
+    /// rosetta-cli check:data: every balance change of every block, across a
+    /// hardfork, reconciled against rosetta's /account/balance
+    Rosetta(RosettaCheckArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct RosettaCheckArgs {
+    #[clap(flatten)]
+    pub network_id: NetworkId,
+
+    /// rosetta-cli to run [default: the last one under ~/.minimina/.tools/rosetta-cli,
+    /// else one installed there from the mina-rosetta-cli deb]
+    #[clap(long)]
+    pub rosetta_cli: Option<PathBuf>,
+
+    /// First block to sync [default: rosetta's genesis; 2 after a hardfork, to
+    /// cross the fork]
+    #[clap(long)]
+    pub start_index: Option<u64>,
+
+    /// After a hardfork, wait for the postfork chain to pass the orphaned
+    /// prefork tip rosetta reports until then, instead of failing
+    #[clap(long, default_value_t = false)]
+    pub wait: bool,
 }
 
 #[derive(Subcommand)]
@@ -505,6 +540,7 @@ log_level!(CreateNetworkArgs);
 log_level!(NodeCommandArgs);
 
 network_id!(StartNetworkArgs);
+network_id!(RosettaCheckArgs);
 network_id!(CreateNetworkArgs);
 network_id!(NodeCommandArgs);
 network_id!(StopNetworkArgs);
@@ -553,6 +589,8 @@ impl Command {
                 | NetworkCommand::Hardfork(HardforkCommand::Status(args)) => Some(&args.network_id),
                 NetworkCommand::Hardfork(HardforkCommand::Prepare(args)) => Some(args.network_id()),
                 NetworkCommand::Hardfork(HardforkCommand::Apply(args)) => Some(args.network_id()),
+                NetworkCommand::Check(CheckCommand::Vesting(args)) => Some(&args.network_id),
+                NetworkCommand::Check(CheckCommand::Rosetta(args)) => Some(args.network_id()),
                 NetworkCommand::List => None,
             },
             Command::Node(cmd) => Some(match cmd {

@@ -14,8 +14,6 @@ use crate::{
 use anyhow::Result;
 use std::path::Path;
 
-const OS_RELEASE: &str = "/etc/os-release";
-
 pub fn run(
     dirs: &DirectoryManager,
     runner: &dyn Runner,
@@ -43,7 +41,7 @@ fn install(
     wanted: &str,
     args: &MinaSourceArgs,
 ) -> Result<output::Install> {
-    let source = source(args, Path::new(OS_RELEASE))?;
+    let source = source(args, Path::new(apt::OS_RELEASE))?;
     let (installed, new) = mina::install(tools, runner, fetch, wanted, &source)?;
     let requirements = Requirements::check(runner, &installed.depends, &installed.bin_path());
     requirements.warn(&installed.version);
@@ -122,7 +120,7 @@ fn available(
     args: &MinaSourceArgs,
     installed: &[Installed],
 ) -> Result<output::Available> {
-    let source = source(args, Path::new(OS_RELEASE))?;
+    let source = source(args, Path::new(apt::OS_RELEASE))?;
     let versions = source.index(fetch)?.versions();
     Ok(output::Available {
         channel: source.channel,

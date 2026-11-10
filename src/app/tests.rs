@@ -1382,3 +1382,19 @@ fn flags_alone_make_a_network() {
         [(Role::Seed, 1), (Role::BlockProducer, 1), (Role::Plain, 1)]
     );
 }
+
+#[test]
+fn the_checks_say_what_the_network_lacks() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    h.create_small_native(&bin, "nat").unwrap();
+    let err = |args: &[&str]| h.run(args).unwrap_err().to_string();
+    // the small network has neither rosetta nor timed accounts
+    assert_eq!(
+        err(&["network", "check", "rosetta", "-n", "nat"]),
+        "network 'nat' has no rosetta"
+    );
+    assert!(err(&["network", "check", "vesting", "-n", "nat"])
+        .starts_with("the genesis ledger of network 'nat' has no timed accounts"));
+    assert!(err(&["network", "check", "vesting", "-n", "none"]).contains("none"));
+}

@@ -1,10 +1,10 @@
 //! `minimina network ...` handlers.
 
-use super::{hardfork, inputs::CreateInputs, setup, shutdown_timeout, Context};
+use super::{check, hardfork, inputs::CreateInputs, setup, shutdown_timeout, Context};
 use crate::{
     cli::{
-        CommandWithNetworkId, ExecutionMode, HardforkCommand, NetworkCommand, Profile,
-        ShutdownTimeout,
+        CheckCommand, CommandWithNetworkId, ExecutionMode, HardforkCommand, NetworkCommand,
+        Profile, ShutdownTimeout,
     },
     daemon_args::DaemonFeatures,
     docker::manager::{ContainerState, DockerManager},
@@ -21,7 +21,7 @@ use crate::{
     },
     utils::{self, fetch_schema, is_remote_schema, TIMEOUT_IN_SECS},
 };
-use anyhow::{bail, Context as _, Result};
+use anyhow::{bail, ensure, Context as _, Result};
 use log::{error, info, warn};
 use std::path::{Path, PathBuf};
 use url::Url;
@@ -233,6 +233,36 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             println!(
                 "{}",
                 hardfork::prepare(ctx, network_id, cmd.wait, cmd.source.as_deref())?
+            );
+            Ok(())
+        }
+
+        NetworkCommand::Check(CheckCommand::Vesting(cmd)) => {
+            ctx.ensure_network_exists(&cmd.network_id)?;
+            let report = check::vesting(ctx, &cmd.network_id)?;
+            println!("{report}");
+            ensure!(
+                report.passed,
+                "a vesting check of network '{}' failed",
+                cmd.network_id
+            );
+            Ok(())
+        }
+
+        NetworkCommand::Check(CheckCommand::Rosetta(cmd)) => {
+            let network_id = cmd.network_id();
+            ctx.ensure_network_exists(network_id)?;
+            let report = check::rosetta(
+                ctx,
+                network_id,
+                cmd.rosetta_cli.as_deref(),
+                cmd.start_index,
+                cmd.wait,
+            )?;
+            println!("{report}");
+            ensure!(
+                report.passed,
+                "rosetta-cli check:data of network '{network_id}' failed"
             );
             Ok(())
         }

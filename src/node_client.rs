@@ -111,10 +111,7 @@ async fn ask(probe: Probe) -> Health {
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("starting the runtime for node queries")
+    crate::utils::sdk_runtime().context("starting the runtime for node queries")
 }
 
 /// Health of every service that can report it, by service name. All are
@@ -190,6 +187,41 @@ pub fn best_tip(service: &ServiceConfig) -> Result<String> {
         .last()
         .map(|block| block.state_hash.clone())
         .with_context(|| format!("'{}' has an empty best chain", service.service_name))
+}
+
+fn graphql_uri(service: &ServiceConfig) -> Result<String> {
+    service
+        .to_node_info()
+        .graphql_uri
+        .with_context(|| format!("'{}' has no GraphQL port", service.service_name))
+}
+
+/// The best tip of a daemon.
+pub fn tip(service: &ServiceConfig) -> Result<mina_sdk::BlockInfo> {
+    let uri = graphql_uri(service)?;
+    runtime()?
+        .block_on(daemon_client(&uri).get_best_chain(Some(1)))
+        .map_err(|e| anyhow::anyhow!("best chain of '{}': {e}", service.service_name))?
+        .pop()
+        .with_context(|| format!("'{}' has an empty best chain", service.service_name))
+}
+
+/// A block a daemon knows (its transition frontier), by state hash.
+pub fn block(service: &ServiceConfig, state_hash: &str) -> Result<mina_sdk::BlockInfo> {
+    let uri = graphql_uri(service)?;
+    runtime()?
+        .block_on(
+            daemon_client(&uri).get_block(mina_sdk::BlockRef::StateHash(state_hash.to_string())),
+        )
+        .map_err(|e| anyhow::anyhow!("block {state_hash} of '{}': {e}", service.service_name))
+}
+
+/// An account (default token) at a daemon's best tip.
+pub fn account(service: &ServiceConfig, public_key: &str) -> Result<mina_sdk::AccountData> {
+    let uri = graphql_uri(service)?;
+    runtime()?
+        .block_on(daemon_client(&uri).get_account(public_key, None))
+        .map_err(|e| anyhow::anyhow!("account {public_key} of '{}': {e}", service.service_name))
 }
 
 /// Waits until every daemon reports SYNCED, asking every `interval`.

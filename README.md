@@ -377,6 +377,55 @@ ledger's accounts from `archive_config.json`.
 A manual fork of a network with an archive needs
 `mina-archive-hardfork-toolbox` in the postfork `bin_path`.
 
+### Checks
+
+Checks of a running network, for example after a hardfork. Each prints a
+JSON report and exits with 1 when a check fails.
+
+```bash
+minimina network check vesting -n mynet
+minimina network check rosetta -n mynet [--wait] [--start-index N] [--rosetta-cli PATH]
+```
+
+`check vesting` checks every timed account of the (prefork) genesis ledger,
+the accounts with a `timing` in the `[ledger] file`:
+
+- after `hardfork prepare`, the fork config (`hardfork/fork_config.json`)
+  has the same vesting schedule;
+- the daemon rosetta reads (else the first daemon) has that schedule, and
+  locks the amount the schedule gives at its best tip's slot;
+- with rosetta, `/account/balance` locks that amount at the slot of the block
+  it answers for, and the liquid balance is the rest.
+
+`check rosetta` runs `rosetta-cli check:data` with the config of the
+network's mina package (`etc/mina/rosetta/rosetta-cli-config/config.json`),
+as mina CI does: every balance change of every block is reconciled against
+`/account/balance`, until every account seen is reconciled. The config,
+data and results are in `<network dir>/rosetta-cli`. After a hardfork:
+
+- rosetta names the postfork genesis as its genesis, and rosetta-cli refuses
+  the prefork one, so the sync starts at block 2 and crosses the fork;
+- until the postfork chain is taller than the prefork tip, rosetta answers
+  with orphaned prefork blocks
+  ([MinaProtocol/mina#19984](https://github.com/MinaProtocol/mina/issues/19984)),
+  and check:data fails. `check rosetta` refuses to start then, or with
+  `--wait` waits for it.
+
+rosetta-cli is mesh-cli v0.10.1 built with Mina's
+`MinaProtocol/rosetta-sdk-go@stake-delegation-v1`, as
+`buildkite/scripts/tests/rosetta/install-cli.sh` of the mina repository
+builds it. Nothing needs to be built: minimina runs `--rosetta-cli` if given,
+else `~/.minimina/.tools/rosetta-cli/<version>/usr/bin/rosetta-cli`, which it
+installs from the `mina-rosetta-cli` deb in the stable channel of
+packages.o1test.net the first time, as it installs mina: the deb is checked
+against the repository index and unpacked with `dpkg-deb`, without root. The
+binary is linked statically, so one deb serves every codename; it can also be
+installed with apt (`apt-get install mina-rosetta-cli`, from the repository
+in [Installing from Deb Package](#installing-from-deb-package)).
+
+Another mesh-cli version or patch tag needs a new deb and `VERSION` in
+`src/install/rosetta_cli`.
+
 ---
 
 ## Uptime service backend
