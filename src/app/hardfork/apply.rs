@@ -10,12 +10,10 @@ use super::{
     Context,
 };
 use crate::{
+    archive_db::{ArchiveBlock, ArchiveDb, Migration},
     daemon_args::DaemonFeatures,
     genesis_ledger::{self, GENESIS_LEDGER_JSON, PREFORK_GENESIS_LEDGER_JSON},
-    hardfork::{
-        fork_config,
-        toolbox::{ArchiveBlock, Migration, Toolbox},
-    },
+    hardfork::{fork_config, toolbox::Toolbox},
     native::manager::NativeManager,
     network_meta::{HardforkState, NetworkMeta},
     runner::check,
@@ -100,19 +98,20 @@ pub fn apply(
     }
 
     let services = ctx.dirs.get_services_info(network_id)?;
-    let archive_db = native.archive_db_uri();
+    let archive_uri = native.archive_db_uri();
     let toolbox = Toolbox::new(
         ctx.runner.as_ref(),
         &h.postfork_bin_path,
-        &archive_db,
+        &archive_uri,
         ctx.profile,
     );
-    let archive_migration = match (
-        ServiceConfig::get_archive_node(&services),
-        &h.archive_upgrade,
-    ) {
-        (Some(_), Some(script)) => {
-            let migration = upgrade_archive(ctx, &archive_db, script)?;
+    let mut archive = match ServiceConfig::get_archive_node(&services) {
+        Some(_) => Some(ctx.archive_db.connect(&archive_uri)?),
+        None => None,
+    };
+    let archive_migration = match (archive.as_deref_mut(), &h.archive_upgrade) {
+        (Some(db), Some(script)) => {
+            let migration = upgrade_archive(ctx, &archive_uri, db, script)?;
             toolbox
                 .verify_upgrade(&migration)
                 .context("the upgraded archive database")?;
@@ -148,20 +147,16 @@ pub fn apply(
         .with_archive_config(archive_config.clone())
         .start_all(&typed, network_id, seed_timeout)
         .with_context(|| format!("Failed to start network '{network_id}' after the fork"))?;
-    let archive_postfork_genesis = match archive_config {
-        Some(_) => Some(
-            repair_archive(
-                ctx,
-                &toolbox,
-                &archive_db,
-                prepared.fork.global_slot_since_genesis,
-            )
-            .with_context(|| {
-                format!(
+    let archive_postfork_genesis = match archive.as_deref_mut() {
+        Some(db) => Some(
+            repair_archive(&toolbox, db, prepared.fork.global_slot_since_genesis).with_context(
+                || {
+                    format!(
                     "network '{network_id}' runs the postfork binaries, but its archive is not \
                      checked"
                 )
-            })?,
+                },
+            )?,
         ),
         None => None,
     };
@@ -180,12 +175,11 @@ pub fn apply(
 /// the archive does not do with the k of its compiled profile
 /// (MinaProtocol/mina#19986).
 fn repair_archive(
-    ctx: &Context,
     toolbox: &Toolbox,
-    archive_db: &str,
+    archive: &mut dyn ArchiveDb,
     fork_genesis_slot: u32,
 ) -> Result<ArchiveBlock> {
-    let genesis = wait_for_postfork_genesis(ctx, archive_db, fork_genesis_slot)?;
+    let genesis = wait_for_postfork_genesis(archive, fork_genesis_slot)?;
     info!(
         "The archive has the postfork genesis block {} (height {})",
         genesis.state_hash, genesis.height
@@ -195,22 +189,11 @@ fn repair_archive(
     Ok(genesis)
 }
 
-/// Waits up to [`ARCHIVE_GENESIS_TIMEOUT`] for the block of the archive at
-/// `slot` (since genesis) with slot 0 since the hardfork.
-fn wait_for_postfork_genesis(ctx: &Context, archive_db: &str, slot: u32) -> Result<ArchiveBlock> {
-    let query = format!(
-        "SELECT row_to_json(b) FROM (SELECT state_hash, height, global_slot_since_genesis \
-         AS slot_since_genesis FROM blocks WHERE global_slot_since_genesis = {slot} \
-         AND global_slot_since_hard_fork = 0) b"
-    );
+/// Waits up to [`ARCHIVE_GENESIS_TIMEOUT`] for the postfork genesis block in the archive.
+fn wait_for_postfork_genesis(archive: &mut dyn ArchiveDb, slot: u32) -> Result<ArchiveBlock> {
     let deadline = std::time::Instant::now() + ARCHIVE_GENESIS_TIMEOUT;
     loop {
-        if let Some(block) = psql_row(
-            ctx,
-            archive_db,
-            &query,
-            "reading the postfork genesis block",
-        )? {
+        if let Some(block) = archive.postfork_genesis_block(slot)? {
             return Ok(block);
         }
         if std::time::Instant::now() >= deadline {
@@ -221,27 +204,6 @@ fn wait_for_postfork_genesis(ctx: &Context, archive_db: &str, slot: u32) -> Resu
         }
         std::thread::sleep(Duration::from_secs(2));
     }
-}
-
-/// The first row of a `row_to_json` query, or `None` without rows.
-fn psql_row<T: serde::de::DeserializeOwned>(
-    ctx: &Context,
-    db: &str,
-    query: &str,
-    what: &str,
-) -> Result<Option<T>> {
-    let out = check(
-        ctx.runner
-            .run("psql".as_ref(), &[db, "-At", "-c", query], &[])?,
-        what,
-    )?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    stdout
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str(line.trim()))
-        .transpose()
-        .with_context(|| format!("{what}: {}", stdout.trim()))
 }
 
 /// Writes the postfork `mina-archive` config ([`fork_config::archive_postfork_config`]):
@@ -280,7 +242,12 @@ fn install_fork_data(
 
 /// Applies the postfork `upgrade.sql` to the archive database and returns the
 /// last `migration_history` row, which must say `applied`.
-fn upgrade_archive(ctx: &Context, db: &str, script: &Path) -> Result<Migration> {
+fn upgrade_archive(
+    ctx: &Context,
+    uri: &str,
+    archive: &mut dyn ArchiveDb,
+    script: &Path,
+) -> Result<Migration> {
     let script = script
         .to_str()
         .with_context(|| format!("path '{}' is not valid UTF-8", script.display()))?;
@@ -288,19 +255,14 @@ fn upgrade_archive(ctx: &Context, db: &str, script: &Path) -> Result<Migration> 
     check(
         ctx.runner.run(
             "psql".as_ref(),
-            &[db, "-v", "ON_ERROR_STOP=1", "-f", script],
+            &[uri, "-v", "ON_ERROR_STOP=1", "-f", script],
             &[],
         )?,
         &format!("applying {script}"),
     )?;
-    let migration: Migration = psql_row(
-        ctx,
-        db,
-        "SELECT row_to_json(m) FROM (SELECT protocol_version, migration_version, status \
-         FROM migration_history ORDER BY commit_start_at DESC LIMIT 1) m",
-        "reading migration_history",
-    )?
-    .context("the archive upgrade left migration_history empty")?;
+    let migration = archive
+        .last_migration()?
+        .context("the archive upgrade left migration_history empty")?;
     if !migration.is_applied() {
         bail!("the archive upgrade did not finish: migration_history says {migration}");
     }

@@ -16,6 +16,7 @@ mod setup;
 mod spec;
 
 use crate::{
+    archive_db::{Connector, Postgres},
     cli::{
         Cli, Command, ExecutionMode, HardforkCommand, NetworkCommand, NodeCommand, Profile,
         ShutdownTimeout,
@@ -69,6 +70,8 @@ pub struct Context {
     /// The runtime config native `mina-archive` starts with; see [`archive_config`].
     pub archive_config: Option<PathBuf>,
     pub runner: Rc<dyn Runner>,
+    /// Opens archive databases (native mode).
+    pub archive_db: Rc<dyn Connector>,
 }
 
 impl Context {
@@ -152,11 +155,16 @@ pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Mina(cmd) => mina::run(&dirs, &SystemRunner, &install::mina::Http, cmd),
         Command::Spec(cmd) => spec::run(cmd),
-        _ => run_with(cli, dirs, Rc::new(SystemRunner)),
+        _ => run_with(cli, dirs, Rc::new(SystemRunner), Rc::new(Postgres)),
     }
 }
 
-pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Result<()> {
+pub fn run_with(
+    cli: Cli,
+    dirs: DirectoryManager,
+    runner: Rc<dyn Runner>,
+    archive_db: Rc<dyn Connector>,
+) -> Result<()> {
     // `create` takes the profile from --profile, else from the spec
     let created_profile = match &cli.command {
         Command::Network(NetworkCommand::Create(args)) => Some(match args.profile {
@@ -246,6 +254,7 @@ pub fn run_with(cli: Cli, dirs: DirectoryManager, runner: Rc<dyn Runner>) -> Res
         features,
         archive_config,
         runner,
+        archive_db,
     };
 
     check_runnable(&ctx, &cli.command, postfork_bin.as_deref())?;
