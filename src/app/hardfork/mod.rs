@@ -24,7 +24,7 @@ mod apply;
 mod prepare;
 
 pub use apply::apply;
-pub use prepare::prepare;
+pub use prepare::{prepare, Prepared};
 
 /// The archive schema migration of a mina package, in `etc/mina/archive`.
 const ARCHIVE_UPGRADE_SQL: &str = "upgrade.sql";

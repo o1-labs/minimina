@@ -224,6 +224,14 @@ pub fn account(service: &ServiceConfig, public_key: &str) -> Result<mina_sdk::Ac
         .map_err(|e| anyhow::anyhow!("account {public_key} of '{}': {e}", service.service_name))
 }
 
+/// The genesis block a daemon runs.
+pub fn genesis_block(service: &ServiceConfig) -> Result<mina_sdk::BlockInfo> {
+    let uri = graphql_uri(service)?;
+    runtime()?
+        .block_on(daemon_client(&uri).get_genesis_block())
+        .map_err(|e| anyhow::anyhow!("genesis block of '{}': {e}", service.service_name))
+}
+
 /// Waits until every daemon reports SYNCED, asking every `interval`.
 pub fn wait_synced(
     services: &[ServiceConfig],

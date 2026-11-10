@@ -1397,6 +1397,10 @@ fn the_checks_say_what_the_network_lacks() {
     assert!(err(&["network", "check", "vesting", "-n", "nat"])
         .starts_with("the genesis ledger of network 'nat' has no timed accounts"));
     assert!(err(&["network", "check", "vesting", "-n", "none"]).contains("none"));
+    assert_eq!(
+        err(&["network", "check", "fork", "-n", "nat"]),
+        "network 'nat' has no applied hardfork: run `network hardfork apply` first"
+    );
 }
 
 #[test]

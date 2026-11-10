@@ -76,6 +76,18 @@ impl VestingSchedule {
     }
 }
 
+impl From<VestingSchedule> for AccountTiming {
+    fn from(schedule: VestingSchedule) -> Self {
+        AccountTiming {
+            initial_minimum_balance: Some(schedule.initial_minimum_balance),
+            cliff_time: Some(schedule.cliff_time),
+            cliff_amount: Some(schedule.cliff_amount),
+            vesting_period: Some(schedule.vesting_period),
+            vesting_increment: Some(schedule.vesting_increment),
+        }
+    }
+}
+
 impl std::fmt::Display for VestingSchedule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
