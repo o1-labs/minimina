@@ -1,4 +1,5 @@
-use super::{ArchiveMigration, ChainBlock, ExpectedFork};
+use super::ExpectedFork;
+use crate::archive_db::{ChainBlock, Migration};
 use crate::check::Check;
 
 /// The archive after the fork: migrated, and one chain from its highest
@@ -6,12 +7,12 @@ use crate::check::Check;
 /// block, canonical up to the postfork genesis.
 pub fn archive_checks(
     expected: &ExpectedFork,
-    migration: Option<&ArchiveMigration>,
+    migration: Option<&Migration>,
     chain: &[ChainBlock],
 ) -> Vec<Check> {
     let mut checks = vec![Check::new(
         "the archive schema is migrated",
-        migration.is_some_and(|m| m.status == "applied"),
+        migration.is_some_and(Migration::is_applied),
         match migration {
             Some(m) => format!(
                 "{} (protocol {}): {}",

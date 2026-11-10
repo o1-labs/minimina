@@ -1,6 +1,9 @@
 //! An archive database for tests: set answers, recorded queries.
 
-use super::{ArchiveBlock, ArchiveDb, ArchiveDbError, Connector, Migration};
+use super::{
+    ArchiveBlock, ArchiveDb, ArchiveDbError, ChainBlock, Connector, IncludedCommand, Migration,
+};
+use mina_sdk::AccountData;
 use std::cell::RefCell;
 
 #[derive(Debug, Default)]
@@ -8,6 +11,9 @@ pub struct FakeArchive {
     pub migration: RefCell<Option<Migration>>,
     pub postfork_genesis: RefCell<Option<ArchiveBlock>>,
     pub prefork_transaction_version: RefCell<Option<u32>>,
+    pub chain: RefCell<Vec<ChainBlock>>,
+    pub genesis_accounts: RefCell<Vec<AccountData>>,
+    pub commands: RefCell<Vec<IncludedCommand>>,
     /// The queries made, as `<method> <argument>`.
     pub calls: RefCell<Vec<String>>,
 }
@@ -44,5 +50,33 @@ impl ArchiveDb for FakeDb<'_> {
             .borrow_mut()
             .push(format!("prefork_transaction_version {slot}"));
         Ok(*self.0.prefork_transaction_version.borrow())
+    }
+
+    fn chain_from_tip(&mut self, slot: u32) -> Result<Vec<ChainBlock>, ArchiveDbError> {
+        self.0
+            .calls
+            .borrow_mut()
+            .push(format!("chain_from_tip {slot}"));
+        Ok(self.0.chain.borrow().clone())
+    }
+
+    fn genesis_accounts(
+        &mut self,
+        state_hash: &str,
+        token: &str,
+    ) -> Result<Vec<AccountData>, ArchiveDbError> {
+        self.0
+            .calls
+            .borrow_mut()
+            .push(format!("genesis_accounts {state_hash} {token}"));
+        Ok(self.0.genesis_accounts.borrow().clone())
+    }
+
+    fn commands(&mut self, hashes: &[String]) -> Result<Vec<IncludedCommand>, ArchiveDbError> {
+        self.0
+            .calls
+            .borrow_mut()
+            .push(format!("commands {}", hashes.join(",")));
+        Ok(self.0.commands.borrow().clone())
     }
 }

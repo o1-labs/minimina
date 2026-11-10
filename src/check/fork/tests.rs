@@ -1,4 +1,5 @@
 use super::*;
+use crate::archive_db::{ChainBlock, IncludedCommand, Migration};
 use crate::{hardfork::fork_config::ForkPoint, load::PaymentRecord, spec::ledger::LedgerAccount};
 use mina_sdk::{AccountData, Currency};
 use std::collections::BTreeMap;
@@ -203,8 +204,8 @@ fn chain() -> Vec<ChainBlock> {
     ]
 }
 
-fn applied() -> ArchiveMigration {
-    ArchiveMigration {
+fn applied() -> Migration {
+    Migration {
         protocol_version: "5.0.0".into(),
         migration_version: "0.0.3".into(),
         status: "applied".into(),

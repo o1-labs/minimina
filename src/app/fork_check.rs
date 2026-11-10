@@ -7,8 +7,8 @@ use super::{
 };
 use crate::{
     check::fork::{
-        self, ArchiveDb, ExpectedFork, ForkAccount, ForkCheckError, ForkReport, GenesisView,
-        PaymentChecks, PaymentEvidence,
+        self, ExpectedFork, ForkAccount, ForkCheckError, ForkReport, GenesisView, PaymentChecks,
+        PaymentEvidence,
     },
     hardfork::fork_config::LedgerHashes,
     load::{LoadStore, PaymentRecord},
@@ -67,9 +67,11 @@ pub fn run(ctx: &Context, network_id: &str) -> Result<ForkReport> {
             notes,
         ));
     }
-    let mut db = ArchiveDb::connect(&ctx.native(network_id)?.archive_db_uri())?;
+    let mut db = ctx
+        .archive_db
+        .connect(&ctx.native(network_id)?.archive_db_uri())?;
     let migration = db.last_migration()?;
-    let blocks = db.chain_from_tip(i64::from(expected.fork.global_slot_since_genesis))?;
+    let blocks = db.chain_from_tip(expected.fork.global_slot_since_genesis)?;
     let archive = fork::archive_checks(&expected, migration.as_ref(), &blocks);
     let Some(genesis) = postfork_genesis else {
         notes.push(
@@ -86,7 +88,7 @@ pub fn run(ctx: &Context, network_id: &str) -> Result<ForkReport> {
     };
     let ledger = vec![fork::ledger_check(
         &fork_accounts,
-        &db.genesis_accounts(&genesis)?,
+        &db.genesis_accounts(&genesis, fork::MINA_TOKEN)?,
     )];
 
     let payments = accepted_payments(&network_path)?;

@@ -8,12 +8,4 @@ pub enum ForkCheckError {
         field: &'static str,
         value: String,
     },
-    #[error("archive account {public_key}: {field} {value}")]
-    ArchiveAccount {
-        public_key: String,
-        field: &'static str,
-        value: String,
-    },
-    #[error("the archive database: {0}")]
-    Archive(postgres::Error),
 }
