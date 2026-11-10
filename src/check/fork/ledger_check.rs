@@ -1,4 +1,6 @@
-use super::AccountState;
+use mina_sdk::AccountData;
+
+use super::ForkAccount;
 use crate::check::Check;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -7,8 +9,8 @@ const SHOWN: usize = 10;
 
 /// Every MINA account of the fork ledger is in the archive's postfork
 /// genesis, the same, and the archive has no other.
-pub fn ledger_check(fork: &[AccountState], archive: &[AccountState]) -> Check {
-    let in_archive: BTreeMap<&str, &AccountState> =
+pub fn ledger_check(fork: &[AccountData], archive: &[AccountData]) -> Check {
+    let in_archive: BTreeMap<&str, &AccountData> =
         archive.iter().map(|a| (a.public_key.as_str(), a)).collect();
     let in_fork: BTreeSet<&str> = fork.iter().map(|a| a.public_key.as_str()).collect();
     let mut problems = Vec::new();

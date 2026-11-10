@@ -1,6 +1,6 @@
 use super::*;
 use crate::{hardfork::fork_config::ForkPoint, load::PaymentRecord, spec::ledger::LedgerAccount};
-use mina_sdk::Currency;
+use mina_sdk::{AccountData, Currency};
 use std::collections::BTreeMap;
 
 const FORK: &str = "3NLfork";
@@ -136,34 +136,27 @@ fn ledger_account(pk: &str, balance: &str, nonce: Option<&str>) -> LedgerAccount
 
 #[test]
 fn fork_ledger_accounts_are_read_with_their_nonce_and_mina_only() {
-    let a = AccountState::of_ledger(&ledger_account(PK1, "984.6", Some("64")))
+    let a = AccountData::of_ledger(&ledger_account(PK1, "984.6", Some("64")))
         .unwrap()
         .unwrap();
-    assert_eq!(a.balance, Currency::from_mina("984.6").unwrap());
+    assert_eq!(a.balance.total, Currency::from_mina("984.6").unwrap());
     assert_eq!(a.nonce, 64);
-    let untouched = AccountState::of_ledger(&ledger_account(PK2, "1000", None))
+    let untouched = AccountData::of_ledger(&ledger_account(PK2, "1000", None))
         .unwrap()
         .unwrap();
     assert_eq!(untouched.nonce, 0);
     let mut token = ledger_account(PK2, "1", None);
     token.other.insert("token".into(), "xOtherToken".into());
-    assert!(AccountState::of_ledger(&token).unwrap().is_none());
+    assert!(AccountData::of_ledger(&token).unwrap().is_none());
     let bad = ledger_account(PK1, "1", Some("many"));
     assert_eq!(
-        AccountState::of_ledger(&bad).unwrap_err().to_string(),
+        AccountData::of_ledger(&bad).unwrap_err().to_string(),
         format!("account {PK1} of the fork ledger has nonce many")
     );
 }
 
-fn state(pk: &str, mina: &str, nonce: u64) -> AccountState {
-    AccountState {
-        public_key: pk.into(),
-        balance: Currency::from_mina(mina).unwrap(),
-        nonce,
-        receipt_chain_hash: None,
-        delegate: None,
-        timing: None,
-    }
+fn state(pk: &str, mina: &str, nonce: u64) -> AccountData {
+    AccountData::with_balance(pk.into(), Currency::from_mina(mina).unwrap(), nonce)
 }
 
 #[test]
@@ -380,4 +373,28 @@ fn without_payments_the_report_says_what_to_run() {
     assert!(out.notes[1].starts_with("no payments after the fork"));
     let report = ForkReport::new("n", vec![], vec![], vec![], out.checks, out.notes);
     assert!(report.passed);
+}
+
+#[test]
+fn a_timed_fork_account_must_keep_its_schedule_in_the_archive() {
+    let schedule = crate::check::vesting::VestingSchedule {
+        initial_minimum_balance: Currency::from_mina("100").unwrap(),
+        cliff_time: 10,
+        cliff_amount: Currency::from_mina("10").unwrap(),
+        vesting_period: 5,
+        vesting_increment: Currency::from_mina("1").unwrap(),
+    };
+    let timed = AccountData {
+        timing: Some(schedule.into()),
+        ..state(PK1, "1000", 0)
+    };
+    assert_eq!(timed.schedule(), Some(schedule));
+    assert!(timed.differences(&timed.clone()).is_empty());
+    let untimed = state(PK1, "1000", 0);
+    assert_eq!(
+        timed.differences(&untimed),
+        [format!(
+            "timing untimed in the archive, {schedule} in the fork ledger"
+        )]
+    );
 }

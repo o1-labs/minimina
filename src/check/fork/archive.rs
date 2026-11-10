@@ -1,8 +1,7 @@
-use super::{
-    AccountState, ArchiveMigration, ChainBlock, ForkCheckError, IncludedCommand, MINA_TOKEN,
-};
+use super::ForkAccount;
+use super::{ArchiveMigration, ChainBlock, ForkCheckError, IncludedCommand, MINA_TOKEN};
 use crate::check::vesting::VestingSchedule;
-use mina_sdk::Currency;
+use mina_sdk::{AccountData, Currency};
 use postgres::{error::SqlState, Client, NoTls, Row};
 
 const LAST_MIGRATION: &str = include_str!("sql/last_migration.sql");
@@ -60,7 +59,7 @@ impl ArchiveDb {
     pub fn genesis_accounts(
         &mut self,
         state_hash: &str,
-    ) -> Result<Vec<AccountState>, ForkCheckError> {
+    ) -> Result<Vec<AccountData>, ForkCheckError> {
         self.client
             .query(GENESIS_ACCOUNTS, &[&state_hash, &MINA_TOKEN])
             .map_err(ForkCheckError::Archive)?
@@ -91,7 +90,7 @@ impl ArchiveDb {
 
 /// An archive account row; amounts are nanomina text, and an untimed
 /// account has a timing of zeros.
-fn account(row: &Row) -> Result<AccountState, ForkCheckError> {
+fn account(row: &Row) -> Result<AccountData, ForkCheckError> {
     let public_key: String = row.get(0);
     let nanomina =
         |field: &'static str, text: Option<String>| -> Result<Currency, ForkCheckError> {
@@ -118,12 +117,11 @@ fn account(row: &Row) -> Result<AccountState, ForkCheckError> {
         })
         .transpose()?;
     let nonce: i64 = row.get(2);
-    Ok(AccountState {
-        balance: nanomina("balance", row.get(1))?,
-        nonce: u64::try_from(nonce).unwrap_or(0),
+    let balance = nanomina("balance", row.get(1))?;
+    Ok(AccountData {
         receipt_chain_hash: row.get(3),
         delegate: row.get(4),
-        timing,
-        public_key,
+        timing: timing.map(Into::into),
+        ..AccountData::with_balance(public_key, balance, u64::try_from(nonce).unwrap_or(0))
     })
 }

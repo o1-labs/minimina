@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     check::fork::{
-        self, AccountState, ArchiveDb, ExpectedFork, ForkCheckError, ForkReport, GenesisView,
+        self, ArchiveDb, ExpectedFork, ForkAccount, ForkCheckError, ForkReport, GenesisView,
         PaymentChecks, PaymentEvidence,
     },
     hardfork::fork_config::LedgerHashes,
@@ -146,10 +146,10 @@ fn genesis_view(daemon: &ServiceConfig) -> Result<GenesisView, String> {
 }
 
 /// The MINA accounts of the fork ledger.
-fn fork_accounts(network_path: &Path) -> Result<Vec<AccountState>> {
+fn fork_accounts(network_path: &Path) -> Result<Vec<mina_sdk::AccountData>> {
     let mut accounts = Vec::new();
     for account in ledger_accounts(&network_path.join(FORK_CONFIG))? {
-        accounts.extend(AccountState::of_ledger(&account)?);
+        accounts.extend(mina_sdk::AccountData::of_ledger(&account)?);
     }
     Ok(accounts)
 }
