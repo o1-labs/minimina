@@ -1109,7 +1109,7 @@ fn native_replayer_takes_two_passes_after_a_fork() {
     result.unwrap();
     assert_eq!(
         h.archive.calls.borrow()[1..],
-        ["prefork_transaction_version 52"]
+        ["prefork_transaction_version 62"]
     );
     assert_eq!(lines.len(), 2, "{lines:#?}");
     let replayer = format!("{}/mina-replayer --input-file", post.bin.display());
