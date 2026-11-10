@@ -7,8 +7,8 @@ use super::{
 };
 use crate::{
     check::fork::{
-        self, api::GENESIS_QUERY, AccountState, ArchiveDb, ExpectedFork, ForkCheckError,
-        ForkReport, GenesisView, PaymentChecks, PaymentEvidence,
+        self, AccountState, ArchiveDb, ExpectedFork, ForkCheckError, ForkReport, GenesisView,
+        PaymentChecks, PaymentEvidence,
     },
     hardfork::fork_config::LedgerHashes,
     load::{LoadStore, PaymentRecord},
@@ -140,8 +140,9 @@ fn expected_fork(network_path: &Path) -> Result<ExpectedFork> {
 }
 
 fn genesis_view(daemon: &ServiceConfig) -> Result<GenesisView, String> {
-    let data = node_client::query(daemon, GENESIS_QUERY).map_err(|e| e.to_string())?;
-    GenesisView::of_graphql(data).map_err(|e| e.to_string())
+    node_client::genesis_block(daemon)
+        .map(GenesisView::from)
+        .map_err(|e| e.to_string())
 }
 
 /// The MINA accounts of the fork ledger.

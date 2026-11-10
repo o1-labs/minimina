@@ -13,7 +13,6 @@
 //!   fork ledger nonces follow them, and those sent after the fork land.
 
 mod account_state;
-pub mod api;
 mod archive;
 mod archive_checks;
 mod archive_migration;

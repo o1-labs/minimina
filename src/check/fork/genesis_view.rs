@@ -1,4 +1,3 @@
-use super::{api::GenesisData, ForkCheckError};
 use serde::Serialize;
 
 /// The genesis block a daemon runs.
@@ -12,25 +11,15 @@ pub struct GenesisView {
     pub staking_ledger_hash: String,
 }
 
-impl GenesisView {
-    pub fn of_graphql(data: serde_json::Value) -> Result<Self, ForkCheckError> {
-        let block = serde_json::from_value::<GenesisData>(data)
-            .map_err(ForkCheckError::Graphql)?
-            .genesis_block;
-        let state = block.protocol_state;
-        let consensus = state.consensus_state;
-        let number = |field: &'static str, value: String| {
-            value
-                .parse()
-                .map_err(|_| ForkCheckError::Field { field, value })
-        };
-        Ok(GenesisView {
+impl From<mina_sdk::BlockInfo> for GenesisView {
+    fn from(block: mina_sdk::BlockInfo) -> Self {
+        GenesisView {
             state_hash: block.state_hash,
-            previous_state_hash: state.previous_state_hash,
-            height: number("blockHeight", consensus.block_height)?,
-            slot: number("slotSinceGenesis", consensus.slot_since_genesis)?,
-            ledger_hash: state.blockchain_state.snarked_ledger_hash,
-            staking_ledger_hash: consensus.staking_epoch_data.ledger.hash,
-        })
+            previous_state_hash: block.previous_state_hash,
+            height: block.height,
+            slot: block.global_slot_since_genesis,
+            ledger_hash: block.snarked_ledger_hash,
+            staking_ledger_hash: block.staking_epoch.ledger_hash,
+        }
     }
 }

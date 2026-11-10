@@ -41,22 +41,37 @@ fn failed(checks: &[crate::check::Check]) -> Vec<&str> {
 }
 
 #[test]
-fn the_genesis_block_is_read_from_graphql() {
-    let data = serde_json::json!({"genesisBlock": {"stateHash": GENESIS, "protocolState": {
-        "previousStateHash": FORK,
-        "blockchainState": {"snarkedLedgerHash": "jwLedger"},
-        "consensusState": {"blockHeight": "4", "slotSinceGenesis": "64",
-            "stakingEpochData": {"ledger": {"hash": "jwStaking"}}}}}});
-    assert_eq!(GenesisView::of_graphql(data).unwrap(), view());
-    let bad = serde_json::json!({"genesisBlock": {"stateHash": GENESIS, "protocolState": {
-        "previousStateHash": FORK,
-        "blockchainState": {"snarkedLedgerHash": "x"},
-        "consensusState": {"blockHeight": "four", "slotSinceGenesis": "64",
-            "stakingEpochData": {"ledger": {"hash": "y"}}}}}});
-    assert_eq!(
-        GenesisView::of_graphql(bad).unwrap_err().to_string(),
-        "the genesis block of the daemon has blockHeight = four"
-    );
+fn the_genesis_view_is_taken_from_the_daemons_genesis_block() {
+    let epoch = |ledger_hash: &str| mina_sdk::EpochData {
+        length: None,
+        seed: "seed".into(),
+        ledger_hash: ledger_hash.into(),
+    };
+    let block = mina_sdk::BlockInfo {
+        state_hash: GENESIS.into(),
+        height: 4,
+        global_slot_since_hard_fork: 0,
+        global_slot_since_genesis: 64,
+        creator_pk: PK1.into(),
+        command_transaction_count: 0,
+        previous_state_hash: FORK.into(),
+        epoch: 0,
+        block_creator: PK1.into(),
+        coinbase_receiver: None,
+        staking_epoch: epoch("jwStaking"),
+        next_epoch: epoch("jwNext"),
+        date: String::new(),
+        utc_date: String::new(),
+        snarked_ledger_hash: "jwLedger".into(),
+        staged_ledger_hash: "jwStaged".into(),
+        coinbase: Currency::from_nanomina(0),
+        coinbase_receiver_account: None,
+        fee_transfers: vec![],
+        user_commands: vec![],
+        zkapp_commands: vec![],
+        snark_jobs: vec![],
+    };
+    assert_eq!(GenesisView::from(block), view());
 }
 
 #[test]
