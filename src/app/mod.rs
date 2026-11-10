@@ -5,6 +5,7 @@
 
 mod check;
 mod env;
+mod fork_check;
 mod hardfork;
 mod inputs;
 mod load;

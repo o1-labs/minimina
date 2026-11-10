@@ -28,7 +28,7 @@ use std::{
 };
 
 /// The fork config `hardfork prepare` writes.
-const FORK_CONFIG: &str = "hardfork/fork_config.json";
+pub(super) const FORK_CONFIG: &str = "hardfork/fork_config.json";
 /// Where `network check rosetta` keeps the rosetta-cli config, data and results.
 const ROSETTA_CLI_DIR: &str = "rosetta-cli";
 
@@ -181,7 +181,7 @@ fn prefork_accounts(network_path: &Path) -> Result<Vec<LedgerAccount>> {
     ledger_accounts(&path)
 }
 
-fn ledger_accounts(path: &Path) -> Result<Vec<LedgerAccount>> {
+pub(super) fn ledger_accounts(path: &Path) -> Result<Vec<LedgerAccount>> {
     let config =
         genesis_ledger::read_file(path).with_context(|| format!("reading {}", path.display()))?;
     let accounts = config
