@@ -426,6 +426,57 @@ in [Installing from Deb Package](#installing-from-deb-package)).
 Another mesh-cli version or patch tag needs a new deb and `VERSION` in
 `src/install/rosetta_cli`.
 
+### Payment loads
+
+A load sends payments between the test accounts of a network (`[ledger]
+accounts = N`, keys `account-N` in `network-keypairs`) in the background,
+through one daemon, until it is stopped or has a reason to stop.
+
+```bash
+minimina network load start -n mynet [--scenario once|steady|burst] [options]
+minimina network load list -n mynet
+minimina network load status -n mynet load-1
+minimina network load stop -n mynet load-1     # or --all
+```
+
+| scenario | payments per round (`--count`) | between rounds (`--interval`) | rounds (`--rounds`) |
+|----------|-----|------|-----------------|
+| once     | 1   |      | 1               |
+| steady (default) | 1   | 10 s | until stopped   |
+| burst    | 10  | 120 s | until stopped  |
+
+- `--duration SECS` ends a load after a time;
+- `--senders account-1,account-3` pays from some test accounts (by key name
+  or public key) [default: all]; each sender pays the next test account, and
+  the senders take turns;
+- `--amount` and `--fee` in MINA [default: 1 and 0.1];
+- `--node bp-2` sends through another daemon [default: the first block
+  producer]. The load imports the senders' keys into it (GraphQL
+  `importAccount`) and unlocks them, so the daemon signs and sets the nonces.
+
+A load stops, and `status` says why:
+
+| reason | when |
+|--------|------|
+| `stopped` | `load stop`, `network stop` or `network delete` |
+| `done` | its rounds or `--duration` are over |
+| `tx_window_closed` | the daemon refused a payment with `After_slot_tx_end`: the hardfork transaction window is closed |
+| `funds_drained` | no sender can pay amount + fee from its liquid balance (vesting funds that are still locked do not count) |
+| `failed` | `--max-failures` (5) payments failed since the last accepted one, or a key could not be unlocked |
+| `died` | the process is gone without a reason (see `load.log`) |
+
+With `--across-fork`, a load that meets `After_slot_tx_end` waits instead:
+once the daemon answers with a new genesis and is synced (after `hardfork
+apply`), it unlocks the keys again and goes on. Each sender is in one running
+load at a time, so loads do not race for its nonces.
+
+A load is the process `minimina network load run`, in its own process group
+(a Ctrl-C in the shell that started it does not stop it). Its files are in
+`<network dir>/load/<id>`: `load.json` (what was asked), `status.json`,
+`payments.jsonl` (every payment with its hash and nonce, or the daemon's
+error, and the genesis of the chain it was sent on; the memo is `<id> <n>`)
+and `load.log`.
+
 ---
 
 ## Uptime service backend

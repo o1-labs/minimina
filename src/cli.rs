@@ -1,7 +1,9 @@
 //! # `minimina` Command-Line Interface (CLI)
 
 pub use crate::install::apt::Channel;
+pub use crate::load::ScenarioKind;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use mina_sdk::Currency;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -211,6 +213,105 @@ pub enum NetworkCommand {
     /// Check a running network (for example after a hardfork); exits 1 when a check fails
     #[clap(subcommand)]
     Check(CheckCommand),
+    /// Payments between the test accounts, sent in the background
+    #[clap(subcommand)]
+    Load(LoadCommand),
+}
+
+#[derive(Subcommand)]
+pub enum LoadCommand {
+    /// Start a load in the background; prints it with its id
+    Start(LoadStartArgs),
+    /// The loads of a network
+    List(NetworkId),
+    /// Payments accepted and rejected, funds left, and why a load stopped
+    Status(LoadIdArgs),
+    /// Stop a load, or with --all every running load of the network
+    Stop(LoadStopArgs),
+    /// Run a load in the foreground: what `load start` runs in the background
+    #[clap(hide = true)]
+    Run(LoadIdArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct LoadStartArgs {
+    #[clap(flatten)]
+    pub network_id: NetworkId,
+
+    /// once: one round; steady: a payment every 10 s; burst: 10 payments
+    /// every 120 s
+    #[clap(long, value_enum, default_value_t = ScenarioKind::Steady)]
+    pub scenario: ScenarioKind,
+
+    /// Payments per round [once: 1, steady: 1, burst: 10]
+    #[clap(long)]
+    pub count: Option<u32>,
+
+    /// Seconds between rounds [steady: 10, burst: 120]
+    #[clap(long)]
+    pub interval: Option<u64>,
+
+    /// Stop after this many rounds [once: 1, else until stopped]
+    #[clap(long)]
+    pub rounds: Option<u64>,
+
+    /// Stop after this many seconds
+    #[clap(long)]
+    pub duration: Option<u64>,
+
+    /// Test accounts to pay from, by key name (account-1) or public key,
+    /// comma separated [default: all]. Each pays the next test account
+    #[clap(long, value_delimiter = ',')]
+    pub senders: Vec<String>,
+
+    /// MINA per payment
+    #[clap(long, default_value = "1", value_parser = parse_mina)]
+    pub amount: Currency,
+
+    /// Fee per payment, in MINA
+    #[clap(long, default_value = "0.1", value_parser = parse_mina)]
+    pub fee: Currency,
+
+    /// Daemon to send through [default: the first block producer]
+    #[clap(long)]
+    pub node: Option<String>,
+
+    /// When the daemon refuses a payment with After_slot_tx_end, wait for
+    /// the postfork chain and go on, instead of stopping
+    #[clap(long, default_value_t = false)]
+    pub across_fork: bool,
+
+    /// Failed payments (other than for funds) since the last accepted one
+    /// after which the load gives up
+    #[clap(long, default_value_t = 5)]
+    pub max_failures: u32,
+}
+
+fn parse_mina(s: &str) -> Result<Currency, String> {
+    Currency::from_mina(s).map_err(|e| e.to_string())
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct LoadIdArgs {
+    #[clap(flatten)]
+    pub network_id: NetworkId,
+
+    /// Load id (load-1, ...)
+    pub id: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct LoadStopArgs {
+    #[clap(flatten)]
+    pub network_id: NetworkId,
+
+    /// Load id (load-1, ...)
+    #[clap(required_unless_present = "all", conflicts_with = "all")]
+    pub id: Option<String>,
+
+    /// Every running load of the network
+    #[clap(long, default_value_t = false)]
+    pub all: bool,
 }
 
 #[derive(Subcommand)]
@@ -546,6 +647,9 @@ network_id!(NodeCommandArgs);
 network_id!(StopNetworkArgs);
 network_id!(PrepareHardforkArgs);
 network_id!(ApplyHardforkArgs);
+network_id!(LoadStartArgs);
+network_id!(LoadIdArgs);
+network_id!(LoadStopArgs);
 
 node_id!(NodeCommandArgs);
 
@@ -555,6 +659,8 @@ impl DefaultLogLevel for Command {
             Command::Network(cmd) => match cmd {
                 NetworkCommand::Create(args) => args.log_level(),
                 NetworkCommand::Start(args) => args.log_level(),
+                // the load's log
+                NetworkCommand::Load(LoadCommand::Run(_)) => "info",
                 _ => "warn",
             },
             Command::Node(cmd) => match cmd {
@@ -591,6 +697,12 @@ impl Command {
                 NetworkCommand::Hardfork(HardforkCommand::Apply(args)) => Some(args.network_id()),
                 NetworkCommand::Check(CheckCommand::Vesting(args)) => Some(&args.network_id),
                 NetworkCommand::Check(CheckCommand::Rosetta(args)) => Some(args.network_id()),
+                NetworkCommand::Load(LoadCommand::Start(args)) => Some(args.network_id()),
+                NetworkCommand::Load(LoadCommand::List(args)) => Some(&args.network_id),
+                NetworkCommand::Load(LoadCommand::Status(args) | LoadCommand::Run(args)) => {
+                    Some(args.network_id())
+                }
+                NetworkCommand::Load(LoadCommand::Stop(args)) => Some(args.network_id()),
                 NetworkCommand::List => None,
             },
             Command::Node(cmd) => Some(match cmd {

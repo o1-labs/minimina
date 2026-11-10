@@ -1,6 +1,6 @@
 //! `minimina network ...` handlers.
 
-use super::{check, hardfork, inputs::CreateInputs, setup, shutdown_timeout, Context};
+use super::{check, hardfork, inputs::CreateInputs, load, setup, shutdown_timeout, Context};
 use crate::{
     cli::{
         CheckCommand, CommandWithNetworkId, ExecutionMode, HardforkCommand, NetworkCommand,
@@ -130,6 +130,7 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
         NetworkCommand::Delete(cmd) => {
             let network_id = cmd.network_id;
             ctx.ensure_network_exists(&network_id)?;
+            stop_loads(ctx, &network_id)?;
 
             // Stop processes/containers first
             match ctx.mode {
@@ -267,6 +268,8 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             Ok(())
         }
 
+        NetworkCommand::Load(cmd) => load::run(ctx, cmd),
+
         NetworkCommand::Hardfork(HardforkCommand::Apply(cmd)) => {
             let network_id = cmd.network_id();
             ctx.ensure_network_exists(network_id)?;
@@ -283,6 +286,7 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
         NetworkCommand::Stop(cmd) => {
             let network_id = cmd.network_id.network_id;
             ctx.ensure_network_exists(&network_id)?;
+            stop_loads(ctx, &network_id)?;
 
             match ctx.mode {
                 ExecutionMode::Docker => {
@@ -302,6 +306,17 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Stops the network's payment loads before its daemons.
+fn stop_loads(ctx: &Context, network_id: &str) -> Result<()> {
+    let stopped = crate::load::LoadStore::new(&ctx.dirs.network_path(network_id))
+        .stop_all(network_id, crate::load::STOP_TIMEOUT)
+        .with_context(|| format!("Failed to stop the loads of network '{network_id}'"))?;
+    for load in stopped {
+        info!("Stopped load {}", load.id);
+    }
+    Ok(())
 }
 
 /// If the network exists, its directory is deleted, corresponding docker
