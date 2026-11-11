@@ -36,15 +36,24 @@ use mina_rosetta_sdk::NetworkStatusResponse;
 /// The rosetta-cli config of a mina package, under its root.
 pub const TEMPLATE: &str = "etc/mina/rosetta/rosetta-cli-config/config.json";
 
-/// After a hardfork, rosetta's current block is an orphaned prefork one
-/// while it is above the best tip.
-pub fn orphaned_tip(status: &NetworkStatusResponse, best_tip_height: u64) -> Option<RosettaError> {
+/// After a hardfork, rosetta's current block may be an orphaned prefork one
+/// until the postfork chain is taller than the prefork tip. It is settled
+/// when it is below the daemon's best tip, or is that tip: at the same height
+/// as the best tip, another block can be the orphaned prefork tip.
+pub fn orphaned_tip(
+    status: &NetworkStatusResponse,
+    best_tip_height: u64,
+    best_tip_hash: &str,
+) -> Option<RosettaError> {
     let current = &status.current_block_identifier;
-    let above = u64::try_from(current.index).is_ok_and(|index| index > best_tip_height);
-    above.then(|| RosettaError::OrphanedTip {
+    let settled = u64::try_from(current.index).is_ok_and(|index| {
+        index < best_tip_height || (index == best_tip_height && current.hash == best_tip_hash)
+    });
+    (!settled).then(|| RosettaError::OrphanedTip {
         index: current.index,
         hash: current.hash.clone(),
         tip: best_tip_height,
+        tip_hash: best_tip_hash.to_string(),
     })
 }
 
@@ -67,8 +76,20 @@ mod tests {
 
     #[test]
     fn a_current_block_above_the_best_tip_is_the_orphaned_prefork_tip() {
-        assert!(orphaned_tip(&status(25), 25).is_none());
-        let err = orphaned_tip(&status(25), 22).unwrap().to_string();
-        assert!(err.contains("current block is 25 (3N25), above the best tip at height 22"));
+        assert!(orphaned_tip(&status(25), 26, "3N26").is_none());
+        let err = orphaned_tip(&status(25), 22, "3N22").unwrap().to_string();
+        assert!(
+            err.contains("current block is 25 (3N25), not below the best tip 3N22 at height 22")
+        );
+    }
+
+    #[test]
+    fn at_the_best_tip_height_only_the_best_tip_itself_is_settled() {
+        assert!(orphaned_tip(&status(25), 25, "3N25").is_none());
+        // the orphaned prefork tip and a postfork block at the same height
+        let err = orphaned_tip(&status(25), 25, "3NLpostfork")
+            .unwrap()
+            .to_string();
+        assert!(err.contains("current block is 25 (3N25), not below the best tip 3NLpostfork"));
     }
 }

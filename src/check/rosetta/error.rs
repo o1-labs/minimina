@@ -30,13 +30,18 @@ pub enum RosettaError {
         cause: serde_json::Error,
     },
     #[error(
-        "rosetta's current block is {index} ({hash}), above the best tip at height {tip}: after a \
-         hardfork it takes the highest block of the archive, an orphaned prefork one, until the \
-         postfork chain is taller (MinaProtocol/mina#19984), and its /block then gives orphaned \
-         blocks, so check:data fails. Run again when the best tip is above height {index}, or \
-         add --wait"
+        "rosetta's current block is {index} ({hash}), not below the best tip {tip_hash} at \
+         height {tip}: after a hardfork it takes the highest block of the archive, an orphaned \
+         prefork one, until the postfork chain is taller (MinaProtocol/mina#19984), and its \
+         /block then gives orphaned blocks, so check:data fails. Run again when the best tip is \
+         above height {index}, or add --wait"
     )]
-    OrphanedTip { index: i64, hash: String, tip: u64 },
+    OrphanedTip {
+        index: i64,
+        hash: String,
+        tip: u64,
+        tip_hash: String,
+    },
 }
 
 #[cfg(test)]
