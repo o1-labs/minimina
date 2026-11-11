@@ -13,7 +13,7 @@ WITH RECURSIVE chain AS (
     FROM blocks b
     JOIN chain c ON b.id = c.parent_id
 )
-SELECT id, parent_id, height, state_hash, parent_hash, chain_status::text,
+SELECT id, parent_id, height, state_hash, parent_hash, chain_status::text AS chain_status,
        global_slot_since_genesis, global_slot_since_hard_fork
 FROM chain
 ORDER BY height DESC

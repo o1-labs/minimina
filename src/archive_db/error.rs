@@ -13,4 +13,10 @@ pub enum ArchiveDbError {
         column: &'static str,
         value: i64,
     },
+    #[error("archive account {public_key}: {field} {value}")]
+    Account {
+        public_key: String,
+        field: &'static str,
+        value: String,
+    },
 }

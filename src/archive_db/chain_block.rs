@@ -1,4 +1,5 @@
-/// A block of the archive's chain from its highest postfork block down.
+/// A block of the archive's chain from its highest postfork block down
+/// ([`super::ArchiveDb::chain_from_tip`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainBlock {
     pub id: i32,

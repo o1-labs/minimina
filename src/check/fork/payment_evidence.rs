@@ -1,4 +1,4 @@
-use super::{ChainBlock, IncludedCommand};
+use crate::archive_db::{ChainBlock, IncludedCommand};
 use crate::load::PaymentRecord;
 use std::collections::BTreeMap;
 
