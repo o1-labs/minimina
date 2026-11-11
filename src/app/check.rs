@@ -156,14 +156,14 @@ fn wait_for_postfork_tip(
     );
     loop {
         let status = client.status()?;
-        let tip = node_client::tip(daemon)?.height;
-        match rosetta::orphaned_tip(&status, tip) {
+        let tip = node_client::tip(daemon)?;
+        match rosetta::orphaned_tip(&status, tip.height, &tip.state_hash) {
             None => return Ok(()),
             Some(e) if !wait => return Err(e.into()),
             Some(_) => {
                 info!(
-                    "Waiting for the best tip ({tip}) to pass rosetta's orphaned prefork tip ({})",
-                    status.current_block_identifier.index
+                    "Waiting for the best tip ({}) to pass rosetta's orphaned prefork tip ({})",
+                    tip.height, status.current_block_identifier.index
                 );
                 std::thread::sleep(slot);
             }
