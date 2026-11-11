@@ -54,6 +54,19 @@ pub trait ArchiveDb {
         token: &str,
     ) -> Result<Vec<mina_sdk::AccountData>, ArchiveDbError>;
 
+    /// The accounts of `token` in `genesis_accounts` for the genesis block at
+    /// `height`: where an archive run with `--hardfork-handover` records the
+    /// fork ledger.
+    fn genesis_ledger_accounts(
+        &mut self,
+        height: u32,
+        token: &str,
+    ) -> Result<Vec<mina_sdk::AccountData>, ArchiveDbError>;
+
+    /// The blocks before `fork_genesis_slot` that are still pending, lowest first.
+    fn pending_before(&mut self, fork_genesis_slot: u32)
+        -> Result<Vec<ChainBlock>, ArchiveDbError>;
+
     /// The archived blocks holding the user commands with `hashes`.
     fn commands(&mut self, hashes: &[String]) -> Result<Vec<IncludedCommand>, ArchiveDbError>;
 }

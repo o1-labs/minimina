@@ -163,21 +163,47 @@ fn state(pk: &str, mina: &str, nonce: u64) -> AccountData {
 #[test]
 fn the_archive_genesis_accounts_must_be_the_fork_ledger() {
     let fork = [state(PK1, "984.6", 64), state(PK2, "1003.5", 55)];
-    let check = ledger_check(&fork, &fork);
+    let check = ledger_check(&fork, &fork, "accounts_accessed");
     assert!(check.passed);
-    assert_eq!(check.detail, "2 accounts");
+    assert_eq!(check.detail, "2 accounts in accounts_accessed");
 
     let archive = [state(PK1, "984.5", 63), state("B62qextra", "1", 0)];
-    let check = ledger_check(&fork, &archive);
+    let check = ledger_check(&fork, &archive, "genesis_accounts");
     assert!(!check.passed);
     assert_eq!(
         check.detail,
         format!(
             "{PK1}: balance 984.500000000 in the archive, 984.600000000 in the fork ledger, \
-             nonce 63 in the archive, 64 in the fork ledger; {PK2}: not in the archive; \
+             nonce 63 in the archive, 64 in the fork ledger; {PK2}: not in genesis_accounts; \
              B62qextra: not in the fork ledger"
         )
     );
+}
+
+#[test]
+fn genesis_accounts_has_no_receipt_chain_hash_or_delegate() {
+    let mut fork = state(PK1, "984.6", 64);
+    fork.receipt_chain_hash = Some("2mzReceipt".into());
+    fork.delegate = Some(PK2.into());
+    let check = ledger_check(
+        &[fork.clone()],
+        &[state(PK1, "984.6", 64)],
+        "genesis_accounts",
+    );
+    assert!(check.passed, "{}", check.detail);
+    let mut other = state(PK1, "984.6", 64);
+    other.delegate = Some(PK1.into());
+    assert!(!ledger_check(&[fork], &[other], "accounts_accessed").passed);
+}
+
+#[test]
+fn prefork_blocks_must_not_stay_pending() {
+    let check = pending_check(&[]);
+    assert!(check.passed);
+    let pending = [block(7, 20, "3NLpending", "pending", 38, 38)];
+    let check = pending_check(&pending);
+    assert!(!check.passed);
+    assert_eq!(check.detail, "1 pending: 3NLpending at 20");
 }
 
 fn block(id: i32, height: i64, hash: &str, status: &str, slot: i64, since_fork: i64) -> ChainBlock {

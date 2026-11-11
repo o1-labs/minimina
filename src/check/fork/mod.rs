@@ -7,7 +7,8 @@
 //! - ledger: the archive's postfork genesis accounts are the fork ledger;
 //! - archive: the schema is migrated, and one chain runs from the highest
 //!   block through the postfork genesis and the fork block down to the first
-//!   block, canonical up to the postfork genesis;
+//!   block, canonical up to the postfork genesis, and no prefork block is
+//!   left pending;
 //! - payments: the payments of the network's loads (see [`crate::load`])
 //!   sent before the fork are in blocks up to the fork block or dropped, the
 //!   fork ledger nonces follow them, and those sent after the fork land.
@@ -21,6 +22,7 @@ mod genesis_view;
 mod ledger_check;
 mod payment_checks;
 mod payment_evidence;
+mod pending_check;
 mod report;
 
 pub use archive_checks::archive_checks;
@@ -32,6 +34,7 @@ pub use genesis_view::GenesisView;
 pub use ledger_check::ledger_check;
 pub use payment_checks::{payment_checks, PaymentChecks};
 pub use payment_evidence::PaymentEvidence;
+pub use pending_check::pending_check;
 pub use report::ForkReport;
 
 /// The token id of MINA.

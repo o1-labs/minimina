@@ -99,12 +99,17 @@ impl ForkAccount for AccountData {
                 archive.nonce, self.nonce
             ));
         }
+        // genesis_accounts records neither the receipt chain hash nor the delegate
         if self.receipt_chain_hash.is_some()
+            && archive.receipt_chain_hash.is_some()
             && self.receipt_chain_hash != archive.receipt_chain_hash
         {
             found.push("another receipt chain hash".to_string());
         }
-        if self.delegate.is_some() && self.delegate != archive.delegate {
+        if self.delegate.is_some()
+            && archive.delegate.is_some()
+            && self.delegate != archive.delegate
+        {
             found.push(format!(
                 "delegate {} in the archive",
                 archive.delegate.as_deref().unwrap_or("none")

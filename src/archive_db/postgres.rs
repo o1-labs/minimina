@@ -135,18 +135,7 @@ impl ArchiveDb for PostgresDb {
         let slot = i64::from(fork_genesis_slot);
         self.rows(WHAT, include_str!("sql/chain_from_tip.sql"), &[&slot])?
             .iter()
-            .map(|row| {
-                Ok(ChainBlock {
-                    id: get(row, WHAT, "id")?,
-                    parent_id: get(row, WHAT, "parent_id")?,
-                    height: get(row, WHAT, "height")?,
-                    state_hash: get(row, WHAT, "state_hash")?,
-                    parent_hash: get(row, WHAT, "parent_hash")?,
-                    chain_status: get(row, WHAT, "chain_status")?,
-                    slot_since_genesis: get(row, WHAT, "global_slot_since_genesis")?,
-                    slot_since_hard_fork: get(row, WHAT, "global_slot_since_hard_fork")?,
-                })
-            })
+            .map(|row| chain_block(row, WHAT))
             .collect()
     }
 
@@ -164,6 +153,35 @@ impl ArchiveDb for PostgresDb {
         .iter()
         .map(|row| account(row, WHAT))
         .collect()
+    }
+
+    fn genesis_ledger_accounts(
+        &mut self,
+        height: u32,
+        token: &str,
+    ) -> Result<Vec<AccountData>, ArchiveDbError> {
+        const WHAT: &str = "reading genesis_accounts";
+        let height = i64::from(height);
+        self.rows(
+            WHAT,
+            include_str!("sql/genesis_ledger_accounts.sql"),
+            &[&height, &token],
+        )?
+        .iter()
+        .map(|row| account(row, WHAT))
+        .collect()
+    }
+
+    fn pending_before(
+        &mut self,
+        fork_genesis_slot: u32,
+    ) -> Result<Vec<ChainBlock>, ArchiveDbError> {
+        const WHAT: &str = "reading the pending prefork blocks";
+        let slot = i64::from(fork_genesis_slot);
+        self.rows(WHAT, include_str!("sql/pending_before.sql"), &[&slot])?
+            .iter()
+            .map(|row| chain_block(row, WHAT))
+            .collect()
     }
 
     fn commands(&mut self, hashes: &[String]) -> Result<Vec<IncludedCommand>, ArchiveDbError> {
@@ -186,6 +204,19 @@ impl ArchiveDb for PostgresDb {
 
 /// An archive account row; amounts are nanomina text, and an untimed
 /// account has a timing of zeros (or none).
+fn chain_block(row: &Row, what: &'static str) -> Result<ChainBlock, ArchiveDbError> {
+    Ok(ChainBlock {
+        id: get(row, what, "id")?,
+        parent_id: get(row, what, "parent_id")?,
+        height: get(row, what, "height")?,
+        state_hash: get(row, what, "state_hash")?,
+        parent_hash: get(row, what, "parent_hash")?,
+        chain_status: get(row, what, "chain_status")?,
+        slot_since_genesis: get(row, what, "global_slot_since_genesis")?,
+        slot_since_hard_fork: get(row, what, "global_slot_since_hard_fork")?,
+    })
+}
+
 fn account(row: &Row, what: &'static str) -> Result<AccountData, ArchiveDbError> {
     let public_key: String = get(row, what, "public_key")?;
     let nanomina = |column: &'static str| -> Result<Currency, ArchiveDbError> {

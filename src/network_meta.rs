@@ -59,6 +59,10 @@ pub struct HardforkMeta {
     /// networks without an archive, and those forked before minimina wrote one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_config: Option<PathBuf>,
+    /// The postfork archive runs with `--hardfork-handover`; see
+    /// [`HardforkSpec::archive_handover`](crate::hardfork::HardforkSpec::archive_handover).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archive_handover: bool,
 }
 
 /// How far the manual hardfork went.
@@ -124,6 +128,7 @@ mod tests {
                 state: HardforkState::Prepared,
                 prefork_bin_path: None,
                 archive_config: None,
+                archive_handover: true,
             }),
         };
         meta.save(dir.path()).unwrap();

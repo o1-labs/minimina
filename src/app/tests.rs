@@ -940,6 +940,7 @@ fn hardfork_network_gets_its_schedule_and_status() {
             profile: Profile::Devnet,
             features: Default::default(),
             archive_config: None,
+            archive_handover: false,
             archive_db: h.archive.clone(),
             runner: h.fake.clone(),
         };

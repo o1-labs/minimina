@@ -69,6 +69,9 @@ pub struct Context {
     pub features: DaemonFeatures,
     /// The runtime config native `mina-archive` starts with; see [`archive_config`].
     pub archive_config: Option<PathBuf>,
+    /// Native `mina-archive` starts with `--hardfork-handover`: after a
+    /// hardfork applied with `archive_handover`.
+    pub archive_handover: bool,
     pub runner: Rc<dyn Runner>,
     /// Opens archive databases (native mode).
     pub archive_db: Rc<dyn Connector>,
@@ -124,7 +127,8 @@ impl Context {
             self.profile,
         )
         .with_features(self.features)
-        .with_archive_config(self.archive_config.clone()))
+        .with_archive_config(self.archive_config.clone())
+        .with_archive_handover(self.archive_handover))
     }
 
     /// The services of a network from its `services.json`, checked for mode `M`.
@@ -220,6 +224,10 @@ pub fn run_with(
         .command
         .network_id()
         .and_then(|id| archive_config(stored.as_ref(), &dirs.network_path(id)));
+    let archive_handover = stored
+        .as_ref()
+        .and_then(|m| m.hardfork.as_ref())
+        .is_some_and(|h| h.state == HardforkState::Applied && h.archive_handover);
     let profile = created_profile
         .flatten()
         .or(stored.as_ref().map(|m| m.profile))
@@ -253,6 +261,7 @@ pub fn run_with(
         profile,
         features,
         archive_config,
+        archive_handover,
         runner,
         archive_db,
     };
@@ -343,6 +352,7 @@ mod archive_config_tests {
                 state,
                 prefork_bin_path: None,
                 archive_config: archive_config.map(PathBuf::from),
+                archive_handover: false,
             }),
             ..plain()
         }

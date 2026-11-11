@@ -145,18 +145,23 @@ pub fn apply(
     NativeManager::new(&network_path, &postfork, &ctx.postgres_uri, ctx.profile)
         .with_features(features)
         .with_archive_config(archive_config.clone())
+        .with_archive_handover(h.archive_handover)
         .start_all(&typed, network_id, seed_timeout)
         .with_context(|| format!("Failed to start network '{network_id}' after the fork"))?;
     let archive_postfork_genesis = match archive.as_deref_mut() {
         Some(db) => Some(
-            repair_archive(&toolbox, db, prepared.fork.global_slot_since_genesis).with_context(
-                || {
-                    format!(
+            repair_archive(
+                &toolbox,
+                db,
+                prepared.fork.global_slot_since_genesis,
+                h.archive_handover,
+            )
+            .with_context(|| {
+                format!(
                     "network '{network_id}' runs the postfork binaries, but its archive is not \
                      checked"
                 )
-                },
-            )?,
+            })?,
         ),
         None => None,
     };
@@ -170,14 +175,16 @@ pub fn apply(
 }
 
 /// After the restart: the archive inserts the postfork genesis block from
-/// its `--config-file`. `validate-fork` checks it and its prefork ancestors,
-/// and `convert-chain-to-canonical` marks the prefork chain canonical, which
-/// the archive does not do with the k of its compiled profile
+/// its `--config-file`. `validate-fork` checks it and its prefork ancestors.
+/// With `handover`, the archive has settled the prefork chain itself;
+/// otherwise `convert-chain-to-canonical` marks it canonical, which the
+/// archive does not do with the k of its compiled profile
 /// (MinaProtocol/mina#19986).
 fn repair_archive(
     toolbox: &Toolbox,
     archive: &mut dyn ArchiveDb,
     fork_genesis_slot: u32,
+    handover: bool,
 ) -> Result<ArchiveBlock> {
     let genesis = wait_for_postfork_genesis(archive, fork_genesis_slot)?;
     info!(
@@ -185,7 +192,11 @@ fn repair_archive(
         genesis.state_hash, genesis.height
     );
     toolbox.validate_fork(&genesis)?;
-    toolbox.convert_chain_to_canonical()?;
+    if handover {
+        info!("The archive settles the prefork chain itself (--hardfork-handover)");
+    } else {
+        toolbox.convert_chain_to_canonical()?;
+    }
     Ok(genesis)
 }
 

@@ -267,6 +267,7 @@ at = { slot = 42 }               # slot_chain_end, or an RFC 3339 date: at = "20
 # tx_end_before = 8              # slot_tx_end = slot_chain_end - tx_end_before [default: k - 2]
 # genesis_slot_delta = 20        # fork genesis slot = slot_chain_end + genesis_slot_delta
 # method = "legacy"              # manual only: legacy (GraphQL fork_config) | advanced
+# archive_handover = true        # postfork mina-archive runs with --hardfork-handover
 
 [hardfork.postfork]
 bin_path = "/opt/mina-postfork/bin"   # relative to the spec file
@@ -369,6 +370,15 @@ minimina network hardfork apply -n mynet            # before the fork genesis
    ([MinaProtocol/mina#19986](https://github.com/MinaProtocol/mina/issues/19986)).
    The network is running by then, so a failure here leaves it on the
    postfork binaries.
+
+   With `archive_handover = true`, the postfork `mina-archive` runs with
+   `--hardfork-handover` (an archive with
+   [MinaProtocol/mina#19773](https://github.com/MinaProtocol/mina/pull/19773)
+   and [#19774](https://github.com/MinaProtocol/mina/pull/19774)): it writes
+   the fork ledger to `genesis_accounts` instead of `accounts_accessed`, and
+   settles the prefork chain itself at startup, so `apply` skips
+   `convert-chain-to-canonical`. `network check fork` then reads the fork
+   ledger from `genesis_accounts`.
 
 A failed upgrade or `verify-upgrade` stops `apply` before the network starts.
 `populate-genesis-accounts` is not needed: the archive records the fork

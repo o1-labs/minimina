@@ -8,15 +8,16 @@ use std::collections::{BTreeMap, BTreeSet};
 const SHOWN: usize = 10;
 
 /// Every MINA account of the fork ledger is in the archive's postfork
-/// genesis, the same, and the archive has no other.
-pub fn ledger_check(fork: &[AccountData], archive: &[AccountData]) -> Check {
+/// genesis, the same, and the archive has no other. `table` names where the
+/// archive recorded them.
+pub fn ledger_check(fork: &[AccountData], archive: &[AccountData], table: &str) -> Check {
     let in_archive: BTreeMap<&str, &AccountData> =
         archive.iter().map(|a| (a.public_key.as_str(), a)).collect();
     let in_fork: BTreeSet<&str> = fork.iter().map(|a| a.public_key.as_str()).collect();
     let mut problems = Vec::new();
     for account in fork {
         match in_archive.get(account.public_key.as_str()) {
-            None => problems.push(format!("{}: not in the archive", account.public_key)),
+            None => problems.push(format!("{}: not in {table}", account.public_key)),
             Some(found) => {
                 let differences = account.differences(found);
                 if !differences.is_empty() {
@@ -37,7 +38,7 @@ pub fn ledger_check(fork: &[AccountData], archive: &[AccountData]) -> Check {
     );
     let passed = problems.is_empty();
     let detail = if passed {
-        format!("{} accounts", fork.len())
+        format!("{} accounts in {table}", fork.len())
     } else {
         let count = problems.len();
         let mut shown: Vec<String> = problems.into_iter().take(SHOWN).collect();

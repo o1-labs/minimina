@@ -28,12 +28,10 @@ const LEDGER_HASHES: &str = "hardfork/ledger_hashes.json";
 
 pub fn run(ctx: &Context, network_id: &str) -> Result<ForkReport> {
     let network_path = ctx.dirs.network_path(network_id);
-    let applied = NetworkMeta::load(&network_path)?
+    let hardfork = NetworkMeta::load(&network_path)?
         .and_then(|m| m.hardfork)
-        .is_some_and(|h| h.state == HardforkState::Applied);
-    if !applied {
-        return Err(ForkCheckError::NotApplied(network_id.to_string()).into());
-    }
+        .filter(|h| h.state == HardforkState::Applied)
+        .ok_or_else(|| ForkCheckError::NotApplied(network_id.to_string()))?;
     let expected = expected_fork(&network_path)?;
     let services = ctx.dirs.get_services_info(network_id)?;
     let daemons: Vec<&ServiceConfig> = services.iter().filter(|s| s.is_chain_daemon()).collect();
@@ -72,7 +70,10 @@ pub fn run(ctx: &Context, network_id: &str) -> Result<ForkReport> {
         .connect(&ctx.native(network_id)?.archive_db_uri())?;
     let migration = db.last_migration()?;
     let blocks = db.chain_from_tip(expected.fork.global_slot_since_genesis)?;
-    let archive = fork::archive_checks(&expected, migration.as_ref(), &blocks);
+    let mut archive = fork::archive_checks(&expected, migration.as_ref(), &blocks);
+    archive.push(fork::pending_check(
+        &db.pending_before(expected.fork.global_slot_since_genesis)?,
+    ));
     let Some(genesis) = postfork_genesis else {
         notes.push(
             "no daemon answered: the ledger and payment checks need the postfork genesis".into(),
@@ -86,10 +87,22 @@ pub fn run(ctx: &Context, network_id: &str) -> Result<ForkReport> {
             notes,
         ));
     };
-    let ledger = vec![fork::ledger_check(
-        &fork_accounts,
-        &db.genesis_accounts(&genesis, fork::MINA_TOKEN)?,
-    )];
+    // with --hardfork-handover the archive writes the fork ledger to
+    // genesis_accounts, at the postfork genesis height
+    let ledger = vec![if hardfork.archive_handover {
+        let height = expected.fork.blockchain_length + 1;
+        fork::ledger_check(
+            &fork_accounts,
+            &db.genesis_ledger_accounts(height, fork::MINA_TOKEN)?,
+            "genesis_accounts",
+        )
+    } else {
+        fork::ledger_check(
+            &fork_accounts,
+            &db.genesis_accounts(&genesis, fork::MINA_TOKEN)?,
+            "accounts_accessed",
+        )
+    }];
 
     let payments = accepted_payments(&network_path)?;
     let hashes: Vec<String> = payments.iter().filter_map(|p| p.hash.clone()).collect();
