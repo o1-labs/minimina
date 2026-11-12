@@ -63,6 +63,14 @@ pub struct HardforkMeta {
     /// [`HardforkSpec::archive_handover`](crate::hardfork::HardforkSpec::archive_handover).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub archive_handover: bool,
+    /// Auto mode: the dispatcher every daemon runs through; see
+    /// [`HardforkSpec::dispatcher`](crate::hardfork::HardforkSpec::dispatcher).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatcher: Option<PathBuf>,
+    /// Auto mode: where the postfork `mina-archive` finds the fork ledgers
+    /// (`MINA_KEYS_PATH`), the `genesis/` of a daemon's fork config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_ledgers: Option<PathBuf>,
 }
 
 /// How far the manual hardfork went.
@@ -129,6 +137,10 @@ mod tests {
                 prefork_bin_path: None,
                 archive_config: None,
                 archive_handover: true,
+                dispatcher: Some("/src/mina/scripts/hardfork/dispatcher.sh".into()),
+                archive_ledgers: Some(
+                    "/n/config-directory/seed/auto-fork-mesa-devnet/genesis".into(),
+                ),
             }),
         };
         meta.save(dir.path()).unwrap();

@@ -6,7 +6,10 @@ use crate::{
     cli::ExecutionMode,
     daemon_args::DaemonFeatures,
     genesis_ledger,
-    hardfork::{self, Constants, ForkAt, ForkMethod, HardforkMode, HardforkSpec, Schedule},
+    hardfork::{
+        self, dispatch::Dispatch, Constants, ForkAt, ForkMethod, HardforkMode, HardforkSpec,
+        Schedule,
+    },
     install,
     native::{self, binary::Binary},
     network_meta::{HardforkMeta, HardforkState, NetworkMeta},
@@ -108,14 +111,8 @@ pub fn check_create(ctx: &Context, spec: &NetworkSpec) -> Result<Option<(Hardfor
         _ => None,
     };
 
-    if ctx.mode == ExecutionMode::Native && h.mode == HardforkMode::Auto {
-        let bin = ctx.bin_path()?;
-        if !DaemonFeatures::from_daemon_help(&daemon_help(ctx, bin)).hardfork_handling {
-            problems.push(format!(
-                "mode = \"auto\" needs a prefork daemon with --hardfork-handling; {} has none",
-                Binary::Mina.path(bin).display()
-            ));
-        }
+    if h.mode == HardforkMode::Auto {
+        problems.extend(check_auto(ctx, h)?);
     }
 
     match (schedule, postfork) {
@@ -129,6 +126,8 @@ pub fn check_create(ctx: &Context, spec: &NetworkSpec) -> Result<Option<(Hardfor
                 prefork_bin_path: None,
                 archive_config: None,
                 archive_handover: h.archive_handover,
+                dispatcher: h.dispatcher.clone(),
+                archive_ledgers: None,
             },
             schedule,
         ))),
@@ -137,6 +136,51 @@ pub fn check_create(ctx: &Context, spec: &NetworkSpec) -> Result<Option<(Hardfor
             problems.join("\n  - ")
         ),
     }
+}
+
+/// Auto mode: writes the dispatcher's settings and runtimes into the network
+/// directory; see [`Dispatch`]. Nothing for a manual mode network.
+pub fn install_dispatch(ctx: &Context, network_path: &Path, h: &HardforkMeta) -> Result<()> {
+    let Some(script) = &h.dispatcher else {
+        return Ok(());
+    };
+    Dispatch::new(script, network_path, ctx.profile)
+        .install(ctx.bin_path()?, &h.postfork_bin_path)
+        .context("Failed to set up the hardfork dispatcher")
+}
+
+/// Problems of an auto mode network: it runs natively, through a dispatcher
+/// that runs daemons of its profile, and its prefork daemon can write the
+/// fork config and exit (`--hardfork-handling`).
+fn check_auto(ctx: &Context, h: &HardforkSpec) -> Result<Vec<String>> {
+    if ctx.mode == ExecutionMode::Docker {
+        return Ok(vec![
+            "mode = \"auto\" runs natively: minimina starts the daemons through the dispatcher"
+                .into(),
+        ]);
+    }
+    let mut problems = Vec::new();
+    if let Some(script) = h.dispatcher.as_ref().filter(|p| !p.is_file()) {
+        problems.push(format!(
+            "[hardfork] dispatcher {} is not a file",
+            script.display()
+        ));
+    }
+    if !Dispatch::supports(ctx.profile) {
+        problems.push(format!(
+            "mode = \"auto\" needs the devnet or mainnet profile, not {}: the dispatcher names \
+             the daemon's fork directory after the profile",
+            ctx.profile
+        ));
+    }
+    let bin = ctx.bin_path()?;
+    if !DaemonFeatures::from_daemon_help(&daemon_help(ctx, bin)).hardfork_handling {
+        problems.push(format!(
+            "mode = \"auto\" needs a prefork daemon with --hardfork-handling; {} has none",
+            Binary::Mina.path(bin).display()
+        ));
+    }
+    Ok(problems)
 }
 
 /// The postfork `upgrade.sql` of the archive database: `archive_upgrade` of

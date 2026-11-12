@@ -303,6 +303,9 @@ impl NetworkSpec {
             group.minasheets.as_mut().map(resolve);
             group.config_files.iter_mut().flatten().for_each(resolve);
         }
+        if let Some(dispatcher) = self.hardfork.as_mut().and_then(|h| h.dispatcher.as_mut()) {
+            resolve(dispatcher);
+        }
         if let Some(postfork) = self.hardfork.as_mut().and_then(|h| h.postfork.as_mut()) {
             postfork.bin_path.as_mut().map(resolve);
             postfork.archive_upgrade.as_mut().map(resolve);

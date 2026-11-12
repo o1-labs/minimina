@@ -12,6 +12,7 @@ use crate::daemon_args::{
     PRECOMPUTED_BLOCKS_FILE, ROSETTA_ENV,
 };
 use crate::docker::compose::CONFIG_DIRECTORY;
+use crate::hardfork::dispatch::Dispatch;
 use crate::native::error::NativeError;
 use crate::native::port_manager;
 use crate::native::process_tracker::{proc_stat, ProcessRecord, ProcessTracker, Records};
@@ -50,6 +51,11 @@ pub struct NativeManager {
     pub archive_config: Option<PathBuf>,
     /// `mina-archive` runs with `--hardfork-handover`.
     pub archive_handover: bool,
+    /// Auto mode: the daemons run through the hardfork dispatcher.
+    pub dispatch: Option<Dispatch>,
+    /// `MINA_KEYS_PATH` of `mina-archive`: where it finds the ledgers its
+    /// config names by hash (an auto mode fork config has no accounts).
+    pub archive_ledgers: Option<PathBuf>,
 }
 
 /// A tracked process and whether it is still running.
@@ -70,6 +76,8 @@ impl NativeManager {
             features: DaemonFeatures::default(),
             archive_config: None,
             archive_handover: false,
+            dispatch: None,
+            archive_ledgers: None,
         }
     }
 
@@ -80,6 +88,16 @@ impl NativeManager {
 
     pub fn with_archive_config(mut self, config: Option<PathBuf>) -> Self {
         self.archive_config = config;
+        self
+    }
+
+    pub fn with_dispatch(mut self, dispatch: Option<Dispatch>) -> Self {
+        self.dispatch = dispatch;
+        self
+    }
+
+    pub fn with_archive_ledgers(mut self, ledgers: Option<PathBuf>) -> Self {
+        self.archive_ledgers = ledgers;
         self
     }
 
@@ -307,13 +325,20 @@ impl NativeManager {
             Kind::Daemon(daemon) => {
                 // the archive daemon pushes blocks to mina-archive, so that comes up first
                 if let Role::Archive { port, .. } = daemon.role {
-                    let archive = Binary::Archive.path(&self.bin_path);
-                    let args = self.archive_args(port);
-                    self.spawn(&format!("{name}{ARCHIVE_SUFFIX}"), &archive, &args)?;
+                    self.spawn_archive(&format!("{name}{ARCHIVE_SUFFIX}"), port)?;
                 }
                 let config_dir = self.mina_config_dir(name)?;
                 let args = layout(utf8(&config_dir)?)?.daemon(name, daemon);
-                self.spawn(name, &Binary::Mina.path(&self.bin_path), &args)
+                match &self.dispatch {
+                    None => self.spawn(name, &Binary::Mina.path(&self.bin_path), &args),
+                    Some(dispatch) => {
+                        // the dispatcher as `mina`: it picks the runtime
+                        let env = dispatch.env(&config_dir);
+                        let env: Vec<(&str, &str)> =
+                            env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                        self.spawn_with_env(name, &dispatch.program(), &args, &env)
+                    }
+                }
             }
             Kind::SnarkWorker(worker) => {
                 let config_dir = self.mina_config_dir(name)?;
@@ -352,6 +377,19 @@ impl NativeManager {
             args.push("--hardfork-handover".into());
         }
         args
+    }
+
+    /// Spawns `mina-archive` as `name`.
+    fn spawn_archive(&self, name: &str, port: u16) -> Result<()> {
+        let archive = Binary::Archive.path(&self.bin_path);
+        let args = self.archive_args(port);
+        match &self.archive_ledgers {
+            None => self.spawn(name, &archive, &args),
+            Some(ledgers) => {
+                let ledgers = ledgers.to_string_lossy();
+                self.spawn_with_env(name, &archive, &args, &[("MINA_KEYS_PATH", &ledgers)])
+            }
+        }
     }
 
     fn spawn(&self, name: &str, binary: &Path, args: &[String]) -> Result<()> {
@@ -1076,6 +1114,51 @@ exec sleep 300"#
 
         native.stop_service("arch", Duration::from_secs(5)).unwrap();
         assert!(native.status().unwrap().is_empty());
+    }
+
+    #[test]
+    fn auto_mode_daemons_run_through_the_dispatcher() {
+        use std::os::unix::fs::PermissionsExt;
+        let sandbox = Sandbox::new("echo \"mina $*\"; exec sleep 300");
+        let script = sandbox.bin.path().join("dispatcher.sh");
+        fs::write(
+            &script,
+            "#!/bin/sh\necho \"dispatch $* source=$SOURCE_FILE state=$MINA_HARDFORK_STATE_DIR\"\n\
+             exec sleep 300\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let dispatch = Dispatch::new(&script, sandbox.net.path(), Profile::Devnet);
+        dispatch
+            .install(sandbox.bin.path(), sandbox.bin.path())
+            .unwrap();
+        let native = sandbox
+            .manager()
+            .with_dispatch(Some(dispatch))
+            .with_archive_ledgers(Some("/fork/genesis".into()));
+        let archive = archive("arch", free_port());
+
+        native.start_service(&archive, "net").unwrap();
+        wait_for_log(&native, "arch", "dispatch daemon", 1);
+        let log = native.service_logs("arch").unwrap();
+        let config_dir = native.config_dir_for_service("arch");
+        assert!(
+            log.contains(&format!(
+                "source={}/dispatch/mina-dispatch state={}",
+                sandbox.net.path().display(),
+                config_dir.display()
+            )),
+            "{log}"
+        );
+        // mina-archive runs as it is, with the fork ledgers
+        wait_for_log(&native, "arch-archive", "mina run", 1);
+        let archive_env = fs::read_to_string(format!(
+            "/proc/{}/environ",
+            native.tracker().get("arch-archive").unwrap().unwrap().pid
+        ))
+        .unwrap();
+        assert!(archive_env.contains("MINA_KEYS_PATH=/fork/genesis"));
+        native.stop_all(Duration::from_secs(5)).unwrap();
     }
 
     #[test]
