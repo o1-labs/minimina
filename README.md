@@ -179,7 +179,9 @@ database (GraphQL at `/` on its port). In native mode it needs Node.js 22.12 or 
 minimina installs the npm package once per version into `~/.minimina/.tools`
 (`version`, default `2.0.0`), or runs your own build (`bin`).
 Names default to `<role>-<n>` (`seed-1`, `bp-1`, `node-1`); client ports start at
-3100 in steps of 10. Only block producers hold stake unless a node sets `balance`.
+3100 in steps of 10. Only block producers hold stake unless a node sets `balance`;
+a snark coordinator gets 1000 MINA, so that its snark fees can go to an existing
+account (a fee below the account creation fee cannot create one).
 [docs/examples/network.toml](docs/examples/network.toml) shows every option:
 balances, funded test accounts, runtime config overrides, docker images and the
 profile. The default network is a built-in spec.
