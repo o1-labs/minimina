@@ -129,6 +129,10 @@ minimina node start -n <node-name> --import-accounts
 minimina node start -n <node-name> --graphql-filtered-logs
 ```
 
+In native mode, `<archive node>-archive` (for example `archive-archive`) names
+the archive node's `mina-archive` process alone: `node stop` and `node start`
+of it restart the archive while its daemon keeps running.
+
 **Dump data:**
 ```bash
 minimina node dump-precomputed-blocks -n <node-name>

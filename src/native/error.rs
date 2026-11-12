@@ -14,6 +14,8 @@ pub enum NativeError {
     NetworkRunning(Vec<String>),
     #[error("Service '{0}' is not running")]
     NotRunning(String),
+    #[error("'{0}' is not an archive node: it has no mina-archive process")]
+    NotArchive(String),
     #[error("the uptime service backend is not supported in native mode")]
     UptimeServiceUnsupported,
     #[error("seed '{seed}' exited during startup; see {}", .log.display())]
@@ -41,7 +43,7 @@ impl From<NativeError> for io::Error {
     fn from(e: NativeError) -> Self {
         use io::ErrorKind::*;
         let kind = match &e {
-            NativeError::NotUtf8(_) => InvalidInput,
+            NativeError::NotUtf8(_) | NativeError::NotArchive(_) => InvalidInput,
             NativeError::AlreadyRunning { .. }
             | NativeError::RunningDuringReset { .. }
             | NativeError::NetworkRunning(_) => AlreadyExists,
