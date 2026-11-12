@@ -191,14 +191,30 @@ pub(super) fn ledger_accounts(path: &Path) -> Result<Vec<LedgerAccount>> {
     serde_json::from_value(accounts).with_context(|| format!("the accounts of {}", path.display()))
 }
 
-/// The schedule of each account of the fork ledger; none before `hardfork prepare`.
-fn fork_schedules(network_path: &Path) -> Result<Option<BTreeMap<String, ForkSchedule>>> {
+/// The accounts of the fork ledger; none before `hardfork prepare`, and none
+/// in auto mode, where the fork config is the one a daemon wrote: it names
+/// the ledgers by hash only.
+pub(super) fn fork_ledger_accounts(network_path: &Path) -> Result<Option<Vec<LedgerAccount>>> {
     let path: PathBuf = network_path.join(FORK_CONFIG);
     if !path.exists() {
         return Ok(None);
     }
+    let config =
+        genesis_ledger::read_file(&path).with_context(|| format!("reading {}", path.display()))?;
+    if config.pointer("/ledger/accounts").is_none() {
+        return Ok(None);
+    }
+    ledger_accounts(&path).map(Some)
+}
+
+/// The schedule of each account of the fork ledger, if it has accounts
+/// ([`fork_ledger_accounts`]).
+fn fork_schedules(network_path: &Path) -> Result<Option<BTreeMap<String, ForkSchedule>>> {
+    let Some(accounts) = fork_ledger_accounts(network_path)? else {
+        return Ok(None);
+    };
     Ok(Some(
-        ledger_accounts(&path)?
+        accounts
             .iter()
             .map(|a| {
                 let schedule = match &a.timing {

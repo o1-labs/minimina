@@ -166,7 +166,7 @@ pub fn prepare(
         );
     }
     // manual mode: the postfork tool makes the reference ledgers; in auto
-    // mode each daemon's fork config has them
+    // mode the daemons made them, and their fork config has the hashes
     let hashes = match method {
         Some(_) => {
             let genesis_timestamp = fork_genesis
@@ -179,18 +179,19 @@ pub fn prepare(
                 dir.join(DAEMON_JSON),
                 serde_json::to_string_pretty(&postfork_config)?,
             )?;
-            Some(hashes)
+            hashes
         }
-        None => None,
+        None => {
+            let hashes = LedgerHashes::deserialize(fork_config)
+                .with_context(|| format!("the ledger hashes of the fork config of '{source}'"))?;
+            fs::write(
+                dir.join(LEDGER_HASHES_JSON),
+                serde_json::to_string_pretty(&hashes)?,
+            )?;
+            hashes
+        }
     };
-    let ledger_hash = match &hashes {
-        Some(hashes) => hashes.ledger.hash.clone(),
-        None => fork_config
-            .pointer("/ledger/hash")
-            .and_then(serde_json::Value::as_str)
-            .with_context(|| format!("the fork config of '{source}' has no ledger.hash"))?
-            .to_string(),
-    };
+    let ledger_hash = hashes.ledger.hash.clone();
     let shared = dir.join(SHARED_CONFIG_JSON);
     let prefork_config = genesis_ledger::read(&network_path)?;
     fs::write(
@@ -200,11 +201,11 @@ pub fn prepare(
 
     let mut nodes = BTreeMap::new();
     for daemon in &daemons {
-        let data = match (&auto_dirs, method, &hashes) {
-            (Some(dirs), _, _) => dirs[&daemon.service_name].clone(),
-            (None, Some(ForkMethod::Advanced), Some(hashes)) => {
+        let data = match (&auto_dirs, method) {
+            (Some(dirs), _) => dirs[&daemon.service_name].clone(),
+            (None, Some(ForkMethod::Advanced)) => {
                 let data = dir.join("nodes").join(&daemon.service_name);
-                match advanced_fork_data(ctx, &prefork_bin, daemon, &data, hashes) {
+                match advanced_fork_data(ctx, &prefork_bin, daemon, &data, &hashes) {
                     Ok(()) => data,
                     Err(e) => {
                         problems.push(format!("{}: {e}", daemon.service_name));
@@ -212,7 +213,7 @@ pub fn prepare(
                     }
                 }
             }
-            (None, _, _) => dir.clone(),
+            (None, _) => dir.clone(),
         };
         nodes.insert(daemon.service_name.clone(), data);
     }

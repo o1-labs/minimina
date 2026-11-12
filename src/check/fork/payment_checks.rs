@@ -102,11 +102,11 @@ pub fn payment_checks(e: &PaymentEvidence) -> PaymentChecks {
                 "no payment sent before the fork is in a block: no fork ledger nonce to check"
                     .to_string(),
             );
-        } else {
+        } else if let Some(fork_nonces) = e.fork_nonces {
             let nonces: Vec<(String, bool)> = last_nonce
                 .iter()
                 .map(|(sender, next)| {
-                    let fork = e.fork_nonces.get(*sender).copied();
+                    let fork = fork_nonces.get(*sender).copied();
                     (
                         format!(
                             "{sender}: {} in the fork ledger, {next} after its last payment",

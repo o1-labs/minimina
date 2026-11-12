@@ -13,7 +13,8 @@ pub struct PaymentEvidence<'a> {
     /// The archived blocks holding the payments.
     pub commands: &'a [IncludedCommand],
     /// Nonce of each account in the fork ledger.
-    pub fork_nonces: &'a BTreeMap<String, u64>,
+    /// None when the fork config has no accounts (auto mode).
+    pub fork_nonces: Option<&'a BTreeMap<String, u64>>,
     /// Nonce of each postfork sender at the daemon's best tip now.
     pub daemon_nonces: &'a BTreeMap<String, u64>,
 }

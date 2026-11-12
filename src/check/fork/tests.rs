@@ -329,7 +329,7 @@ fn payments_land_on_the_right_side_of_the_fork() {
         fork_height: 3,
         chain: &chain,
         commands: &commands,
-        fork_nonces: &fork_nonces,
+        fork_nonces: Some(&fork_nonces),
         daemon_nonces: &daemon_nonces,
     };
     let out = payment_checks(&evidence);
@@ -355,7 +355,7 @@ fn payments_land_on_the_right_side_of_the_fork() {
     let daemon_nonces = BTreeMap::from([(PK1.to_string(), 4)]);
     let out = payment_checks(&PaymentEvidence {
         commands: &commands,
-        fork_nonces: &fork_nonces,
+        fork_nonces: Some(&fork_nonces),
         daemon_nonces: &daemon_nonces,
         ..evidence
     });
@@ -373,6 +373,28 @@ fn payments_land_on_the_right_side_of_the_fork() {
 }
 
 #[test]
+fn without_fork_ledger_accounts_the_nonces_are_not_checked() {
+    let payments = [payment(PREFORK, PK1, "5Ja", 0)];
+    let commands = [command("5Ja", "3NL2", 2, "applied")];
+    let daemon_nonces = BTreeMap::new();
+    let chain = chain();
+    let out = payment_checks(&PaymentEvidence {
+        payments: &payments,
+        postfork_genesis: GENESIS,
+        fork_height: 3,
+        chain: &chain,
+        commands: &commands,
+        fork_nonces: None,
+        daemon_nonces: &daemon_nonces,
+    });
+    let names: Vec<&str> = out.checks.iter().map(|c| c.name.as_str()).collect();
+    assert!(
+        !names.contains(&"the fork ledger nonces follow the last prefork payments"),
+        "{names:?}"
+    );
+}
+
+#[test]
 fn without_payments_the_report_says_what_to_run() {
     let chain = chain();
     let none = BTreeMap::new();
@@ -382,7 +404,7 @@ fn without_payments_the_report_says_what_to_run() {
         fork_height: 3,
         chain: &chain,
         commands: &[],
-        fork_nonces: &none,
+        fork_nonces: Some(&none),
         daemon_nonces: &none,
     };
     let out = payment_checks(&evidence);
