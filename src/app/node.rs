@@ -8,7 +8,7 @@ use crate::{
     directory_manager::NETWORK_KEYPAIRS,
     docker::manager::ContainerState,
     genesis_ledger::{self, REPLAYER_INPUT_JSON},
-    native::{self, binary::Binary},
+    native::{self, binary::Binary, manager::NativeManager},
     node_client,
     output::{self, node},
     replayer::{self, Fork, HardForkTarget, PassKind, PassLog, Replay, Replayer, ReplayerError},
@@ -341,11 +341,19 @@ fn start_native(
 ) -> Result<()> {
     ctx.ensure_network_exists(network_id)?;
     let services = ctx.services::<Native>(network_id)?;
-    let service = services
-        .iter()
-        .find(|s| s.name == node_id)
-        .with_context(|| format!("Node '{node_id}' does not exist in network '{network_id}'."))?;
     let native = ctx.native(network_id)?;
+    let service = match services.iter().find(|s| s.name == node_id) {
+        Some(service) => service,
+        // `<archive>-archive`: the mina-archive process alone, as `node stop` takes it
+        None => {
+            let archive = NativeManager::archive_node_of(node_id)
+                .and_then(|archive| services.iter().find(|s| s.name == archive))
+                .with_context(|| {
+                    format!("Node '{node_id}' does not exist in network '{network_id}'.")
+                })?;
+            return Ok(native.start_archive_process(archive)?);
+        }
+    };
 
     if cmd.fresh_state {
         info!("Starting node '{node_id}' in network '{network_id}' with fresh state.");
