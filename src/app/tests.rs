@@ -536,8 +536,14 @@ fn native_default_network_generates_keys_with_mina() {
     let net = h.dirs.network_path("def");
     let ledger = std::fs::read_to_string(net.join("genesis_ledger.json")).unwrap();
     assert!(ledger.contains(&test_pk(0)));
-    // only the two block producers hold stake
-    assert_eq!(ledger.matches("\"pk\"").count(), 2, "{ledger}");
+    // the two block producers hold stake; the snark coordinator has an
+    // account for its fees
+    assert_eq!(ledger.matches("\"pk\"").count(), 3, "{ledger}");
+    assert_eq!(
+        ledger.matches("\"balance\": \"1000\"").count(),
+        1,
+        "{ledger}"
+    );
 }
 
 #[test]

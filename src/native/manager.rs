@@ -298,6 +298,34 @@ impl NativeManager {
         self.spawn_service(service, network_id)
     }
 
+    /// The archive node whose `mina-archive` process is `name`
+    /// (`<archive node>-archive`), if `name` names one.
+    pub fn archive_node_of(name: &str) -> Option<&str> {
+        name.strip_suffix(ARCHIVE_SUFFIX)
+    }
+
+    /// Starts only the `mina-archive` process of the archive node `service`,
+    /// after `node stop` of that process: its daemon reconnects to it. An
+    /// archive with `--hardfork-handover` settles the fork at its start.
+    pub fn start_archive_process(&self, service: &Service<Native>) -> Result<()> {
+        let Some(Role::Archive { port, .. }) = service.daemon().map(|d| &d.role) else {
+            return Err(NativeError::NotArchive(service.name.clone()).into());
+        };
+        let name = format!("{}{ARCHIVE_SUFFIX}", service.name);
+        if let Some(p) = self
+            .status()?
+            .into_iter()
+            .find(|p| p.alive && p.name == name)
+        {
+            return Err(NativeError::AlreadyRunning {
+                name: p.name,
+                pid: p.pid,
+            }
+            .into());
+        }
+        self.spawn_archive(&name, *port)
+    }
+
     fn spawn_service(&self, service: &Service<Native>, network_id: &str) -> Result<()> {
         let layout = |config_dir| -> Result<Layout> {
             Ok(Layout {
@@ -1158,6 +1186,29 @@ exec sleep 300"#
         ))
         .unwrap();
         assert!(archive_env.contains("MINA_KEYS_PATH=/fork/genesis"));
+        native.stop_all(Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn the_archive_process_restarts_alone() {
+        let sandbox = Sandbox::new("exec sleep 300");
+        let native = sandbox.manager();
+        let archive = archive("arch", free_port());
+        native.start_service(&archive, "net").unwrap();
+
+        native
+            .stop_service("arch-archive", Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(alive(&native), vec!["arch"]);
+        assert_eq!(NativeManager::archive_node_of("arch-archive"), Some("arch"));
+        native.start_archive_process(&archive).unwrap();
+        assert_eq!(alive(&native), vec!["arch", "arch-archive"]);
+        let again = native.start_archive_process(&archive).unwrap_err();
+        assert_eq!(again.kind(), io::ErrorKind::AlreadyExists, "{again}");
+        assert_eq!(
+            native.start_archive_process(&seed("s")).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
         native.stop_all(Duration::from_secs(5)).unwrap();
     }
 

@@ -70,6 +70,11 @@ use std::{
 
 /// Genesis balance in MINA of a block producer that sets none.
 pub const DEFAULT_BLOCK_PRODUCER_BALANCE: u64 = 11_550_000;
+/// Genesis balance in MINA of a snark coordinator that sets none. Without an
+/// account, the fee of its first snark work must pay for creating one (the
+/// account creation fee, 1 MINA): a smaller fee is refused, so its work never
+/// reaches the snark pool and blocks stay empty once the scan state is full.
+pub const DEFAULT_SNARK_COORDINATOR_BALANCE: u64 = 1000;
 /// Genesis balance in MINA of the funded test accounts of a spec that sets none.
 pub const DEFAULT_ACCOUNT_BALANCE: u64 = 1000;
 /// First client port of automatically placed daemons; each takes `PORT_STEP` ports.
@@ -126,6 +131,18 @@ impl Role {
         }
     }
 
+    /// The genesis balance of a node of the role that sets none: block
+    /// producers need stake ([`DEFAULT_BLOCK_PRODUCER_BALANCE`]), snark
+    /// coordinators an account for their fees
+    /// ([`DEFAULT_SNARK_COORDINATOR_BALANCE`]); other nodes get no account.
+    pub fn default_balance(&self) -> Option<Balance> {
+        match self {
+            Role::BlockProducer => Some(Balance::mina(DEFAULT_BLOCK_PRODUCER_BALANCE)),
+            Role::SnarkCoordinator => Some(Balance::mina(DEFAULT_SNARK_COORDINATOR_BALANCE)),
+            _ => None,
+        }
+    }
+
     /// Whether nodes of the role are mina daemons (have libp2p keys, peers
     /// and accounts).
     pub fn is_daemon(&self) -> bool {
@@ -144,8 +161,7 @@ pub struct NodeGroup {
     pub name: Option<String>,
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub count: u16,
-    /// Genesis balance of each node. Block producers default to
-    /// [`DEFAULT_BLOCK_PRODUCER_BALANCE`]; other nodes get no account.
+    /// Genesis balance of each node; default: [`Role::default_balance`].
     pub balance: Option<Balance>,
     /// Client port (others follow it). Default: the next free block from 3100.
     pub client_port: Option<u16>,
@@ -455,10 +471,10 @@ impl NetworkSpec {
                     _ => format!("{prefix}-{n}"),
                 });
                 let client_port = group.client_port.unwrap_or_else(&mut auto_port);
-                let balance = group.balance.clone().or_else(|| {
-                    (group.role == Role::BlockProducer)
-                        .then(|| Balance::mina(DEFAULT_BLOCK_PRODUCER_BALANCE))
-                });
+                let balance = group
+                    .balance
+                    .clone()
+                    .or_else(|| group.role.default_balance());
                 let workers = (1..=group.workers.unwrap_or(0))
                     .map(|i| match name.strip_suffix("coordinator") {
                         Some(stem) => format!("{stem}worker-{i}"),
@@ -643,7 +659,7 @@ mod tests {
                 ("bp-2", 3120, Some("11550000")),
                 ("node-1", 3130, None),
                 ("archive", 3140, None),
-                ("snark-coordinator", 3150, None),
+                ("snark-coordinator", 3150, Some("1000")),
             ]
         );
         assert_eq!(plan[4].archive_port, Some(3145));

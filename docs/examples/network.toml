@@ -35,6 +35,7 @@ role = "archive-node-api"     # GraphQL over the archive database (events, actio
 # role = "snark-coordinator"
 # workers = 1
 # fee = "0.001"
+# balance = "1000"     # default; its fees go to this account
 
 # Docker mode only: block producers submit their uptime to it (port 8080).
 # [[nodes]]
