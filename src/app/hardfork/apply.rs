@@ -1,6 +1,7 @@
 //! `network hardfork apply`: stops the network, installs the prepared postfork
 //! config in every daemon, upgrades the archive database, and starts the
-//! network with the postfork binaries.
+//! network with the postfork binaries. In auto mode the daemons have their
+//! fork config already, and the dispatcher starts the postfork daemon.
 
 use super::{
     daemon_help,
@@ -13,7 +14,7 @@ use crate::{
     archive_db::{ArchiveBlock, ArchiveDb, Migration},
     daemon_args::DaemonFeatures,
     genesis_ledger::{self, GENESIS_LEDGER_JSON, PREFORK_GENESIS_LEDGER_JSON},
-    hardfork::{fork_config, toolbox::Toolbox},
+    hardfork::{fork_config, toolbox::Toolbox, HardforkMode},
     native::manager::NativeManager,
     network_meta::{HardforkState, NetworkMeta},
     runner::check,
@@ -99,9 +100,13 @@ pub fn apply(
     fs::copy(&shared, &genesis_ledger)
         .with_context(|| format!("installing {}", shared.display()))?;
 
-    for (name, data) in &prepared.nodes {
-        install_fork_data(&native, name, data, &prepared.chain_id)
-            .with_context(|| format!("installing the fork data of '{name}'"))?;
+    // auto mode: the dispatcher gives each daemon its own fork config
+    let auto = h.mode == HardforkMode::Auto;
+    if !auto {
+        for (name, data) in &prepared.nodes {
+            install_fork_data(&native, name, data, &prepared.chain_id)
+                .with_context(|| format!("installing the fork data of '{name}'"))?;
+        }
     }
 
     let services = ctx.dirs.get_services_info(network_id)?;
@@ -131,6 +136,14 @@ pub fn apply(
         Some(_) => Some(write_archive_config(&network_path)?),
         None => None,
     };
+    // an auto mode fork config names its ledgers by hash only
+    let archive_ledgers = match (&archive_config, auto) {
+        (Some(_), true) => prepared
+            .nodes
+            .get(&prepared.source)
+            .map(|data| data.join(GENESIS_DIR)),
+        _ => None,
+    };
 
     let postfork = h.postfork_bin_path.clone();
     let features = DaemonFeatures::from_daemon_help(&daemon_help(ctx, &postfork));
@@ -139,6 +152,7 @@ pub fn apply(
     if let Some(hf) = meta.hardfork.as_mut() {
         hf.prefork_bin_path = prefork_bin;
         hf.archive_config = archive_config.clone();
+        hf.archive_ledgers = archive_ledgers.clone();
         hf.state = HardforkState::Applied;
     }
     meta.save(&network_path)
@@ -153,6 +167,8 @@ pub fn apply(
         .with_features(features)
         .with_archive_config(archive_config.clone())
         .with_archive_handover(h.archive_handover)
+        .with_dispatch(ctx.dispatch.clone())
+        .with_archive_ledgers(archive_ledgers)
         .start_all(&typed, network_id, seed_timeout)
         .with_context(|| format!("Failed to start network '{network_id}' after the fork"))?;
     let (archive_postfork_genesis, warnings) = match archive.as_deref_mut() {

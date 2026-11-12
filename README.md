@@ -268,7 +268,8 @@ genesis = { k = 10 }
 proof = { block_window_duration_ms = 30000 }
 
 [hardfork]
-mode = "manual"                  # or "auto": the daemons run --hardfork-handling migrate-exit
+mode = "manual"                  # or "auto": the daemons run through Mina's dispatcher
+# dispatcher = "/src/mina/scripts/hardfork/dispatcher.sh"   # auto mode only
 at = { slot = 42 }               # slot_chain_end, or an RFC 3339 date: at = "2026-10-29T14:00:00Z"
 # tx_end_before = 8              # slot_tx_end = slot_chain_end - tx_end_before [default: k - 2]
 # genesis_slot_delta = 20        # fork genesis slot = slot_chain_end + genesis_slot_delta
@@ -293,7 +294,9 @@ refuses the spec, with a list of all problems, before it changes anything, if:
   not installed, or the directory does not have `mina` (and `mina-archive`,
   `mina-rosetta`, `mina-create-genesis` when the network needs them), or its
   `mina` does not run;
-- `mode = "auto"` and the prefork daemon has no `--hardfork-handling`;
+- `mode = "auto"` and there is no `dispatcher` file, the profile is not
+  devnet or mainnet, or the prefork daemon has no `--hardfork-handling`;
+  `dispatcher` with `mode = "manual"`;
 - the network has an archive, and minimina finds no postfork `upgrade.sql`.
   The default is the script of the postfork package,
   `<package root>/etc/mina/archive/upgrade.sql`, where the package root is
@@ -397,6 +400,38 @@ ledger's accounts from `archive_config.json`.
 
 A manual fork of a network with an archive needs
 `mina-archive-hardfork-toolbox` in the postfork `bin_path`.
+
+#### Auto mode
+
+```toml
+[hardfork]
+mode = "auto"
+dispatcher = "/src/mina/scripts/hardfork/dispatcher.sh"
+```
+
+The daemons run as on a node with Mina's automode package: through the
+hardfork dispatcher (`scripts/hardfork/dispatcher.sh`, packaged as
+`mina-dispatch`). `network create` writes its settings
+(`<network dir>/dispatch/mina-dispatch`, the dispatcher's `SOURCE_FILE`),
+links `<network dir>/dispatch/bin/mina` to it and its runtimes `berkeley` and
+`mesa` to the prefork and postfork binaries. Every daemon then runs that
+`mina`, with its config directory as `MINA_HARDFORK_STATE_DIR`.
+
+1. Before the fork the dispatcher runs the prefork daemon with
+   `--hardfork-handling migrate-exit`. After `slot_chain_end` each daemon
+   writes its fork config to `<config dir>/auto-fork-mesa-<profile>`
+   (`daemon.json`, `genesis/` and an `activated` marker) and exits.
+2. `prepare` (`--wait` waits up to 10 minutes for every `activated` marker)
+   reads those fork configs instead of asking the daemons, and checks them as
+   in manual mode: one fork point, one chain id, the prefork archive.
+3. `apply` is the operator's restart: it upgrades the archive and starts the
+   network again. The dispatcher now finds the marker and runs the postfork
+   daemon with the daemon's own fork config; `apply` installs none. The
+   postfork `mina-archive` finds the fork ledgers through `MINA_KEYS_PATH`.
+
+minimina does not restart a daemon that exits; that is the operator's job.
+Only daemons run through the dispatcher: `mina-archive`, rosetta and snark
+workers run the prefork or postfork binaries directly.
 
 #### Replaying the archive
 

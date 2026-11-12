@@ -44,6 +44,9 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             meta.hardfork = hardfork.as_ref().map(|(h, _)| h.clone());
             meta.save(&network_path)
                 .context("Failed to record network mode")?;
+            if let Some((h, _)) = &hardfork {
+                hardfork::install_dispatch(ctx, &network_path, h)?;
+            }
 
             let mut services = setup::spec_network(ctx, inputs, &network_id)?;
             if let Some((_, schedule)) = &hardfork {

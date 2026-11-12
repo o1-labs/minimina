@@ -1,10 +1,6 @@
 //! `network check fork`: see [`crate::check::fork`].
 
-use super::{
-    check::{ledger_accounts, FORK_CONFIG},
-    hardfork::Prepared,
-    Context,
-};
+use super::{check::fork_ledger_accounts, hardfork::Prepared, Context};
 use crate::{
     check::fork::{
         self, ExpectedFork, ForkAccount, ForkCheckError, ForkReport, GenesisView, PaymentChecks,
@@ -89,28 +85,39 @@ pub fn run(ctx: &Context, network_id: &str) -> Result<ForkReport> {
     };
     // with --hardfork-handover the archive writes the fork ledger to
     // genesis_accounts, at the postfork genesis height
-    let ledger = vec![if hardfork.archive_handover {
-        let height = expected.fork.blockchain_length + 1;
-        fork::ledger_check(
-            &fork_accounts,
-            &db.genesis_ledger_accounts(height, fork::MINA_TOKEN)?,
-            "genesis_accounts",
-        )
-    } else {
-        fork::ledger_check(
-            &fork_accounts,
+    let ledger = match &fork_accounts {
+        None => {
+            notes.push(
+                "the fork config names the ledgers by hash only (auto mode: the daemons wrote \
+                 it): no fork ledger accounts to compare with the archive or the nonces"
+                    .into(),
+            );
+            vec![]
+        }
+        Some(fork_accounts) if hardfork.archive_handover => {
+            let height = expected.fork.blockchain_length + 1;
+            vec![fork::ledger_check(
+                fork_accounts,
+                &db.genesis_ledger_accounts(height, fork::MINA_TOKEN)?,
+                "genesis_accounts",
+            )]
+        }
+        Some(fork_accounts) => vec![fork::ledger_check(
+            fork_accounts,
             &db.genesis_accounts(&genesis, fork::MINA_TOKEN)?,
             "accounts_accessed",
-        )
-    }];
+        )],
+    };
 
     let payments = accepted_payments(&network_path)?;
     let hashes: Vec<String> = payments.iter().filter_map(|p| p.hash.clone()).collect();
     let commands = db.commands(&hashes)?;
-    let fork_nonces: BTreeMap<String, u64> = fork_accounts
-        .iter()
-        .map(|a| (a.public_key.clone(), a.nonce))
-        .collect();
+    let fork_nonces: Option<BTreeMap<String, u64>> = fork_accounts.as_ref().map(|accounts| {
+        accounts
+            .iter()
+            .map(|a| (a.public_key.clone(), a.nonce))
+            .collect()
+    });
     let postfork_senders: BTreeSet<&str> = payments
         .iter()
         .filter(|p| p.genesis == genesis)
@@ -132,7 +139,7 @@ pub fn run(ctx: &Context, network_id: &str) -> Result<ForkReport> {
         fork_height: i64::from(expected.fork.blockchain_length),
         chain: &blocks,
         commands: &commands,
-        fork_nonces: &fork_nonces,
+        fork_nonces: fork_nonces.as_ref(),
         daemon_nonces: &daemon_nonces,
     });
     notes.extend(payment_notes);
@@ -160,13 +167,17 @@ fn genesis_view(daemon: &ServiceConfig) -> Result<GenesisView, String> {
         .map_err(|e| e.to_string())
 }
 
-/// The MINA accounts of the fork ledger.
-fn fork_accounts(network_path: &Path) -> Result<Vec<mina_sdk::AccountData>> {
+/// The MINA accounts of the fork ledger, if the fork config has them
+/// ([`fork_ledger_accounts`]).
+fn fork_accounts(network_path: &Path) -> Result<Option<Vec<mina_sdk::AccountData>>> {
+    let Some(ledger) = fork_ledger_accounts(network_path)? else {
+        return Ok(None);
+    };
     let mut accounts = Vec::new();
-    for account in ledger_accounts(&network_path.join(FORK_CONFIG))? {
+    for account in ledger {
         accounts.extend(mina_sdk::AccountData::of_ledger(&account)?);
     }
-    Ok(accounts)
+    Ok(Some(accounts))
 }
 
 /// The payments the daemons took, of every load of the network.

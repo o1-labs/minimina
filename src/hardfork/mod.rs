@@ -3,7 +3,8 @@
 //!
 //! ```toml
 //! [hardfork]
-//! mode = "manual"                  # or "auto": --hardfork-handling migrate-exit
+//! mode = "manual"                  # or "auto": daemons run through the dispatcher
+//! # dispatcher = "/src/mina/scripts/hardfork/dispatcher.sh"   # auto mode only
 //! at = { slot = 42 }               # or an RFC 3339 date: at = "2026-10-29T14:00:00Z"
 //! tx_end_before = 8                # slot_tx_end = slot_chain_end - 8 [default: k - 2]
 //! genesis_slot_delta = 20          # fork genesis slot = slot_chain_end + 20
@@ -18,6 +19,7 @@
 //! changed to a slot from the genesis timestamp, so it is placed again when
 //! the first `network start` sets the genesis timestamp.
 
+pub mod dispatch;
 pub mod fork_config;
 pub mod toolbox;
 
@@ -52,6 +54,10 @@ pub struct HardforkSpec {
     /// does not run the toolbox's `convert-chain-to-canonical`.
     #[serde(default)]
     pub archive_handover: bool,
+    /// Auto mode: Mina's hardfork dispatcher (`scripts/hardfork/dispatcher.sh`,
+    /// packaged as `mina-dispatch`), which runs every daemon; see
+    /// [`dispatch`]. A relative path is relative to the spec file.
+    pub dispatcher: Option<PathBuf>,
 }
 
 fn default_genesis_slot_delta() -> u32 {
@@ -61,8 +67,9 @@ fn default_genesis_slot_delta() -> u32 {
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum HardforkMode {
-    /// The daemons run with `--hardfork-handling migrate-exit`: they write the
-    /// fork config themselves and exit; the dispatcher starts the postfork binary.
+    /// The daemons run through the dispatcher, with `--hardfork-handling
+    /// migrate-exit`: they write the fork config themselves and exit; once
+    /// they are started again, the dispatcher runs the postfork binary.
     Auto,
     /// minimina gets the fork config from the network and restarts every node.
     Manual,
@@ -191,6 +198,17 @@ impl HardforkSpec {
                  write the fork config themselves"
                     .into(),
             );
+        }
+        match (self.mode, &self.dispatcher) {
+            (HardforkMode::Auto, None) => problems.push(
+                "[hardfork] mode = \"auto\" needs dispatcher: Mina's \
+                 scripts/hardfork/dispatcher.sh, which runs every daemon"
+                    .into(),
+            ),
+            (HardforkMode::Manual, Some(_)) => {
+                problems.push("[hardfork] dispatcher is for mode = \"auto\"".into())
+            }
+            _ => {}
         }
         if self.genesis_slot_delta == 0 {
             problems.push("[hardfork] genesis_slot_delta must be at least 1".into());
@@ -365,7 +383,7 @@ mod tests {
     #[test]
     fn date_is_the_first_slot_at_or_after_it() {
         // 21 min 10 s after the genesis: slot 42.33 -> 43
-        let h = hardfork("mode = \"auto\"\nat = \"2026-10-29T11:21:10Z\"");
+        let h = hardfork("mode = \"auto\"\ndispatcher = \"/d.sh\"\nat = \"2026-10-29T11:21:10Z\"");
         let s = h.schedule(genesis(), C, &Default::default()).unwrap();
         assert_eq!((s.slot_tx_end, s.slot_chain_end), (35, 43));
     }
@@ -384,6 +402,7 @@ mod tests {
         for part in [
             "daemon.slot_chain_end conflicts",
             "method is for mode = \"manual\"",
+            "mode = \"auto\" needs dispatcher",
             "genesis_slot_delta must be at least 1",
             "tx_end_before = 10 must be from 1 to k - 1 = 9",
             "slot_tx_end 5 is 150 s after the genesis",
@@ -404,6 +423,25 @@ mod tests {
         assert!(err("tomorrow").contains("is not an RFC 3339 date"));
         assert!(err("2026-10-29T10:00:00Z").contains("is not after the genesis"));
         assert!(err("2026-10-29T11:03:00Z").contains("must be after tx_end_before = 8"));
+    }
+
+    #[test]
+    fn only_auto_mode_has_a_dispatcher() {
+        let problems = |text: &str| {
+            hardfork(text)
+                .schedule(genesis(), C, &Default::default())
+                .err()
+                .unwrap_or_default()
+                .join("\n")
+        };
+        assert_eq!(
+            problems("mode = \"auto\"\ndispatcher = \"/d.sh\"\nat = { slot = 40 }"),
+            ""
+        );
+        assert!(
+            problems("mode = \"manual\"\ndispatcher = \"/d.sh\"\nat = { slot = 40 }")
+                .contains("dispatcher is for mode = \"auto\"")
+        );
     }
 
     #[test]

@@ -25,6 +25,7 @@ use crate::{
     directory_manager::DirectoryManager,
     docker::manager::DockerManager,
     genesis_ledger::GENESIS_LEDGER_JSON,
+    hardfork::dispatch::Dispatch,
     install,
     native::manager::{NativeManager, DEFAULT_POSTGRES_URI, DEFAULT_SHUTDOWN_TIMEOUT},
     network_meta::{HardforkState, NetworkMeta},
@@ -72,6 +73,10 @@ pub struct Context {
     /// Native `mina-archive` starts with `--hardfork-handover`: after a
     /// hardfork applied with `archive_handover`.
     pub archive_handover: bool,
+    /// Auto mode: the daemons run through the hardfork dispatcher.
+    pub dispatch: Option<Dispatch>,
+    /// `MINA_KEYS_PATH` of native `mina-archive` after an auto mode fork.
+    pub archive_ledgers: Option<PathBuf>,
     pub runner: Rc<dyn Runner>,
     /// Opens archive databases (native mode).
     pub archive_db: Rc<dyn Connector>,
@@ -128,7 +133,9 @@ impl Context {
         )
         .with_features(self.features)
         .with_archive_config(self.archive_config.clone())
-        .with_archive_handover(self.archive_handover))
+        .with_archive_handover(self.archive_handover)
+        .with_dispatch(self.dispatch.clone())
+        .with_archive_ledgers(self.archive_ledgers.clone()))
     }
 
     /// The services of a network from its `services.json`, checked for mode `M`.
@@ -232,6 +239,16 @@ pub fn run_with(
         .flatten()
         .or(stored.as_ref().map(|m| m.profile))
         .unwrap_or_default();
+    let applied = stored
+        .as_ref()
+        .and_then(|m| m.hardfork.as_ref())
+        .filter(|h| h.state == HardforkState::Applied);
+    let archive_ledgers = applied.and_then(|h| h.archive_ledgers.clone());
+    let dispatch = cli.command.network_id().and_then(|id| {
+        let h = stored.as_ref()?.hardfork.as_ref()?;
+        let script = h.dispatcher.as_ref()?;
+        Some(Dispatch::new(script, &dirs.network_path(id), profile))
+    });
     let postgres_uri = stored
         .and_then(|m| m.postgres_uri)
         .or_else(|| std::env::var(POSTGRES_URI_ENV).ok())
@@ -262,6 +279,8 @@ pub fn run_with(
         features,
         archive_config,
         archive_handover,
+        dispatch,
+        archive_ledgers,
         runner,
         archive_db,
     };
@@ -353,6 +372,8 @@ mod archive_config_tests {
                 prefork_bin_path: None,
                 archive_config: archive_config.map(PathBuf::from),
                 archive_handover: false,
+                dispatcher: None,
+                archive_ledgers: None,
             }),
             ..plain()
         }

@@ -947,6 +947,8 @@ fn hardfork_network_gets_its_schedule_and_status() {
             features: Default::default(),
             archive_config: None,
             archive_handover: false,
+            dispatch: None,
+            archive_ledgers: None,
             archive_db: h.archive.clone(),
             runner: h.fake.clone(),
         };

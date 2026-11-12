@@ -1,5 +1,6 @@
 //! `network hardfork prepare`: makes and checks the postfork config of every
-//! daemon of a running network, after `slot_chain_end`.
+//! daemon of a running network, after `slot_chain_end`. In auto mode the
+//! daemons wrote it themselves and exited; `prepare` reads and checks it.
 
 use super::{status, Context};
 use crate::{
@@ -24,6 +25,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 /// Directory of the postfork data in the network directory.
@@ -38,11 +40,17 @@ pub const DAEMON_JSON: &str = "daemon.json";
 pub const GENESIS_DIR: &str = "genesis";
 /// The shared postfork runtime config, which `apply` makes the genesis ledger.
 pub const SHARED_CONFIG_JSON: &str = "genesis_ledger.postfork.json";
+/// How long after `slot_chain_end` the daemons of an auto mode network have
+/// to write their fork config: they wait for `slot_tx_end` on their best tip
+/// and migrate the ledgers first.
+const AUTO_FORK_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// What `prepare` made: the input of `apply`.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Prepared {
-    pub method: ForkMethod,
+    /// Manual mode only: in auto mode the daemons wrote their fork config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<ForkMethod>,
     /// The daemon whose fork config is used.
     pub source: String,
     /// Daemons that did not answer or have another fork point (with `--source`).
@@ -97,14 +105,14 @@ pub fn prepare(
         .hardfork
         .clone()
         .with_context(|| format!("network '{network_id}' has no hardfork"))?;
-    if h.mode == HardforkMode::Auto {
-        bail!("network '{network_id}' forks in auto mode: the daemons write their fork config themselves");
-    }
     if h.state == HardforkState::Applied {
         bail!("the hardfork of network '{network_id}' is applied already");
     }
     wait_for_chain_end(ctx, network_id, wait)?;
-    let method = h.method.unwrap_or_default();
+    let method = match h.mode {
+        HardforkMode::Auto => None,
+        HardforkMode::Manual => Some(h.method.unwrap_or_default()),
+    };
     let prefork_bin = meta
         .bin_path
         .clone()
@@ -113,7 +121,20 @@ pub fn prepare(
 
     let services = ctx.dirs.get_services_info(network_id)?;
     let daemons: Vec<&ServiceConfig> = services.iter().filter(|s| s.is_chain_daemon()).collect();
-    let configs = node_client::fork_configs(&services)?;
+    let auto_dirs = match h.mode {
+        HardforkMode::Auto => Some(auto_fork_dirs(ctx, network_id, &daemons, wait)?),
+        HardforkMode::Manual => None,
+    };
+    let configs = match &auto_dirs {
+        Some(dirs) => dirs
+            .iter()
+            .map(|(name, dir)| {
+                let config = genesis_ledger::read_file(&dir.join(DAEMON_JSON));
+                (name.clone(), config.map_err(|e| e.to_string()))
+            })
+            .collect(),
+        None => node_client::fork_configs(&services)?,
+    };
     let (source, fork, mut warnings) = fork_point(&configs, source)?;
     let fork_config = configs[&source]
         .as_ref()
@@ -144,16 +165,33 @@ pub fn prepare(
             fork_genesis.slot
         );
     }
-    let genesis_timestamp = fork_genesis
-        .time
-        .context("the network has no genesis timestamp")?;
-    // the postfork tool makes the reference ledgers
-    let hashes = create_genesis(ctx, postfork_bin, &fork_config_path, &dir)?;
-    let postfork_config = fork_config::postfork_config(fork_config, &hashes, &genesis_timestamp);
-    fs::write(
-        dir.join(DAEMON_JSON),
-        serde_json::to_string_pretty(&postfork_config)?,
-    )?;
+    // manual mode: the postfork tool makes the reference ledgers; in auto
+    // mode the daemons made them, and their fork config has the hashes
+    let hashes = match method {
+        Some(_) => {
+            let genesis_timestamp = fork_genesis
+                .time
+                .context("the network has no genesis timestamp")?;
+            let hashes = create_genesis(ctx, postfork_bin, &fork_config_path, &dir)?;
+            let postfork_config =
+                fork_config::postfork_config(fork_config, &hashes, &genesis_timestamp);
+            fs::write(
+                dir.join(DAEMON_JSON),
+                serde_json::to_string_pretty(&postfork_config)?,
+            )?;
+            hashes
+        }
+        None => {
+            let hashes = LedgerHashes::deserialize(fork_config)
+                .with_context(|| format!("the ledger hashes of the fork config of '{source}'"))?;
+            fs::write(
+                dir.join(LEDGER_HASHES_JSON),
+                serde_json::to_string_pretty(&hashes)?,
+            )?;
+            hashes
+        }
+    };
+    let ledger_hash = hashes.ledger.hash.clone();
     let shared = dir.join(SHARED_CONFIG_JSON);
     let prefork_config = genesis_ledger::read(&network_path)?;
     fs::write(
@@ -163,9 +201,9 @@ pub fn prepare(
 
     let mut nodes = BTreeMap::new();
     for daemon in &daemons {
-        let data = match method {
-            ForkMethod::Legacy => dir.clone(),
-            ForkMethod::Advanced => {
+        let data = match (&auto_dirs, method) {
+            (Some(dirs), _) => dirs[&daemon.service_name].clone(),
+            (None, Some(ForkMethod::Advanced)) => {
                 let data = dir.join("nodes").join(&daemon.service_name);
                 match advanced_fork_data(ctx, &prefork_bin, daemon, &data, &hashes) {
                     Ok(()) => data,
@@ -175,6 +213,7 @@ pub fn prepare(
                     }
                 }
             }
+            (None, _) => dir.clone(),
         };
         nodes.insert(daemon.service_name.clone(), data);
     }
@@ -237,7 +276,7 @@ pub fn prepare(
         warnings,
         fork,
         archive_fork_block,
-        ledger_hash: hashes.ledger.hash,
+        ledger_hash,
         chain_id: ids
             .first()
             .map(|id| id.to_string())
@@ -254,6 +293,63 @@ pub fn prepare(
     meta.save(&network_path)
         .context("Failed to record the prepared hardfork")?;
     Ok(prepared)
+}
+
+/// Auto mode: the fork config directory of each daemon, once every daemon
+/// wrote its `activated` marker there. Without `wait` it fails while one has
+/// not; with it, it waits up to [`AUTO_FORK_TIMEOUT`].
+fn auto_fork_dirs(
+    ctx: &Context,
+    network_id: &str,
+    daemons: &[&ServiceConfig],
+    wait: bool,
+) -> Result<BTreeMap<String, PathBuf>> {
+    let dispatch = ctx.dispatch.as_ref().with_context(|| {
+        format!("network '{network_id}' forks in auto mode without a dispatcher")
+    })?;
+    let native = ctx.native(network_id)?;
+    let config_dirs: BTreeMap<String, PathBuf> = daemons
+        .iter()
+        .map(|d| {
+            let name = d.service_name.clone();
+            let dir = native.config_dir_for_service(&name);
+            (name, dir)
+        })
+        .collect();
+    let deadline = Instant::now()
+        + if wait {
+            AUTO_FORK_TIMEOUT
+        } else {
+            Duration::ZERO
+        };
+    loop {
+        let missing: Vec<&str> = config_dirs
+            .iter()
+            .filter(|(_, dir)| !dispatch.is_activated(dir))
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if missing.is_empty() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "no fork config yet from {}: an auto mode daemon writes it to \
+                 <config dir>/{} after slot_chain_end, then exits; {}",
+                missing.join(", "),
+                dispatch.fork_dir(Path::new("")).display(),
+                if wait {
+                    format!("waited {} s", AUTO_FORK_TIMEOUT.as_secs())
+                } else {
+                    "run again, or add --wait".to_string()
+                }
+            );
+        }
+        std::thread::sleep(Duration::from_secs(5));
+    }
+    Ok(config_dirs
+        .into_iter()
+        .map(|(name, dir)| (name, dispatch.fork_dir(&dir)))
+        .collect())
 }
 
 /// The `fork-candidate` checks of the toolbox on the prefork archive: its
