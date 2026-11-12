@@ -48,6 +48,8 @@ pub struct NativeManager {
     /// inserts the genesis block as canonical and records the genesis
     /// accounts. `None`: no config.
     pub archive_config: Option<PathBuf>,
+    /// `mina-archive` runs with `--hardfork-handover`.
+    pub archive_handover: bool,
 }
 
 /// A tracked process and whether it is still running.
@@ -67,6 +69,7 @@ impl NativeManager {
             profile,
             features: DaemonFeatures::default(),
             archive_config: None,
+            archive_handover: false,
         }
     }
 
@@ -77,6 +80,11 @@ impl NativeManager {
 
     pub fn with_archive_config(mut self, config: Option<PathBuf>) -> Self {
         self.archive_config = config;
+        self
+    }
+
+    pub fn with_archive_handover(mut self, handover: bool) -> Self {
+        self.archive_handover = handover;
         self
     }
 
@@ -371,6 +379,9 @@ impl NativeManager {
                 "--config-file".into(),
                 config.to_string_lossy().into_owned(),
             ]);
+        }
+        if self.archive_handover {
+            args.push("--hardfork-handover".into());
         }
         args
     }
@@ -1054,6 +1065,25 @@ exec sleep 300"#
             .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
         assert!(alive(&native).is_empty(), "the seed is stopped again");
+    }
+
+    #[test]
+    fn a_handover_archive_runs_with_its_flag() {
+        let sandbox = Sandbox::new("exec sleep 300");
+        let config = Some("/net/archive_config.json".into());
+        let plain = sandbox.manager().with_archive_config(config.clone());
+        assert!(!plain
+            .archive_args(3125)
+            .contains(&"--hardfork-handover".to_string()));
+        let handover = plain.with_archive_handover(true);
+        assert_eq!(
+            handover.archive_args(3125)[5..],
+            [
+                "--config-file",
+                "/net/archive_config.json",
+                "--hardfork-handover"
+            ]
+        );
     }
 
     #[test]

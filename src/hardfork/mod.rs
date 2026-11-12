@@ -46,6 +46,12 @@ pub struct HardforkSpec {
     pub method: Option<ForkMethod>,
     /// The binaries the network switches to; required.
     pub postfork: Option<PostforkSpec>,
+    /// The postfork `mina-archive` runs with `--hardfork-handover`
+    /// (MinaProtocol/mina#19773, #19774): it writes the fork ledger to
+    /// `genesis_accounts` and settles the prefork chain itself, so `apply`
+    /// does not run the toolbox's `convert-chain-to-canonical`.
+    #[serde(default)]
+    pub archive_handover: bool,
 }
 
 fn default_genesis_slot_delta() -> u32 {
@@ -331,6 +337,13 @@ mod tests {
 
     fn hardfork(toml: &str) -> HardforkSpec {
         toml::from_str(toml).unwrap()
+    }
+
+    #[test]
+    fn the_archive_hands_over_only_when_asked() {
+        let base = "mode = \"manual\"\nat = { slot = 42 }\n";
+        assert!(!hardfork(base).archive_handover);
+        assert!(hardfork(&format!("{base}archive_handover = true")).archive_handover);
     }
 
     #[test]

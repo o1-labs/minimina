@@ -128,6 +128,7 @@ pub fn check_create(ctx: &Context, spec: &NetworkSpec) -> Result<Option<(Hardfor
                 state: HardforkState::Planned,
                 prefork_bin_path: None,
                 archive_config: None,
+                archive_handover: h.archive_handover,
             },
             schedule,
         ))),

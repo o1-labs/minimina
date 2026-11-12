@@ -13,6 +13,8 @@ pub struct FakeArchive {
     pub prefork_transaction_version: RefCell<Option<u32>>,
     pub chain: RefCell<Vec<ChainBlock>>,
     pub genesis_accounts: RefCell<Vec<AccountData>>,
+    pub genesis_ledger_accounts: RefCell<Vec<AccountData>>,
+    pub pending: RefCell<Vec<ChainBlock>>,
     pub commands: RefCell<Vec<IncludedCommand>>,
     /// The queries made, as `<method> <argument>`.
     pub calls: RefCell<Vec<String>>,
@@ -70,6 +72,26 @@ impl ArchiveDb for FakeDb<'_> {
             .borrow_mut()
             .push(format!("genesis_accounts {state_hash} {token}"));
         Ok(self.0.genesis_accounts.borrow().clone())
+    }
+
+    fn genesis_ledger_accounts(
+        &mut self,
+        height: u32,
+        token: &str,
+    ) -> Result<Vec<AccountData>, ArchiveDbError> {
+        self.0
+            .calls
+            .borrow_mut()
+            .push(format!("genesis_ledger_accounts {height} {token}"));
+        Ok(self.0.genesis_ledger_accounts.borrow().clone())
+    }
+
+    fn pending_before(&mut self, slot: u32) -> Result<Vec<ChainBlock>, ArchiveDbError> {
+        self.0
+            .calls
+            .borrow_mut()
+            .push(format!("pending_before {slot}"));
+        Ok(self.0.pending.borrow().clone())
     }
 
     fn commands(&mut self, hashes: &[String]) -> Result<Vec<IncludedCommand>, ArchiveDbError> {
