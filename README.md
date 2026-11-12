@@ -363,7 +363,7 @@ minimina network hardfork apply -n mynet            # before the fork genesis
    daemons and records the fork ledger's accounts;
 5. records the postfork `bin_path` and starts the network with it;
 6. with an archive, waits for the archive to insert the postfork genesis
-   block, then runs the toolbox's `validate-fork` on that block and
+   block (until 120 s after the postfork genesis time), then runs the toolbox's `validate-fork` on that block and
    `convert-chain-to-canonical`. This marks the prefork chain canonical up to
    the fork block and its other blocks orphaned, which the archive does not do
    on a network with a smaller k than its compiled one
@@ -376,9 +376,14 @@ minimina network hardfork apply -n mynet            # before the fork genesis
    [MinaProtocol/mina#19773](https://github.com/MinaProtocol/mina/pull/19773)
    and [#19774](https://github.com/MinaProtocol/mina/pull/19774)): it writes
    the fork ledger to `genesis_accounts` instead of `accounts_accessed`, and
-   settles the prefork chain itself at startup, so `apply` skips
-   `convert-chain-to-canonical`. `network check fork` then reads the fork
-   ledger from `genesis_accounts`.
+   settles the prefork chain itself, so `apply` skips
+   `convert-chain-to-canonical`. Such an archive does not insert the postfork
+   genesis block at its start; the daemons send it at the genesis time. It
+   settles the fork only at its start, so on a fresh fork, where the genesis
+   block comes later, prefork blocks stay pending: `apply` reports them as a
+   warning, and restarting the archive (`node stop` and `node start` of it)
+   settles them. `network check fork` reads the fork ledger from
+   `genesis_accounts` and fails while a prefork block is pending.
 
 A failed upgrade or `verify-upgrade` stops `apply` before the network starts.
 `populate-genesis-accounts` is not needed: the archive records the fork

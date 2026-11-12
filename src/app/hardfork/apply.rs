@@ -17,11 +17,13 @@ use crate::{
     native::manager::NativeManager,
     network_meta::{HardforkState, NetworkMeta},
     runner::check,
+    runtime_config::RuntimeConfig,
     service::{typed::Native, ServiceConfig},
     utils,
 };
 use anyhow::{bail, Context as _, Result};
-use log::info;
+use chrono::{DateTime, FixedOffset, Utc};
+use log::{info, warn};
 use serde::Serialize;
 use std::{
     fs,
@@ -31,7 +33,8 @@ use std::{
 
 /// The postfork `mina-archive` config, in the hardfork directory.
 pub const ARCHIVE_CONFIG_JSON: &str = "archive_config.json";
-/// How long the restarted archive has to insert the postfork genesis block.
+/// How long the restarted archive has to insert the postfork genesis block,
+/// after the postfork genesis time.
 const ARCHIVE_GENESIS_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Serialize)]
@@ -45,6 +48,9 @@ pub struct Applied {
     /// The postfork genesis block the archive inserted, checked by `validate-fork`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archive_postfork_genesis: Option<ArchiveBlock>,
+    /// What the archive left undone, for `network check fork` to report.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl std::fmt::Display for Applied {
@@ -77,6 +83,7 @@ pub fn apply(
         HardforkState::Prepared => {}
     }
     let prepared = Prepared::load(&network_path)?;
+    let genesis_time = postfork_genesis_time(&network_path)?;
     let native = ctx.native(network_id)?;
     info!("Stopping network '{network_id}'");
     native.stop_all(stop_timeout)?;
@@ -148,12 +155,13 @@ pub fn apply(
         .with_archive_handover(h.archive_handover)
         .start_all(&typed, network_id, seed_timeout)
         .with_context(|| format!("Failed to start network '{network_id}' after the fork"))?;
-    let archive_postfork_genesis = match archive.as_deref_mut() {
-        Some(db) => Some(
-            repair_archive(
+    let (archive_postfork_genesis, warnings) = match archive.as_deref_mut() {
+        Some(db) => {
+            let (genesis, warnings) = repair_archive(
                 &toolbox,
                 db,
                 prepared.fork.global_slot_since_genesis,
+                genesis_wait(Utc::now(), genesis_time),
                 h.archive_handover,
             )
             .with_context(|| {
@@ -161,9 +169,10 @@ pub fn apply(
                     "network '{network_id}' runs the postfork binaries, but its archive is not \
                      checked"
                 )
-            })?,
-        ),
-        None => None,
+            })?;
+            (Some(genesis), warnings)
+        }
+        None => (None, Vec::new()),
     };
     Ok(Applied {
         network_id: network_id.to_string(),
@@ -171,38 +180,86 @@ pub fn apply(
         bin_path: postfork,
         archive_migration,
         archive_postfork_genesis,
+        warnings,
     })
 }
 
+/// The postfork genesis time, from the fork config the daemons gave.
+fn postfork_genesis_time(network_path: &Path) -> Result<Option<DateTime<FixedOffset>>> {
+    let path = network_path.join(HARDFORK_DIR).join(FORK_CONFIG_JSON);
+    let config = RuntimeConfig::from_json(&genesis_ledger::read_file(&path)?)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    config
+        .genesis
+        .genesis_state_timestamp
+        .as_deref()
+        .map(DateTime::parse_from_rfc3339)
+        .transpose()
+        .with_context(|| {
+            format!(
+                "invalid genesis.genesis_state_timestamp in {}",
+                path.display()
+            )
+        })
+}
+
+/// How long to wait for the postfork genesis block in the archive:
+/// [`ARCHIVE_GENESIS_TIMEOUT`] after the postfork genesis time. With
+/// `--hardfork-handover` the archive does not insert the block at its start;
+/// the daemons send it at the genesis time.
+fn genesis_wait(now: DateTime<Utc>, genesis: Option<DateTime<FixedOffset>>) -> Duration {
+    let until_genesis = genesis
+        .and_then(|g| (g.with_timezone(&Utc) - now).to_std().ok())
+        .unwrap_or_default();
+    until_genesis + ARCHIVE_GENESIS_TIMEOUT
+}
+
 /// After the restart: the archive inserts the postfork genesis block from
-/// its `--config-file`. `validate-fork` checks it and its prefork ancestors.
-/// With `handover`, the archive has settled the prefork chain itself;
-/// otherwise `convert-chain-to-canonical` marks it canonical, which the
-/// archive does not do with the k of its compiled profile
-/// (MinaProtocol/mina#19986).
+/// its `--config-file`, or with `handover`, gets it from the daemons at the
+/// genesis time. `validate-fork` checks it and its prefork ancestors.
+/// With `handover`, settling the prefork chain is the archive's own work,
+/// and the prefork blocks it leaves pending are warnings; otherwise
+/// `convert-chain-to-canonical` marks the chain canonical, which the archive
+/// does not do with the k of its compiled profile (MinaProtocol/mina#19986).
 fn repair_archive(
     toolbox: &Toolbox,
     archive: &mut dyn ArchiveDb,
     fork_genesis_slot: u32,
+    wait: Duration,
     handover: bool,
-) -> Result<ArchiveBlock> {
-    let genesis = wait_for_postfork_genesis(archive, fork_genesis_slot)?;
+) -> Result<(ArchiveBlock, Vec<String>)> {
+    let genesis = wait_for_postfork_genesis(archive, fork_genesis_slot, wait)?;
     info!(
         "The archive has the postfork genesis block {} (height {})",
         genesis.state_hash, genesis.height
     );
     toolbox.validate_fork(&genesis)?;
-    if handover {
-        info!("The archive settles the prefork chain itself (--hardfork-handover)");
-    } else {
+    if !handover {
         toolbox.convert_chain_to_canonical()?;
+        return Ok((genesis, Vec::new()));
     }
-    Ok(genesis)
+    let pending = archive.pending_before(fork_genesis_slot)?;
+    if pending.is_empty() {
+        info!("The archive settled the prefork chain itself (--hardfork-handover)");
+        return Ok((genesis, Vec::new()));
+    }
+    let warning = format!(
+        "the archive left {} prefork blocks pending (highest: height {}); it settles the fork \
+         only at its start, so restarting it settles them",
+        pending.len(),
+        pending.iter().map(|b| b.height).max().unwrap_or_default()
+    );
+    warn!("{warning}");
+    Ok((genesis, vec![warning]))
 }
 
-/// Waits up to [`ARCHIVE_GENESIS_TIMEOUT`] for the postfork genesis block in the archive.
-fn wait_for_postfork_genesis(archive: &mut dyn ArchiveDb, slot: u32) -> Result<ArchiveBlock> {
-    let deadline = std::time::Instant::now() + ARCHIVE_GENESIS_TIMEOUT;
+/// Waits up to `wait` for the postfork genesis block in the archive.
+fn wait_for_postfork_genesis(
+    archive: &mut dyn ArchiveDb,
+    slot: u32,
+    wait: Duration,
+) -> Result<ArchiveBlock> {
+    let deadline = std::time::Instant::now() + wait;
     loop {
         if let Some(block) = archive.postfork_genesis_block(slot)? {
             return Ok(block);
@@ -210,7 +267,7 @@ fn wait_for_postfork_genesis(archive: &mut dyn ArchiveDb, slot: u32) -> Result<A
         if std::time::Instant::now() >= deadline {
             bail!(
                 "the archive has no postfork genesis block (slot {slot}) after {} s",
-                ARCHIVE_GENESIS_TIMEOUT.as_secs()
+                wait.as_secs()
             );
         }
         std::thread::sleep(Duration::from_secs(2));
@@ -313,5 +370,37 @@ mod tests {
         );
         assert_eq!(config["ledger"]["accounts"][0]["pk"], "B62q");
         assert_eq!(config["proof"]["fork"]["global_slot_since_genesis"], 46);
+    }
+
+    #[test]
+    fn the_archive_has_until_after_the_postfork_genesis_time() {
+        let now = DateTime::parse_from_rfc3339("2026-11-12T00:41:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let genesis = DateTime::parse_from_rfc3339("2026-11-12T01:46:59+01:00").ok();
+        assert_eq!(
+            genesis_wait(now, genesis),
+            Duration::from_secs(359) + ARCHIVE_GENESIS_TIMEOUT
+        );
+        let past = DateTime::parse_from_rfc3339("2026-11-12T00:30:00Z").ok();
+        assert_eq!(genesis_wait(now, past), ARCHIVE_GENESIS_TIMEOUT);
+        assert_eq!(genesis_wait(now, None), ARCHIVE_GENESIS_TIMEOUT);
+    }
+
+    #[test]
+    fn the_genesis_time_is_the_fork_configs() {
+        let net = tempfile::tempdir().unwrap();
+        let dir = net.path().join(HARDFORK_DIR);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(FORK_CONFIG_JSON),
+            json!({"genesis": {"genesis_state_timestamp": "2026-11-12T00:46:59.717000Z"}})
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            postfork_genesis_time(net.path()).unwrap(),
+            DateTime::parse_from_rfc3339("2026-11-12T00:46:59.717Z").ok()
+        );
     }
 }
