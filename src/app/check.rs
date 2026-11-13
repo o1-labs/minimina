@@ -29,6 +29,8 @@ use std::{
 
 /// The fork config `hardfork prepare` writes.
 pub(super) const FORK_CONFIG: &str = "hardfork/fork_config.json";
+/// Auto mode: the legacy reference fork config, from GraphQL.
+const REFERENCE_FORK_CONFIG: &str = "hardfork/reference/fork_config.json";
 /// Where `network check rosetta` keeps the rosetta-cli config, data and results.
 const ROSETTA_CLI_DIR: &str = "rosetta-cli";
 
@@ -191,20 +193,23 @@ pub(super) fn ledger_accounts(path: &Path) -> Result<Vec<LedgerAccount>> {
     serde_json::from_value(accounts).with_context(|| format!("the accounts of {}", path.display()))
 }
 
-/// The accounts of the fork ledger; none before `hardfork prepare`, and none
-/// in auto mode, where the fork config is the one a daemon wrote: it names
-/// the ledgers by hash only.
+/// The accounts of the fork ledger; none before `hardfork prepare`. In auto
+/// mode the fork config is the one a daemon wrote, which names the ledgers by
+/// hash only, so they come from the legacy reference, if `prepare` made one
+/// (and the daemons' ledgers matched it).
 pub(super) fn fork_ledger_accounts(network_path: &Path) -> Result<Option<Vec<LedgerAccount>>> {
-    let path: PathBuf = network_path.join(FORK_CONFIG);
-    if !path.exists() {
-        return Ok(None);
+    for relative in [FORK_CONFIG, REFERENCE_FORK_CONFIG] {
+        let path: PathBuf = network_path.join(relative);
+        if !path.exists() {
+            continue;
+        }
+        let config = genesis_ledger::read_file(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if config.pointer("/ledger/accounts").is_some() {
+            return ledger_accounts(&path).map(Some);
+        }
     }
-    let config =
-        genesis_ledger::read_file(&path).with_context(|| format!("reading {}", path.display()))?;
-    if config.pointer("/ledger/accounts").is_none() {
-        return Ok(None);
-    }
-    ledger_accounts(&path).map(Some)
+    Ok(None)
 }
 
 /// The schedule of each account of the fork ledger, if it has accounts
@@ -269,4 +274,53 @@ fn rosetta_port(service: &ServiceConfig) -> Result<u16> {
     service
         .client_port
         .with_context(|| format!("'{}' has no port", service.service_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::fs;
+
+    const PK: &str = "B62qrPN5Y5yq8kGE3FbVKbGTdTAJNdtNtB5sNVpxyRwWGcDEhpMzc8g";
+
+    fn write(network: &Path, relative: &str, config: serde_json::Value) {
+        let path = network.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, config.to_string()).unwrap();
+    }
+
+    #[test]
+    fn auto_mode_takes_the_fork_ledger_accounts_from_the_legacy_reference() {
+        let net = tempfile::tempdir().unwrap();
+        assert!(fork_ledger_accounts(net.path()).unwrap().is_none());
+
+        // the dumped config names the ledgers by hash only
+        write(
+            net.path(),
+            FORK_CONFIG,
+            json!({"ledger": {"hash": "jwkh", "s3_data_hash": "6e31"}}),
+        );
+        assert!(fork_ledger_accounts(net.path()).unwrap().is_none());
+
+        write(
+            net.path(),
+            REFERENCE_FORK_CONFIG,
+            json!({"ledger": {"hash": "jwkh", "accounts": [{"pk": PK, "balance": "5.000000000"}]}}),
+        );
+        let accounts = fork_ledger_accounts(net.path()).unwrap().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].pk.to_string(), PK);
+    }
+
+    #[test]
+    fn manual_mode_takes_them_from_its_fork_config() {
+        let net = tempfile::tempdir().unwrap();
+        write(
+            net.path(),
+            FORK_CONFIG,
+            json!({"ledger": {"accounts": [{"pk": PK, "balance": "1.000000000"}]}}),
+        );
+        assert_eq!(fork_ledger_accounts(net.path()).unwrap().unwrap().len(), 1);
+    }
 }

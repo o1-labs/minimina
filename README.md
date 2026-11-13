@@ -424,6 +424,18 @@ links `<network dir>/dispatch/bin/mina` to it and its runtimes `berkeley` and
 2. `prepare` (`--wait` waits up to 10 minutes for every `activated` marker)
    reads those fork configs instead of asking the daemons, and checks them as
    in manual mode: one fork point, one chain id, the prefork archive.
+   It also checks them against a legacy reference. Between `slot_tx_end`
+   and `slot_chain_end` the daemons still answer GraphQL `fork_config`
+   (the newest block before `slot_tx_end`, the fork block). `prepare --wait`
+   asks them a slot after `slot_tx_end` and makes that config's ledgers with
+   `mina-create-genesis`, as manual mode does, into
+   `<network dir>/hardfork/reference`. Every daemon's dump must name the
+   same fork point and the same genesis, staking and next epoch ledger
+   hashes; equal hashes are equal ledgers, whatever the tarballs' checksums.
+   `network check fork` and `network check vesting` take the fork ledger's
+   accounts from the reference, since a dump names its ledgers by hash only.
+   A `prepare` that starts after `slot_chain_end` has no reference (a
+   warning), and those checks skip the fork ledger.
 3. `apply` is the operator's restart: it upgrades the archive and starts the
    network again. The dispatcher now finds the marker and runs the postfork
    daemon with the daemon's own fork config; `apply` installs none. The
