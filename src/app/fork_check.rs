@@ -89,7 +89,8 @@ pub fn run(ctx: &Context, network_id: &str) -> Result<ForkReport> {
         None => {
             notes.push(
                 "the fork config names the ledgers by hash only (auto mode: the daemons wrote \
-                 it): no fork ledger accounts to compare with the archive or the nonces"
+                 it), and prepare made no legacy reference (see prepared.json): no fork ledger \
+                 accounts to compare with the archive or the nonces"
                     .into(),
             );
             vec![]

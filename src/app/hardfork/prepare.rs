@@ -1,6 +1,7 @@
 //! `network hardfork prepare`: makes and checks the postfork config of every
 //! daemon of a running network, after `slot_chain_end`. In auto mode the
-//! daemons wrote it themselves and exited; `prepare` reads and checks it.
+//! daemons wrote it themselves and exited; `prepare` reads and checks it
+//! against a legacy reference (see [`crate::hardfork::reference`]).
 
 use super::{status, Context};
 use crate::{
@@ -8,6 +9,7 @@ use crate::{
     genesis_ledger,
     hardfork::{
         fork_config::{self, ForkPoint, LedgerHashes},
+        reference::{LegacyReference, REFERENCE_DIR},
         toolbox::Toolbox,
         ForkMethod, HardforkMode,
     },
@@ -60,6 +62,10 @@ pub struct Prepared {
     /// The fork block in the prefork archive (`fork-candidate last-filled-block`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_fork_block: Option<ArchiveBlock>,
+    /// Auto mode: the GraphQL fork config and its ledgers that every
+    /// daemon's dump matched. None when `prepare` started too late to ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<LegacyReference>,
     /// Hash of the postfork genesis ledger.
     pub ledger_hash: String,
     /// The chain id every node computes for the postfork chain.
@@ -108,6 +114,12 @@ pub fn prepare(
     if h.state == HardforkState::Applied {
         bail!("the hardfork of network '{network_id}' is applied already");
     }
+    let services = ctx.dirs.get_services_info(network_id)?;
+    // auto mode: the daemons answer GraphQL only until slot_chain_end
+    let legacy = match h.mode {
+        HardforkMode::Auto => Some(legacy_fork_config(ctx, network_id, &services, wait)?),
+        HardforkMode::Manual => None,
+    };
     wait_for_chain_end(ctx, network_id, wait)?;
     let method = match h.mode {
         HardforkMode::Auto => None,
@@ -119,7 +131,6 @@ pub fn prepare(
         .context("the network has no prefork bin_path")?;
     let postfork_bin = &h.postfork_bin_path;
 
-    let services = ctx.dirs.get_services_info(network_id)?;
     let daemons: Vec<&ServiceConfig> = services.iter().filter(|s| s.is_chain_daemon()).collect();
     let auto_dirs = match h.mode {
         HardforkMode::Auto => Some(auto_fork_dirs(ctx, network_id, &daemons, wait)?),
@@ -190,6 +201,26 @@ pub fn prepare(
             )?;
             hashes
         }
+    };
+    let reference = match legacy {
+        Some(Ok((source, fork, config))) => {
+            match legacy_reference(ctx, postfork_bin, &dir, source, fork, &config) {
+                Ok(reference) => {
+                    problems.extend(reference.mismatches(&configs));
+                    Some(reference)
+                }
+                Err(e) => {
+                    problems.push(format!("legacy reference: {e:#}"));
+                    None
+                }
+            }
+        }
+        Some(Err(why)) => {
+            warn!("no legacy reference: {why}");
+            warnings.push(format!("no legacy reference: {why}"));
+            None
+        }
+        None => None,
     };
     let ledger_hash = hashes.ledger.hash.clone();
     let shared = dir.join(SHARED_CONFIG_JSON);
@@ -276,6 +307,7 @@ pub fn prepare(
         warnings,
         fork,
         archive_fork_block,
+        reference,
         ledger_hash,
         chain_id: ids
             .first()
@@ -293,6 +325,99 @@ pub fn prepare(
     meta.save(&network_path)
         .context("Failed to record the prepared hardfork")?;
     Ok(prepared)
+}
+
+/// Auto mode: the GraphQL fork config of the daemons, the legacy reference
+/// for their dumps: its source daemon, fork point and config. GraphQL gives
+/// the newest block before `slot_tx_end`, so it asks a slot after that, and
+/// before `slot_chain_end`, when the daemons dump their own and exit. With
+/// `wait`, it waits for that slot. `Err` says why there is no reference.
+fn legacy_fork_config(
+    ctx: &Context,
+    network_id: &str,
+    services: &[ServiceConfig],
+    wait: bool,
+) -> Result<std::result::Result<(String, ForkPoint, serde_json::Value), String>> {
+    let s = status(ctx, network_id, Utc::now())?;
+    let time = |p: &super::Point| {
+        p.time
+            .as_deref()
+            .map(chrono::DateTime::parse_from_rfc3339)
+            .transpose()
+            .map(|t| t.map(|t| t.with_timezone(&Utc)))
+    };
+    let (Some(tx_end), Some(chain_end)) = (time(&s.slot_tx_end)?, time(&s.slot_chain_end)?) else {
+        return Ok(Err(format!("network '{network_id}' has not started")));
+    };
+    let ready = tx_end + chrono::Duration::milliseconds(s.slot_duration_ms as i64);
+    loop {
+        let now = Utc::now();
+        if now >= chain_end {
+            return Ok(Err(format!(
+                "prepare started after slot_chain_end {}, when the daemons dump their fork \
+                 config and exit: they no longer give one over GraphQL",
+                s.slot_chain_end.slot
+            )));
+        }
+        let seconds = (ready - now).num_seconds();
+        if seconds <= 0 {
+            break;
+        }
+        if !wait {
+            return Ok(Err(format!(
+                "GraphQL gives the fork config from slot_tx_end {} on",
+                s.slot_tx_end.slot
+            )));
+        }
+        info!(
+            "Waiting {seconds} s for slot_tx_end {}, to ask the daemons for the legacy fork config",
+            s.slot_tx_end.slot
+        );
+        std::thread::sleep(Duration::from_secs(seconds.clamp(1, 60) as u64));
+    }
+    let configs = node_client::fork_configs(services)?;
+    let (answered, failed): (BTreeMap<_, _>, BTreeMap<_, _>) =
+        configs.into_iter().partition(|(_, c)| c.is_ok());
+    if answered.is_empty() {
+        return Ok(Err(format!(
+            "no daemon gave a fork config over GraphQL: {}",
+            failed
+                .iter()
+                .map(|(name, c)| format!("{name}: {}", c.as_ref().err().map_or("", |e| e)))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )));
+    }
+    Ok(match fork_point(&answered, None) {
+        Ok((source, fork, _)) => {
+            let config = answered[&source].clone().map_err(|e| e.to_string());
+            config.map(|config| (source, fork, config))
+        }
+        Err(e) => Err(format!("{e:#}")),
+    })
+}
+
+/// Makes the ledgers of the legacy fork config with the postfork tool, into
+/// `<hardfork dir>/reference`, as manual mode makes its own.
+fn legacy_reference(
+    ctx: &Context,
+    postfork_bin: &Path,
+    hardfork_dir: &Path,
+    source: String,
+    fork: ForkPoint,
+    config: &serde_json::Value,
+) -> Result<LegacyReference> {
+    let dir = hardfork_dir.join(REFERENCE_DIR);
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(FORK_CONFIG_JSON);
+    fs::write(&path, serde_json::to_string_pretty(config)?)?;
+    info!("Legacy reference: the fork config of '{source}' over GraphQL");
+    let hashes = create_genesis(ctx, postfork_bin, &path, &dir)?;
+    Ok(LegacyReference {
+        source,
+        fork,
+        hashes,
+    })
 }
 
 /// Auto mode: the fork config directory of each daemon, once every daemon
