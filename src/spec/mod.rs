@@ -187,6 +187,10 @@ pub struct NodeGroup {
     pub client_port: Option<u16>,
     /// Archive node: port of the `mina-archive` process. Default: client port + 5.
     pub archive_port: Option<u16>,
+    /// Standalone node: runs `mina-archive` next to itself and sends it its
+    /// blocks, so the network keeps one daemon.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archive: bool,
     /// Snark coordinator: number of snark workers.
     pub workers: Option<u16>,
     /// Snark coordinator, standalone: fee per snark work.
@@ -223,6 +227,7 @@ impl Default for NodeGroup {
             balance: None,
             client_port: None,
             archive_port: None,
+            archive: false,
             workers: None,
             fee: None,
             node: None,
@@ -236,6 +241,12 @@ impl Default for NodeGroup {
 }
 
 impl NodeGroup {
+    /// Whether the nodes run `mina-archive`: the archive node, or a
+    /// standalone node with `archive = true`.
+    pub fn runs_archive(&self) -> bool {
+        self.role == Role::Archive || (self.role == Role::Standalone && self.archive)
+    }
+
     /// `count` nodes of `role`, with nothing else set.
     pub fn new(role: Role, count: u16) -> Self {
         NodeGroup {
@@ -302,6 +313,11 @@ impl PlannedNode {
     /// Whether the node is a mina daemon (has libp2p keys and peers).
     pub fn is_daemon(&self) -> bool {
         self.role.is_daemon()
+    }
+
+    /// Whether the node runs `mina-archive` (it has its port).
+    pub fn runs_archive(&self) -> bool {
+        self.archive_port.is_some()
     }
 
     pub fn needs_key(&self) -> bool {
@@ -465,9 +481,17 @@ impl NetworkSpec {
                     group.role
                 );
             }
-            if group.role != Role::Archive && group.archive_port.is_some() {
+            if group.role != Role::Standalone && group.archive {
                 bail!(
-                    "{:?} nodes: `archive_port` is for the archive node",
+                    "{:?} nodes: `archive` is for standalone nodes; add a node with \
+                     role = \"archive\" instead",
+                    group.role
+                );
+            }
+            if !group.runs_archive() && group.archive_port.is_some() {
+                bail!(
+                    "{:?} nodes: `archive_port` is for the archive node (or a standalone \
+                     node with archive = true)",
                     group.role
                 );
             }
@@ -512,7 +536,8 @@ impl NetworkSpec {
                     })
                     .collect();
                 nodes.push(PlannedNode {
-                    archive_port: (group.role == Role::Archive)
+                    archive_port: group
+                        .runs_archive()
                         .then(|| group.archive_port.unwrap_or(client_port + 5)),
                     name,
                     role: group.role,
@@ -530,13 +555,18 @@ impl NetworkSpec {
 
         // rosetta reads the archive database and a daemon's GraphQL API
         for role in [Role::Rosetta, Role::ArchiveNodeApi] {
-            if count(role) > 0 && count(Role::Archive) == 0 {
+            if count(role) > 0 && !self.has_archive() {
                 bail!(
-                    "{} needs an archive node; add a node with role = \"archive\"",
+                    "{} needs an archive node; add a node with role = \"archive\" \
+                     (or set archive = true on the standalone node)",
                     role.default_name()
                 );
             }
         }
+        let archive_daemon = nodes
+            .iter()
+            .find(|n| n.runs_archive())
+            .map(|n| n.name.clone());
         let groups = self
             .nodes
             .iter()
@@ -551,7 +581,7 @@ impl NetworkSpec {
             }
             let wanted = |d: &&(String, u16, Role)| match &group.node {
                 Some(name) => &d.0 == name,
-                None => d.2 == Role::Archive,
+                None => archive_daemon.as_ref() == Some(&d.0),
             };
             let (name, port, role) = daemons.iter().find(wanted).with_context(|| {
                 format!(
@@ -588,6 +618,12 @@ impl NetworkSpec {
         Ok(nodes)
     }
 
+    /// Whether a node runs `mina-archive`: the archive node, or a standalone
+    /// node with `archive = true`.
+    pub fn has_archive(&self) -> bool {
+        self.nodes.iter().any(NodeGroup::runs_archive)
+    }
+
     /// Names of the funded test accounts.
     pub fn ledger_accounts(&self) -> Vec<String> {
         (1..=self.ledger.accounts)
@@ -605,15 +641,15 @@ impl NetworkSpec {
 }
 
 /// A standalone node is the network's only daemon: next to it a spec has
-/// only an archive node and the services that are not daemons (rosetta, the
-/// archive node api).
+/// only the services that are not daemons (rosetta, the archive node api).
+/// It runs its own archive with `archive = true`.
 fn check_standalone_is_alone(nodes: &[PlannedNode]) -> Result<(), SpecError> {
     let Some(standalone) = nodes.iter().find(|n| n.role == Role::Standalone) else {
         return Ok(());
     };
     let others: Vec<String> = nodes
         .iter()
-        .filter(|n| n.is_daemon() && n.role != Role::Archive && n.name != standalone.name)
+        .filter(|n| n.is_daemon() && n.name != standalone.name)
         .map(|n| n.name.clone())
         .collect();
     if others.is_empty() {
@@ -862,8 +898,8 @@ mod tests {
         assert_eq!(
             err(standalone_and_a_producer),
             "'standalone-1' is a standalone node, the network's only daemon: \
-             remove bp-1, node-1 (only an archive node, rosetta and the archive \
-             node api can run next to it)"
+             remove bp-1, node-1 (only rosetta and the archive node api can run \
+             next to it; for an archive, set archive = true on it)"
         );
         let two_standalones = r#"
             [[nodes]]
@@ -876,6 +912,71 @@ mod tests {
             role = "block-producer"
             "#;
         assert!(err(no_seed).contains("(or \"standalone\")"));
+    }
+
+    #[test]
+    fn standalone_archive_is_its_own() {
+        let s = spec(
+            r#"
+            [[nodes]]
+            role = "standalone"
+            client_port = 3084
+            archive = true
+
+            [[nodes]]
+            role = "archive-node-api"
+            "#,
+        );
+        assert!(s.has_archive());
+        let plan = s.plan().unwrap();
+        assert_eq!(plan[0].archive_port, Some(3089));
+        assert!(plan[0].runs_archive());
+
+        let own_port = spec(
+            r#"
+            [[nodes]]
+            role = "standalone"
+            archive = true
+            archive_port = 3086
+            "#,
+        );
+        assert_eq!(own_port.plan().unwrap()[0].archive_port, Some(3086));
+
+        let err = |toml: &str| spec(toml).plan().unwrap_err().to_string();
+        let archive_node_next_to_it = r#"
+            [[nodes]]
+            role = "standalone"
+
+            [[nodes]]
+            role = "archive"
+            "#;
+        assert!(err(archive_node_next_to_it).contains(
+            "remove archive (only rosetta and the archive node api can run next \
+                       to it; for an archive, set archive = true on it)"
+        ));
+        let archive_on_a_producer = r#"
+            [[nodes]]
+            role = "seed"
+
+            [[nodes]]
+            role = "block-producer"
+            archive = true
+            "#;
+        assert!(err(archive_on_a_producer).contains("`archive` is for standalone nodes"));
+        let port_without_archive = r#"
+            [[nodes]]
+            role = "standalone"
+            archive_port = 3086
+            "#;
+        assert!(err(port_without_archive).contains("`archive_port` is for the archive node"));
+        let api_without_archive = r#"
+            [[nodes]]
+            role = "standalone"
+
+            [[nodes]]
+            role = "archive-node-api"
+            "#;
+        assert!(err(api_without_archive).contains("set archive = true on the standalone node"));
     }
 
     #[test]

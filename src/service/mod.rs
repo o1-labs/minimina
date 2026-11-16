@@ -152,11 +152,20 @@ impl ServiceConfig {
         )
     }
 
-    /// The first archive node; [`typed::check`] reports a second one.
+    /// Whether the service runs `mina-archive`: the archive node, or a
+    /// standalone node with an archive port.
+    pub fn runs_archive(&self) -> bool {
+        match self.service_type {
+            ServiceType::ArchiveNode => true,
+            ServiceType::Standalone => self.archive_port.is_some(),
+            _ => false,
+        }
+    }
+
+    /// The first service that runs `mina-archive`; [`typed::check`] reports a
+    /// second archive node.
     pub fn get_archive_node(services: &[Self]) -> Option<&Self> {
-        services
-            .iter()
-            .find(|s| s.service_type == ServiceType::ArchiveNode)
+        services.iter().find(|s| s.runs_archive())
     }
 
     /// The first uptime service backend; [`typed::check`] reports a second one.

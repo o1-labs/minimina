@@ -82,6 +82,7 @@ mod tests {
             balance: Some("5.5".parse().unwrap()),
             client_port: Some(4000),
             archive_port: Some(4005),
+            archive: true,
             workers: Some(2),
             fee: Some("0.1".into()),
             node: Some("bp-1".into()),
