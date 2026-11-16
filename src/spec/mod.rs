@@ -769,22 +769,50 @@ mod tests {
 
     #[test]
     fn archive_node_names_its_database() {
-        let s = spec(
-            "[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"archive\"\ndatabase = \"archive\"",
-        );
-        s.plan().unwrap();
-        assert_eq!(s.archive_database().map(|d| d.as_str()), Some("archive"));
-        assert_eq!(spec("[[nodes]]\nrole = \"seed\"").archive_database(), None);
+        let named = spec(
+            r#"
+            [[nodes]]
+            role = "seed"
 
-        let err = spec("[[nodes]]\nrole = \"seed\"\ndatabase = \"archive\"")
-            .plan()
-            .unwrap_err();
+            [[nodes]]
+            role = "archive"
+            database = "archive"
+            "#,
+        );
+        named.plan().unwrap();
+        assert_eq!(
+            named.archive_database().map(|d| d.as_str()),
+            Some("archive")
+        );
+
+        let unnamed = spec(
+            r#"
+            [[nodes]]
+            role = "seed"
+            "#,
+        );
+        assert_eq!(unnamed.archive_database(), None);
+
+        let on_a_seed = spec(
+            r#"
+            [[nodes]]
+            role = "seed"
+            database = "archive"
+            "#,
+        );
+        let err = on_a_seed.plan().unwrap_err();
         assert!(err
             .to_string()
             .contains("`database` is for the archive node"));
-        let err =
-            toml::from_str::<NetworkSpec>("[[nodes]]\nrole = \"archive\"\ndatabase = \"My-DB\"")
-                .unwrap_err();
+
+        let err = toml::from_str::<NetworkSpec>(
+            r#"
+            [[nodes]]
+            role = "archive"
+            database = "My-DB"
+            "#,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("database name 'My-DB'"), "{err}");
     }
 

@@ -838,6 +838,25 @@ fn docker_archive_create_fails_when_createdb_fails() {
     assert!(err.to_string().contains("container is not running"));
 }
 
+/// A seed and an archive whose database is named `archive`, written to
+/// `net.toml` in `dir`.
+fn named_archive_database_spec(dir: &Path) -> std::path::PathBuf {
+    let spec = dir.join("net.toml");
+    std::fs::write(
+        &spec,
+        r#"
+        [[nodes]]
+        role = "seed"
+
+        [[nodes]]
+        role = "archive"
+        database = "archive"
+        "#,
+    )
+    .unwrap();
+    spec
+}
+
 /// A native seed and archive whose spec names the archive database.
 fn create_named_archive_database(
     h: &Harness,
@@ -846,12 +865,7 @@ fn create_named_archive_database(
 ) -> anyhow::Result<()> {
     let bin = fake_mina_dir();
     let dir = tempfile::tempdir().unwrap();
-    let spec = dir.path().join("net.toml");
-    std::fs::write(
-        &spec,
-        "[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"archive\"\ndatabase = \"archive\"\n",
-    )
-    .unwrap();
+    let spec = named_archive_database_spec(dir.path());
     for i in 0..2 {
         h.fake
             .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");
@@ -933,12 +947,7 @@ fn native_archive_database_of_someone_else_is_not_dropped() {
 fn docker_network_keeps_its_archive_database_name() {
     let h = Harness::new();
     let dir = tempfile::tempdir().unwrap();
-    let spec = dir.path().join("net.toml");
-    std::fs::write(
-        &spec,
-        "[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"archive\"\ndatabase = \"archive\"\n",
-    )
-    .unwrap();
+    let spec = named_archive_database_spec(dir.path());
     h.docker_ok();
     let checks = h.fake.lines().len();
     let err = h
