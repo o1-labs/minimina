@@ -101,10 +101,7 @@ pub fn check_create(ctx: &Context, spec: &NetworkSpec) -> Result<Option<(Hardfor
             }
         },
     };
-    let archive_upgrade = match (
-        &postfork,
-        spec.nodes.iter().any(|g| g.role == Role::Archive),
-    ) {
+    let archive_upgrade = match (&postfork, spec.has_archive()) {
         (Some(postfork), true) => archive_upgrade_script(h, postfork)
             .map_err(|p| problems.push(p))
             .ok(),
@@ -218,7 +215,7 @@ fn check_postfork(
 ) -> Vec<String> {
     let has = |role| spec.nodes.iter().any(|g| g.role == role);
     let mut needed = vec![Binary::Mina];
-    if has(Role::Archive) {
+    if spec.has_archive() {
         needed.push(Binary::Archive);
         // manual mode: `hardfork prepare` and `apply` check and repair the archive
         if method.is_some() {

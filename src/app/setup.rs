@@ -251,22 +251,14 @@ fn spec_services(
                 libp2p_peerid: Some(peer_id(&node.name)?),
                 public_key_path: key.map(|k| k.key_path.clone()),
                 snark_worker_fee: node.fee.clone().or(Some(DEFAULT_SNARK_WORK_FEE.into())),
-                ..daemon(ServiceType::Standalone)?
+                ..with_archive(daemon(ServiceType::Standalone)?, node, archive_image)
             },
             Role::SnarkCoordinator => ServiceConfig {
                 snark_coordinator_fees: node.fee.clone().or(Some(DEFAULT_SNARK_WORK_FEE.into())),
                 worker_nodes: Some(node.workers.len() as u16),
                 ..daemon(ServiceType::SnarkCoordinator)?
             },
-            Role::Archive => ServiceConfig {
-                archive_docker_image: Some(archive_image.into()),
-                // replaced by the archive package's own copy when it has one
-                archive_schema_files: Some(vec![format!(
-                    "https://raw.githubusercontent.com/MinaProtocol/mina/{IMAGE_COMMIT_HASH}/src/app/archive/create_schema.sql"
-                )]),
-                archive_port: node.archive_port,
-                ..daemon(ServiceType::ArchiveNode)?
-            },
+            Role::Archive => with_archive(daemon(ServiceType::ArchiveNode)?, node, archive_image),
             Role::ArchiveNodeApi => {
                 let version = node
                     .version
@@ -332,6 +324,23 @@ fn spec_services(
         }
     }
     Ok(services)
+}
+
+/// `daemon` with the `mina-archive` of `node`, when it runs one: its port,
+/// image and schema.
+fn with_archive(daemon: ServiceConfig, node: &PlannedNode, archive_image: &str) -> ServiceConfig {
+    if !node.runs_archive() {
+        return daemon;
+    }
+    ServiceConfig {
+        archive_docker_image: Some(archive_image.into()),
+        // replaced by the archive package's own copy when it has one
+        archive_schema_files: Some(vec![format!(
+            "https://raw.githubusercontent.com/MinaProtocol/mina/{IMAGE_COMMIT_HASH}/src/app/archive/create_schema.sql"
+        )]),
+        archive_port: node.archive_port,
+        ..daemon
+    }
 }
 
 #[cfg(test)]
@@ -437,20 +446,22 @@ mod tests {
     }
 
     #[test]
-    fn standalone_is_the_seed_the_others_dial() {
+    fn standalone_runs_its_own_archive() {
         let spec: NetworkSpec = toml::from_str(
             r#"
             [[nodes]]
             role = "standalone"
             client_port = 3084
+            archive = true
 
             [[nodes]]
-            role = "archive"
+            role = "rosetta"
             "#,
         )
         .unwrap();
         let services = spec_services(&generated(spec), "net", ExecutionMode::Native).unwrap();
-        let (solo, archive) = (&services[0], &services[1]);
+        let (solo, rosetta) = (&services[0], &services[1]);
+        assert_eq!(services.len(), 2);
         assert_eq!(solo.service_type, ServiceType::Standalone);
         assert_eq!(solo.libp2p_peerid.as_deref(), Some("peer-standalone-1"));
         assert_eq!(solo.peers, None);
@@ -463,11 +474,35 @@ mod tests {
             solo.snark_worker_fee.as_deref(),
             Some(DEFAULT_SNARK_WORK_FEE)
         );
+        // mina-archive on client port + 5, with the schema the archive node gets
+        assert_eq!(solo.archive_port, Some(3089));
+        assert!(solo.archive_schema_files.is_some());
         assert_eq!(
-            archive.peers.as_deref(),
-            Some(&["/ip4/127.0.0.1/tcp/3086/p2p/peer-standalone-1".to_string()][..])
+            ServiceConfig::get_archive_node(&services).map(|s| s.service_name.as_str()),
+            Some("standalone-1")
         );
+        // rosetta reads the daemon that runs the archive
+        assert_eq!(
+            rosetta.rosetta_graphql_node.as_deref(),
+            Some("standalone-1")
+        );
+        assert_eq!(rosetta.rosetta_graphql_port, Some(3085));
         crate::service::typed::check::<crate::service::typed::Native>(&services).unwrap();
+    }
+
+    #[test]
+    fn standalone_without_archive_runs_none() {
+        let spec: NetworkSpec = toml::from_str(
+            r#"
+            [[nodes]]
+            role = "standalone"
+            "#,
+        )
+        .unwrap();
+        let services = spec_services(&generated(spec), "net", ExecutionMode::Native).unwrap();
+        assert_eq!(services[0].archive_port, None);
+        assert_eq!(services[0].archive_schema_files, None);
+        assert!(ServiceConfig::get_archive_node(&services).is_none());
     }
 
     #[test]

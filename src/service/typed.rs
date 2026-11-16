@@ -134,6 +134,8 @@ pub enum Role<M: Mode> {
         fee: String,
         /// Receives the snark fees: its block producer's public key.
         public_key: String,
+        /// `mina-archive` next to it, which it sends its blocks to.
+        archive: Option<ArchiveServer<M>>,
     },
     /// A daemon that sends its blocks to `mina-archive`.
     Archive {
@@ -142,6 +144,30 @@ pub enum Role<M: Mode> {
         /// Image of `mina-archive`.
         image: M::Image,
     },
+}
+
+/// A `mina-archive` process a daemon sends its blocks to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArchiveServer<M: Mode> {
+    /// Server port of `mina-archive`.
+    pub port: u16,
+    /// Image of `mina-archive`.
+    pub image: M::Image,
+}
+
+impl<M: Mode> Daemon<M> {
+    /// The `mina-archive` the daemon sends its blocks to: the archive node's,
+    /// or a standalone node's own.
+    pub fn archive_server(&self) -> Option<ArchiveServer<M>> {
+        match &self.role {
+            Role::Archive { port, image } => Some(ArchiveServer {
+                port: *port,
+                image: image.clone(),
+            }),
+            Role::Standalone { archive, .. } => archive.clone(),
+            _ => None,
+        }
+    }
 }
 
 /// Where a daemon finds the seeds.
@@ -218,9 +244,10 @@ impl<M: Mode> Service<M> {
             .is_some_and(|d| matches!(d.role, Role::Seed | Role::Standalone { .. }))
     }
 
+    /// Whether it runs `mina-archive`: the archive node, or a standalone node
+    /// with its own archive.
     pub fn is_archive(&self) -> bool {
-        self.daemon()
-            .is_some_and(|d| matches!(d.role, Role::Archive { .. }))
+        self.daemon().is_some_and(|d| d.archive_server().is_some())
     }
 }
 
@@ -348,9 +375,7 @@ pub fn check<M: Mode>(configs: &[ServiceConfig]) -> Result<Vec<Service<M>>, Inva
             .and_then(Service::daemon)
             .map(|d| d.client_port)
     };
-    let has_archive = configs
-        .iter()
-        .any(|c| c.service_type == ServiceType::ArchiveNode);
+    let has_archive = configs.iter().any(ServiceConfig::runs_archive);
 
     let mut others = Vec::new();
     for config in configs.iter().filter(|c| !is_daemon(c.service_type)) {
@@ -535,11 +560,17 @@ fn daemon<M: Mode>(check: &mut Check, config: &ServiceConfig) -> Option<Daemon<M
             let key = check.need(&block_producer_key(config), "public_key_path");
             let fee = check.need(&config.snark_worker_fee, "snark_worker_fee");
             let public_key = check.need(&config.public_key, "public_key");
+            // its own archive: the port says it has one, so it is not defaulted
+            let archive = config.archive_port.map(|port| {
+                M::image(check, &config.archive_docker_image, "archive_docker_image")
+                    .map(|image| ArchiveServer { port, image })
+            });
             (|| {
                 Some(Role::Standalone {
                     key: key?,
                     fee: fee?,
                     public_key: public_key?,
+                    archive: archive.map_or(Some(None), |a| a.map(Some))?,
                 })
             })()
         }
@@ -704,7 +735,41 @@ pub mod tests {
                 key: BlockProducerKey::Path("/keys/solo".into()),
                 fee: "0.001".into(),
                 public_key: "B62solo".into(),
+                archive: None,
             })
+        );
+        assert!(!services[0].is_archive());
+    }
+
+    #[test]
+    fn standalone_with_an_archive_port_runs_mina_archive() {
+        let mut standalone = config(ServiceType::Standalone, "solo");
+        standalone.client_port = Some(3084);
+        standalone.public_key_path = Some("/keys/solo".into());
+        standalone.snark_worker_fee = Some("0.001".into());
+        standalone.public_key = Some("B62solo".into());
+        standalone.archive_port = Some(3089);
+        assert!(standalone.runs_archive());
+        // docker mode needs the image of mina-archive
+        assert_eq!(
+            problems::<Docker>(&[ServiceConfig {
+                docker_image: Some("mina".into()),
+                ..standalone.clone()
+            }]),
+            ["'solo' has no archive_docker_image"]
+        );
+        let services = check::<Native>(&[standalone]).unwrap();
+        assert!(services[0].is_archive() && services[0].is_seed());
+        assert_eq!(
+            services[0].daemon().and_then(Daemon::archive_server),
+            Some(ArchiveServer {
+                port: 3089,
+                image: ()
+            })
+        );
+        assert_eq!(
+            archive_node(&services).map(|s| s.name.as_str()),
+            Some("solo")
         );
     }
 

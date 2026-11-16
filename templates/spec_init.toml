@@ -31,6 +31,7 @@ profile = {{ profile|toml }}
 {% when Role::Standalone -%}
 # A whole network in one daemon: a seed that produces blocks and does its own
 # snark work for `fee` MINA (default "{{ crate::spec::DEFAULT_SNARK_WORK_FEE }}").
+# `archive = true`: it runs mina-archive next to itself (`archive_port`).
 {% when Role::Rosetta -%}
 # Reads the archive and the GraphQL API of `node` (default: the archive).
 {% when Role::ArchiveNodeApi -%}
@@ -53,6 +54,9 @@ balance = {{ balance|toml }}
 {% endif -%}
 {% if let Some(port) = node.client_port -%}
 client_port = {{ port }}
+{% endif -%}
+{% if node.archive -%}
+archive = true
 {% endif -%}
 {% if let Some(port) = node.archive_port -%}
 archive_port = {{ port }}

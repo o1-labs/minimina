@@ -37,6 +37,7 @@ role = "archive-node-api"     # GraphQL over the archive database (events, actio
 # [[nodes]]
 # role = "standalone"
 # fee = "0.001"        # per snark work (default)
+# archive = true       # mina-archive next to it (archive_port: client port + 5)
 
 # [[nodes]]
 # role = "snark-coordinator"

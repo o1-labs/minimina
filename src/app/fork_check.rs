@@ -10,7 +10,7 @@ use crate::{
     load::{LoadStore, PaymentRecord},
     network_meta::{HardforkState, NetworkMeta},
     node_client,
-    service::{ServiceConfig, ServiceType},
+    service::ServiceConfig,
 };
 use anyhow::{Context as _, Result};
 use std::{
@@ -47,10 +47,7 @@ pub fn run(ctx: &Context, network_id: &str) -> Result<ForkReport> {
     let fork_accounts = fork_accounts(&network_path)?;
 
     let mut notes = Vec::new();
-    if !services
-        .iter()
-        .any(|s| s.service_type == ServiceType::ArchiveNode)
-    {
+    if !services.iter().any(ServiceConfig::runs_archive) {
         notes.push("no archive node: the ledger, archive and payment checks need one".into());
         return Ok(ForkReport::new(
             network_id,

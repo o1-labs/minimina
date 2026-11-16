@@ -10,7 +10,8 @@ pub enum SpecError {
     },
     #[error(
         "'{standalone}' is a standalone node, the network's only daemon: remove {} \
-         (only an archive node, rosetta and the archive node api can run next to it)",
+         (only rosetta and the archive node api can run next to it; for an archive, \
+         set archive = true on it)",
         .others.join(", ")
     )]
     StandaloneNotAlone {
