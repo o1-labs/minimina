@@ -7,8 +7,9 @@ use std::{io, path::PathBuf};
 pub enum AccountsManagerError {
     #[error(
         "the accounts manager needs more than {ACCOUNTS_KEPT} accounts with a private key, \
-         as it keeps {ACCOUNTS_KEPT} of them unused; the network has {found}: add \
-         `accounts` in [ledger], or accounts with a private key to its file"
+         as it keeps {ACCOUNTS_KEPT} of them unused; the network has {found}: give \
+         accounts with their private key (`sk`) in [ledger] file, or test accounts \
+         with `accounts`"
     )]
     TooFewAccounts { found: usize },
     #[error(

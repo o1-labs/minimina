@@ -72,8 +72,8 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "the accounts manager needs more than 10 accounts with a private key, \
-             as it keeps 10 of them unused; the network has 10: add `accounts` in \
-             [ledger], or accounts with a private key to its file"
+             as it keeps 10 of them unused; the network has 10: give accounts with \
+             their private key (`sk`) in [ledger] file, or test accounts with `accounts`"
         );
 
         let dir = tempfile::tempdir().unwrap();

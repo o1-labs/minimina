@@ -196,23 +196,29 @@ funded accounts out to tests (`GET /acquire-account`, `PUT /release-account`;
 o1js `Lightnet.acquireKeyPair` asks it). Native mode only: it asks the GraphQL
 API of a daemon on localhost (`node`, default: the first daemon of the spec).
 
+Its accounts are best given, as the lightnet docker image ships them: a ledger
+file whose accounts have their private key (`sk`) and their own balance, and a
+directory of their key files named by public key. Nothing is generated, so
+`network create` takes no longer with a thousand accounts than with one.
+
 ```toml
 [[nodes]]
 role = "accounts-manager"
 client_port = 8181        # its HTTP API
+keys = "key-pairs"        # key files of the ledger file's accounts, named by public key
 # node = "bp-1"           # the daemon it asks
-# keys = "key-pairs"      # key files of the [ledger] file's accounts, named by public key
 # version = "0.1.2"       # its GitHub release; `bin` runs your own build
 
 [ledger]
-accounts = 12             # needs more than 10 accounts with a private key
+file = "daemon.json"      # accounts with `pk`, `sk` and `balance`
 ```
 
-- It hands out the test accounts (`accounts`), whose private keys minimina
-  reads at create (`mina advanced dump-keypair`), and the accounts of
-  `[ledger] file` that have a private key (`sk`, or the `private_key` column).
-  It keeps 10 of them unused, so `network create` refuses a network with 10 or
-  fewer.
+- It hands out the accounts of `[ledger] file` that have a private key (`sk`,
+  or the `private_key` column of a CSV file). It keeps 10 of them unused, so
+  `network create` refuses a network with 10 or fewer.
+- It also hands out the test accounts (`accounts = N`). minimina generates
+  them and reads their private keys at create (`mina advanced dump-keypair`):
+  two mina runs per account, so this suits a few accounts, not hundreds.
 - minimina downloads the release binary for the host once into
   `~/.minimina/.tools/accounts-manager/<version>`, checked against the SHA-256
   GitHub gives for it.
