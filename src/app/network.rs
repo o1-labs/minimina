@@ -21,6 +21,7 @@ use crate::{
         typed::{self, Docker, Native},
         ServiceConfig, ServiceType,
     },
+    spec::archive_database::{ArchiveDatabase, ArchiveDatabaseError},
     utils::{self, fetch_schema, is_remote_schema, TIMEOUT_IN_SECS},
 };
 use anyhow::{bail, ensure, Context as _, Result};
@@ -37,10 +38,15 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             // everything given is read and checked before the old network is gone
             let inputs = CreateInputs::read(&cmd)?;
             let hardfork = hardfork::check_create(ctx, &inputs.spec)?;
+            let archive_database = inputs.spec.archive_database().cloned();
+            if archive_database.is_some() && ctx.mode == ExecutionMode::Docker {
+                return Err(ArchiveDatabaseError::DockerMode.into());
+            }
             check_setup_network(ctx, &docker, &network_id)?;
             let network_path = ctx.dirs.network_path(&network_id);
             let mut meta = ctx.meta();
             meta.genesis_pending = true;
+            meta.archive_database = archive_database.clone();
             meta.hardfork = hardfork.as_ref().map(|(h, _)| h.clone());
             meta.save(&network_path)
                 .context("Failed to record network mode")?;
@@ -83,7 +89,7 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
                     native
                         .generate_config(&services)
                         .context("Failed to generate native config")?;
-                    create_network_native(ctx, &network_id, &services)
+                    create_network_native(ctx, &network_id, &services, archive_database)
                 }
             }
         }
@@ -489,6 +495,7 @@ fn create_network_native(
     ctx: &Context,
     network_id: &str,
     services: &[ServiceConfig],
+    archive_database: Option<ArchiveDatabase>,
 ) -> Result<()> {
     if let Some(config) =
         mina_locator::installed_network_config(ctx.runner.as_ref(), ctx.bin_path()?, ctx.profile)
@@ -507,14 +514,27 @@ fn create_network_native(
         default::LedgerGenerator::generate_replayer_input(&network_path)?;
 
         // the database belongs to this network, so `create` starts it fresh
-        let native = ctx.native(network_id)?;
+        let native = ctx
+            .native(network_id)?
+            .with_archive_database(archive_database.clone());
         let db = native.archive_db_name();
         info!("Creating archive database '{db}' on {}", ctx.postgres_uri);
         let admin = native.maintenance_db_uri();
+        if let Some(database) = &archive_database {
+            check_archive_database_owner(ctx, &admin, database, network_id)?;
+        }
+        let owner = archive_database
+            .is_some()
+            .then(|| ArchiveDatabase::owner_comment(network_id));
+        let comment =
+            owner.map(|c| format!("COMMENT ON DATABASE {db} IS '{}'", c.replace('\'', "''")));
         for sql in [
             format!("DROP DATABASE IF EXISTS {db}"),
             format!("CREATE DATABASE {db}"),
-        ] {
+        ]
+        .into_iter()
+        .chain(comment)
+        {
             let out = ctx.runner.run(
                 "psql".as_ref(),
                 &[&admin, "-v", "ON_ERROR_STOP=1", "-c", &sql],
@@ -680,4 +700,31 @@ fn apply_schema_scripts(
 fn utf8(path: &Path) -> Result<&str> {
     path.to_str()
         .with_context(|| format!("path '{}' is not valid UTF-8", path.display()))
+}
+
+/// A database the spec names may be an existing one minimina did not
+/// create: `network create` drops only a database whose comment says it
+/// created it for this network.
+fn check_archive_database_owner(
+    ctx: &Context,
+    admin_uri: &str,
+    database: &ArchiveDatabase,
+    network_id: &str,
+) -> Result<()> {
+    let query = format!(
+        "SELECT coalesce(shobj_description(oid, 'pg_database'), '') FROM pg_database \
+         WHERE datname = '{database}'"
+    );
+    let out = ctx.runner.run(
+        "psql".as_ref(),
+        &[admin_uri, "-v", "ON_ERROR_STOP=1", "-tA", "-c", &query],
+        &[],
+    )?;
+    let out = check(out, "looking up the archive database")?;
+    let rows = String::from_utf8_lossy(&out.stdout);
+    match rows.lines().next() {
+        // no such database: nothing to drop
+        None => Ok(()),
+        Some(comment) => Ok(database.check_owner(network_id, comment.trim())?),
+    }
 }

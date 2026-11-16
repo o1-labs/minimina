@@ -21,6 +21,7 @@ role = "plain"                # follows the chain, produces no blocks
 
 [[nodes]]
 role = "archive"              # + mina-archive and a postgres database
+# database = "archive"        # native mode: its name (default: minimina_<network id>)
 
 [[nodes]]
 role = "rosetta"              # mina-rosetta: reads the archive database and

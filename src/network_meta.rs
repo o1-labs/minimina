@@ -3,6 +3,7 @@
 use crate::cli::{ExecutionMode, Profile};
 use crate::daemon_args::DaemonFeatures;
 use crate::hardfork::{ForkMethod, HardforkMode};
+use crate::spec::archive_database::ArchiveDatabase;
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
@@ -23,6 +24,10 @@ pub struct NetworkMeta {
     /// Postgres server URI without database (native archive nodes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub postgres_uri: Option<String>,
+    /// The archive database, when the spec names it (native mode); else
+    /// `minimina_<network id>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_database: Option<ArchiveDatabase>,
     /// Build profile of the mina processes; networks created before it was
     /// recorded use the default.
     #[serde(default)]
@@ -122,6 +127,7 @@ mod tests {
             bin_path: Some("/usr/bin".into()),
             mina_version: Some("4.0.2-84b8d96".into()),
             postgres_uri: None,
+            archive_database: Some("archive".parse().unwrap()),
             profile: Profile::Lightnet,
             features: DaemonFeatures {
                 precomputed_blocks_dir: true,
@@ -148,6 +154,7 @@ mod tests {
         let raw = fs::read_to_string(dir.path().join(FILE)).unwrap();
         assert!(raw.contains("\"mode\": \"native\""));
         assert!(!raw.contains("postgres_uri"));
+        assert!(raw.contains("\"archive_database\": \"archive\""));
         assert!(raw.contains("\"profile\": \"lightnet\""));
     }
 
