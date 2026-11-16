@@ -126,6 +126,15 @@ pub enum Role<M: Mode> {
         /// Receives the snark fees.
         public_key: String,
     },
+    /// A seed that produces blocks and does its own snark work: a network of
+    /// one daemon.
+    Standalone {
+        key: BlockProducerKey,
+        /// Fee per snark work.
+        fee: String,
+        /// Receives the snark fees: its block producer's public key.
+        public_key: String,
+    },
     /// A daemon that sends its blocks to `mina-archive`.
     Archive {
         /// Server port of `mina-archive`.
@@ -203,8 +212,10 @@ impl<M: Mode> Service<M> {
         }
     }
 
+    /// Whether the other daemons dial it: a seed, or a standalone node.
     pub fn is_seed(&self) -> bool {
-        self.daemon().is_some_and(|d| matches!(d.role, Role::Seed))
+        self.daemon()
+            .is_some_and(|d| matches!(d.role, Role::Seed | Role::Standalone { .. }))
     }
 
     pub fn is_archive(&self) -> bool {
@@ -480,8 +491,19 @@ fn is_daemon(service_type: ServiceType) -> bool {
             | ServiceType::BlockProducer
             | ServiceType::PlainNode
             | ServiceType::SnarkCoordinator
+            | ServiceType::Standalone
             | ServiceType::ArchiveNode
     )
+}
+
+/// The block producer key of a config: a topology key file, or the path key
+/// generation left.
+fn block_producer_key(config: &ServiceConfig) -> Option<BlockProducerKey> {
+    match (&config.private_key_path, &config.public_key_path) {
+        (Some(_), _) => Some(BlockProducerKey::File),
+        (None, Some(path)) => Some(BlockProducerKey::Path(path.clone())),
+        (None, None) => None,
+    }
 }
 
 fn daemon<M: Mode>(check: &mut Check, config: &ServiceConfig) -> Option<Daemon<M>> {
@@ -496,11 +518,7 @@ fn daemon<M: Mode>(check: &mut Check, config: &ServiceConfig) -> Option<Daemon<M
     let role = match config.service_type {
         ServiceType::Seed => Some(Role::Seed),
         ServiceType::BlockProducer => Some(Role::BlockProducer {
-            key: match (&config.private_key_path, &config.public_key_path) {
-                (Some(_), _) => Some(BlockProducerKey::File),
-                (None, Some(path)) => Some(BlockProducerKey::Path(path.clone())),
-                (None, None) => None,
-            },
+            key: block_producer_key(config),
         }),
         ServiceType::PlainNode => Some(Role::Plain),
         ServiceType::SnarkCoordinator => {
@@ -508,6 +526,18 @@ fn daemon<M: Mode>(check: &mut Check, config: &ServiceConfig) -> Option<Daemon<M
             let public_key = check.need(&config.public_key, "public_key");
             (|| {
                 Some(Role::SnarkCoordinator {
+                    fee: fee?,
+                    public_key: public_key?,
+                })
+            })()
+        }
+        ServiceType::Standalone => {
+            let key = check.need(&block_producer_key(config), "public_key_path");
+            let fee = check.need(&config.snark_worker_fee, "snark_worker_fee");
+            let public_key = check.need(&config.public_key, "public_key");
+            (|| {
+                Some(Role::Standalone {
+                    key: key?,
                     fee: fee?,
                     public_key: public_key?,
                 })
@@ -649,6 +679,33 @@ pub mod tests {
             ),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn standalone_needs_its_key_fee_and_public_key() {
+        let mut standalone = config(ServiceType::Standalone, "solo");
+        standalone.client_port = Some(3084);
+        assert_eq!(
+            problems::<Native>(&[standalone.clone()]),
+            [
+                "'solo' has no public_key_path",
+                "'solo' has no snark_worker_fee",
+                "'solo' has no public_key"
+            ]
+        );
+        standalone.public_key_path = Some("/keys/solo".into());
+        standalone.snark_worker_fee = Some("0.001".into());
+        standalone.public_key = Some("B62solo".into());
+        let services = check::<Native>(&[standalone]).unwrap();
+        assert!(services[0].is_seed());
+        assert_eq!(
+            services[0].daemon().map(|d| &d.role),
+            Some(&Role::Standalone {
+                key: BlockProducerKey::Path("/keys/solo".into()),
+                fee: "0.001".into(),
+                public_key: "B62solo".into(),
+            })
+        );
     }
 
     #[test]

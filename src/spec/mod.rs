@@ -75,6 +75,8 @@ pub const DEFAULT_BLOCK_PRODUCER_BALANCE: u64 = 11_550_000;
 /// account creation fee, 1 MINA): a smaller fee is refused, so its work never
 /// reaches the snark pool and blocks stay empty once the scan state is full.
 pub const DEFAULT_SNARK_COORDINATOR_BALANCE: u64 = 1000;
+/// MINA per snark work of a snark coordinator or standalone node that sets no `fee`.
+pub const DEFAULT_SNARK_WORK_FEE: &str = "0.001";
 /// Genesis balance in MINA of the funded test accounts of a spec that sets none.
 pub const DEFAULT_ACCOUNT_BALANCE: u64 = 1000;
 /// First client port of automatically placed daemons; each takes `PORT_STEP` ports.
@@ -107,6 +109,10 @@ pub enum Role {
     Plain,
     Archive,
     SnarkCoordinator,
+    /// One daemon that is a whole network: a seed that produces blocks and
+    /// does its own snark work (`-demo-mode`, so it counts as synced without
+    /// peers).
+    Standalone,
     /// `mina-rosetta`, not a daemon: needs an archive node.
     Rosetta,
     /// Archive Node API (GraphQL over the archive database), not a daemon:
@@ -125,6 +131,7 @@ impl Role {
             Role::Plain => "node",
             Role::Archive => "archive",
             Role::SnarkCoordinator => "snark-coordinator",
+            Role::Standalone => "standalone",
             Role::Rosetta => "rosetta",
             Role::ArchiveNodeApi => "archive-node-api",
             Role::UptimeServiceBackend => "uptime-service-backend",
@@ -137,7 +144,9 @@ impl Role {
     /// ([`DEFAULT_SNARK_COORDINATOR_BALANCE`]); other nodes get no account.
     pub fn default_balance(&self) -> Option<Balance> {
         match self {
-            Role::BlockProducer => Some(Balance::mina(DEFAULT_BLOCK_PRODUCER_BALANCE)),
+            Role::BlockProducer | Role::Standalone => {
+                Some(Balance::mina(DEFAULT_BLOCK_PRODUCER_BALANCE))
+            }
             Role::SnarkCoordinator => Some(Balance::mina(DEFAULT_SNARK_COORDINATOR_BALANCE)),
             _ => None,
         }
@@ -150,6 +159,16 @@ impl Role {
             self,
             Role::Rosetta | Role::ArchiveNodeApi | Role::UptimeServiceBackend
         )
+    }
+
+    /// Whether nodes of the role are seeds: the other daemons dial them.
+    pub fn is_seed(&self) -> bool {
+        matches!(self, Role::Seed | Role::Standalone)
+    }
+
+    /// Whether nodes of the role do snark work for a fee (`fee`).
+    pub fn does_snark_work(&self) -> bool {
+        matches!(self, Role::SnarkCoordinator | Role::Standalone)
     }
 }
 
@@ -169,7 +188,7 @@ pub struct NodeGroup {
     pub archive_port: Option<u16>,
     /// Snark coordinator: number of snark workers.
     pub workers: Option<u16>,
-    /// Snark coordinator: fee per snark work.
+    /// Snark coordinator, standalone: fee per snark work.
     pub fee: Option<String>,
     /// Rosetta: the daemon whose GraphQL API it reads. Default: the archive node.
     pub node: Option<String>,
@@ -285,7 +304,10 @@ impl PlannedNode {
     }
 
     pub fn needs_key(&self) -> bool {
-        matches!(self.role, Role::BlockProducer | Role::SnarkCoordinator) || self.balance.is_some()
+        matches!(
+            self.role,
+            Role::BlockProducer | Role::SnarkCoordinator | Role::Standalone
+        ) || self.balance.is_some()
     }
 }
 
@@ -387,8 +409,11 @@ impl NetworkSpec {
                 .map(|g| g.count as usize)
                 .sum::<usize>()
         };
-        if count(Role::Seed) == 0 {
-            bail!("the network spec has no seed; add a node with role = \"seed\"");
+        if count(Role::Seed) + count(Role::Standalone) == 0 {
+            bail!(
+                "the network spec has no seed; add a node with role = \"seed\" \
+                 (or \"standalone\")"
+            );
         }
         for role in [
             Role::Archive,
@@ -427,11 +452,15 @@ impl NetworkSpec {
                     group.role
                 );
             }
-            if group.role != Role::SnarkCoordinator
-                && (group.workers.is_some() || group.fee.is_some())
-            {
+            if group.role != Role::SnarkCoordinator && group.workers.is_some() {
                 bail!(
-                    "{:?} nodes: `workers` and `fee` are for snark coordinators",
+                    "{:?} nodes: `workers` is for snark coordinators",
+                    group.role
+                );
+            }
+            if !group.role.does_snark_work() && group.fee.is_some() {
+                bail!(
+                    "{:?} nodes: `fee` is for snark coordinators and standalone nodes",
                     group.role
                 );
             }
@@ -748,6 +777,60 @@ mod tests {
         );
         assert!(err("[[nodes]]\nrole = \"seed\"\nversion = \"2\"")
             .contains("are for the archive node api"));
+    }
+
+    #[test]
+    fn standalone_is_a_network_of_one_daemon() {
+        let s = spec(
+            r#"
+            [[nodes]]
+            role = "standalone"
+            client_port = 3084
+            "#,
+        );
+        let plan = s.plan().unwrap();
+        assert_eq!(plan.len(), 1);
+        let solo = &plan[0];
+        assert_eq!(solo.name, "standalone-1");
+        assert_eq!(solo.client_port, 3084);
+        assert_eq!(solo.balance.as_ref().map(Balance::as_str), Some("11550000"));
+        assert!(solo.is_daemon() && solo.needs_key() && solo.role.is_seed());
+
+        let with_fee = spec(
+            r#"
+            [[nodes]]
+            role = "standalone"
+            fee = "0.01"
+            "#,
+        );
+        assert_eq!(with_fee.plan().unwrap()[0].fee.as_deref(), Some("0.01"));
+    }
+
+    #[test]
+    fn fee_and_workers_belong_to_the_nodes_that_do_snark_work() {
+        let err = |toml: &str| spec(toml).plan().unwrap_err().to_string();
+        let fee_on_a_producer = r#"
+            [[nodes]]
+            role = "seed"
+
+            [[nodes]]
+            role = "block-producer"
+            fee = "0.01"
+            "#;
+        assert!(
+            err(fee_on_a_producer).contains("`fee` is for snark coordinators and standalone nodes")
+        );
+        let workers_on_a_standalone = r#"
+            [[nodes]]
+            role = "standalone"
+            workers = 1
+            "#;
+        assert!(err(workers_on_a_standalone).contains("`workers` is for snark coordinators"));
+        let no_seed = r#"
+            [[nodes]]
+            role = "block-producer"
+            "#;
+        assert!(err(no_seed).contains("(or \"standalone\")"));
     }
 
     #[test]

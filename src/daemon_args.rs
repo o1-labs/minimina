@@ -176,6 +176,22 @@ impl Layout<'_> {
                 }
             }
             Role::Plain => self.add_peers(name, &daemon.peers, &mut args),
+            Role::Standalone {
+                key,
+                fee,
+                public_key,
+            } => {
+                args.push("-seed".to_string());
+                // no peers to sync from: it counts as synced from the start
+                args.push("-demo-mode".to_string());
+                arg(
+                    &mut args,
+                    "-block-producer-key",
+                    self.block_producer_key(name, key),
+                );
+                arg(&mut args, "-run-snark-worker", public_key.clone());
+                arg(&mut args, "-snark-worker-fee", fee.clone());
+            }
             Role::SnarkCoordinator { fee, public_key } => {
                 arg(&mut args, "-work-selection", "seq");
                 self.add_peers(name, &daemon.peers, &mut args);
@@ -404,6 +420,30 @@ mod tests {
         assert_eq!(value_of(&args, "-snark-worker-fee"), Some("0.001"));
         assert_eq!(value_of(&args, "-run-snark-coordinator"), Some("B62"));
         assert_eq!(value_of(&args, "-work-selection"), Some("seq"));
+    }
+
+    #[test]
+    fn standalone_is_a_seed_that_produces_blocks_and_does_snark_work() {
+        let standalone = node(
+            "solo",
+            Role::Standalone {
+                key: BlockProducerKey::File,
+                fee: "0.001".into(),
+                public_key: "B62solo".into(),
+            },
+        );
+        let args = args(&standalone, ExecutionMode::Native);
+        assert!(args.contains(&"-seed".to_string()));
+        assert!(args.contains(&"-demo-mode".to_string()));
+        assert_eq!(
+            value_of(&args, "-block-producer-key"),
+            Some("/n/network-keypairs/solo.json")
+        );
+        assert_eq!(value_of(&args, "-run-snark-worker"), Some("B62solo"));
+        assert_eq!(value_of(&args, "-snark-worker-fee"), Some("0.001"));
+        // a seed: no peers to dial
+        assert_eq!(value_of(&args, "-peer"), None);
+        assert_eq!(value_of(&args, "-peer-list-file"), None);
     }
 
     #[test]

@@ -24,6 +24,9 @@ pub enum ServiceType {
     SnarkWorker,
     #[serde(rename = "Snark_coordinator")]
     SnarkCoordinator,
+    /// A seed that produces blocks and does its own snark work.
+    #[serde(rename = "Standalone_node")]
+    Standalone,
     #[serde(rename = "Archive_node")]
     ArchiveNode,
     #[serde(rename = "Uptime_service_backend")]
@@ -58,6 +61,9 @@ pub struct ServiceConfig {
     //snark coordinator specific
     pub snark_coordinator_fees: Option<String>,
     pub worker_nodes: Option<u16>,
+
+    //standalone specific: the fee of its own snark work
+    pub snark_worker_fee: Option<String>,
 
     //snark worker specific
     pub snark_worker_proof_level: Option<String>,
@@ -141,6 +147,7 @@ impl ServiceConfig {
                 | ServiceType::BlockProducer
                 | ServiceType::PlainNode
                 | ServiceType::SnarkCoordinator
+                | ServiceType::Standalone
                 | ServiceType::ArchiveNode
         )
     }

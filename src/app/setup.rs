@@ -14,7 +14,7 @@ use crate::{
     service::{ServiceConfig, ServiceType},
     spec::{
         ledger::{Balance, LedgerAccount, PublicKey},
-        NetworkSpec, PlannedNode, Role, DEFAULT_ACCOUNT_BALANCE,
+        NetworkSpec, PlannedNode, Role, DEFAULT_ACCOUNT_BALANCE, DEFAULT_SNARK_WORK_FEE,
     },
 };
 use anyhow::{Context as _, Result};
@@ -205,7 +205,7 @@ fn spec_services(
     };
 
     let mut peers = Vec::new();
-    for seed in net.nodes.iter().filter(|n| n.role == Role::Seed) {
+    for seed in net.nodes.iter().filter(|n| n.role.is_seed()) {
         peers.push(ServiceConfig::generate_peer(
             &seed.name,
             network_id,
@@ -233,7 +233,7 @@ fn spec_services(
                 client_port: Some(node.client_port),
                 public_key: key.map(|k| k.key_string.clone()),
                 libp2p_keypair: Some(libp2p(&node.name)?.key_string.clone()),
-                peers: (service_type != ServiceType::Seed).then(|| peers.clone()),
+                peers: (!node.role.is_seed()).then(|| peers.clone()),
                 ..Default::default()
             })
         };
@@ -247,8 +247,14 @@ fn spec_services(
                 ..daemon(ServiceType::BlockProducer)?
             },
             Role::Plain => daemon(ServiceType::PlainNode)?,
+            Role::Standalone => ServiceConfig {
+                libp2p_peerid: Some(peer_id(&node.name)?),
+                public_key_path: key.map(|k| k.key_path.clone()),
+                snark_worker_fee: node.fee.clone().or(Some(DEFAULT_SNARK_WORK_FEE.into())),
+                ..daemon(ServiceType::Standalone)?
+            },
             Role::SnarkCoordinator => ServiceConfig {
-                snark_coordinator_fees: node.fee.clone().or(Some("0.001".into())),
+                snark_coordinator_fees: node.fee.clone().or(Some(DEFAULT_SNARK_WORK_FEE.into())),
                 worker_nodes: Some(node.workers.len() as u16),
                 ..daemon(ServiceType::SnarkCoordinator)?
             },
@@ -428,6 +434,40 @@ mod tests {
         );
         assert_eq!(services[1].public_key, None);
         assert_eq!(services[1].docker_image.as_deref(), Some("img"));
+    }
+
+    #[test]
+    fn standalone_is_the_seed_the_others_dial() {
+        let spec: NetworkSpec = toml::from_str(
+            r#"
+            [[nodes]]
+            role = "standalone"
+            client_port = 3084
+
+            [[nodes]]
+            role = "archive"
+            "#,
+        )
+        .unwrap();
+        let services = spec_services(&generated(spec), "net", ExecutionMode::Native).unwrap();
+        let (solo, archive) = (&services[0], &services[1]);
+        assert_eq!(solo.service_type, ServiceType::Standalone);
+        assert_eq!(solo.libp2p_peerid.as_deref(), Some("peer-standalone-1"));
+        assert_eq!(solo.peers, None);
+        assert_eq!(solo.public_key.as_deref(), Some("B62standalone-1"));
+        assert_eq!(
+            solo.public_key_path.as_deref(),
+            Some("/keys/B62standalone-1")
+        );
+        assert_eq!(
+            solo.snark_worker_fee.as_deref(),
+            Some(DEFAULT_SNARK_WORK_FEE)
+        );
+        assert_eq!(
+            archive.peers.as_deref(),
+            Some(&["/ip4/127.0.0.1/tcp/3086/p2p/peer-standalone-1".to_string()][..])
+        );
+        crate::service::typed::check::<crate::service::typed::Native>(&services).unwrap();
     }
 
     #[test]

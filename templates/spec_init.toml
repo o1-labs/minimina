@@ -27,6 +27,9 @@ profile = {{ profile|toml }}
 # A daemon with mina-archive and a postgres database.
 {% when Role::SnarkCoordinator -%}
 # Hands out snark work to `workers` snark workers; `fee`: MINA per snark work.
+{% when Role::Standalone -%}
+# A whole network in one daemon: a seed that produces blocks and does its own
+# snark work for `fee` MINA (default "{{ crate::spec::DEFAULT_SNARK_WORK_FEE }}").
 {% when Role::Rosetta -%}
 # Reads the archive and the GraphQL API of `node` (default: the archive).
 {% when Role::ArchiveNodeApi -%}
