@@ -8,6 +8,16 @@ pub enum SpecError {
         file: PathBuf,
         problem: LedgerProblem,
     },
+    #[error(
+        "'{standalone}' is a standalone node, the network's only daemon: remove {} \
+         (only an archive node, rosetta and the archive node api can run next to it)",
+        .others.join(", ")
+    )]
+    StandaloneNotAlone {
+        standalone: String,
+        /// The other daemons of the spec.
+        others: Vec<String>,
+    },
 }
 
 /// What is wrong with a ledger file (see [`super::ledger`]).

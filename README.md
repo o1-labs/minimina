@@ -175,7 +175,10 @@ A `standalone` node is a whole network in one daemon: a seed (`-seed`) that
 produces blocks with its own key and does its own snark work
 (`-run-snark-worker` with that key, `fee` per work, default `0.001`). It runs
 with `-demo-mode`, so it counts as synced without peers. A spec with only a
-`standalone` node is a valid network; other daemons dial it as their seed.
+`standalone` node is a valid network, and it stays the network's only daemon:
+next to it a spec can only have an archive node, rosetta and the archive node
+api; `network create` refuses any other daemon. (The archive node runs a
+daemon of its own, which dials the standalone node as its seed.)
 
 ```toml
 [[nodes]]

@@ -164,7 +164,8 @@ impl Role {
         )
     }
 
-    /// Whether nodes of the role are seeds: the other daemons dial them.
+    /// Whether nodes of the role are seeds: the other daemons (with a
+    /// standalone node, only the archive's) dial them.
     pub fn is_seed(&self) -> bool {
         matches!(self, Role::Seed | Role::Standalone)
     }
@@ -592,6 +593,7 @@ impl NetworkSpec {
                 );
             }
         }
+        check_standalone_is_alone(&nodes)?;
         Ok(nodes)
     }
 
@@ -617,6 +619,27 @@ impl NetworkSpec {
             .map(|t| serde_json::to_value(t).context("runtime_config is not valid JSON"))
             .transpose()
     }
+}
+
+/// A standalone node is the network's only daemon: next to it a spec has
+/// only an archive node and the services that are not daemons (rosetta, the
+/// archive node api).
+fn check_standalone_is_alone(nodes: &[PlannedNode]) -> Result<(), SpecError> {
+    let Some(standalone) = nodes.iter().find(|n| n.role == Role::Standalone) else {
+        return Ok(());
+    };
+    let others: Vec<String> = nodes
+        .iter()
+        .filter(|n| n.is_daemon() && n.role != Role::Archive && n.name != standalone.name)
+        .map(|n| n.name.clone())
+        .collect();
+    if others.is_empty() {
+        return Ok(());
+    }
+    Err(SpecError::StandaloneNotAlone {
+        standalone: standalone.name.clone(),
+        others,
+    })
 }
 
 /// The uptime files of `group`: required of the uptime service backend, and
@@ -892,6 +915,28 @@ mod tests {
             workers = 1
             "#;
         assert!(err(workers_on_a_standalone).contains("`workers` is for snark coordinators"));
+        let standalone_and_a_producer = r#"
+            [[nodes]]
+            role = "standalone"
+
+            [[nodes]]
+            role = "block-producer"
+
+            [[nodes]]
+            role = "plain"
+            "#;
+        assert_eq!(
+            err(standalone_and_a_producer),
+            "'standalone-1' is a standalone node, the network's only daemon: \
+             remove bp-1, node-1 (only an archive node, rosetta and the archive \
+             node api can run next to it)"
+        );
+        let two_standalones = r#"
+            [[nodes]]
+            role = "standalone"
+            count = 2
+            "#;
+        assert!(err(two_standalones).contains("remove standalone-2 "));
         let no_seed = r#"
             [[nodes]]
             role = "block-producer"
