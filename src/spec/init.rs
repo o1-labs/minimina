@@ -83,7 +83,6 @@ mod tests {
             client_port: Some(4000),
             archive_port: Some(4005),
             database: Some("archive".parse().unwrap()),
-            archive: true,
             workers: Some(2),
             fee: Some("0.1".into()),
             node: Some("bp-1".into()),

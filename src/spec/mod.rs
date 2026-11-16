@@ -56,6 +56,7 @@ mod error;
 pub mod flags;
 pub mod init;
 pub mod ledger;
+mod ports;
 mod uptime;
 
 use archive_database::ArchiveDatabase;
@@ -192,10 +193,6 @@ pub struct NodeGroup {
     pub archive_port: Option<u16>,
     /// Archive node, native mode: its database. Default: `minimina_<network id>`.
     pub database: Option<ArchiveDatabase>,
-    /// Standalone node: runs `mina-archive` next to itself and sends it its
-    /// blocks, so the network keeps one daemon.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub archive: bool,
     /// Snark coordinator: number of snark workers.
     pub workers: Option<u16>,
     /// Snark coordinator, standalone: fee per snark work.
@@ -233,7 +230,6 @@ impl Default for NodeGroup {
             client_port: None,
             archive_port: None,
             database: None,
-            archive: false,
             workers: None,
             fee: None,
             node: None,
@@ -247,12 +243,6 @@ impl Default for NodeGroup {
 }
 
 impl NodeGroup {
-    /// Whether the nodes run `mina-archive`: the archive node, or a
-    /// standalone node with `archive = true`.
-    pub fn runs_archive(&self) -> bool {
-        self.role == Role::Archive || (self.role == Role::Standalone && self.archive)
-    }
-
     /// `count` nodes of `role`, with nothing else set.
     pub fn new(role: Role, count: u16) -> Self {
         NodeGroup {
@@ -321,7 +311,8 @@ impl PlannedNode {
         self.role.is_daemon()
     }
 
-    /// Whether the node runs `mina-archive` (it has its port).
+    /// Whether the node runs `mina-archive`: the archive node, or a
+    /// standalone node with the archive node attached.
     pub fn runs_archive(&self) -> bool {
         self.archive_port.is_some()
     }
@@ -465,6 +456,9 @@ impl NetworkSpec {
 
         let mut index = std::collections::HashMap::<&str, usize>::new();
         let mut nodes = Vec::new();
+        // with a standalone node, the archive node runs no daemon of its own:
+        // its mina-archive is the standalone daemon's (see below)
+        let mut attached_archive = None;
         for group in &self.nodes {
             if group.count == 0 {
                 bail!("{:?} nodes: count must be at least 1", group.role);
@@ -487,17 +481,9 @@ impl NetworkSpec {
                     group.role
                 );
             }
-            if group.role != Role::Standalone && group.archive {
+            if group.role != Role::Archive && group.archive_port.is_some() {
                 bail!(
-                    "{:?} nodes: `archive` is for standalone nodes; add a node with \
-                     role = \"archive\" instead",
-                    group.role
-                );
-            }
-            if !group.runs_archive() && group.archive_port.is_some() {
-                bail!(
-                    "{:?} nodes: `archive_port` is for the archive node (or a standalone \
-                     node with archive = true)",
+                    "{:?} nodes: `archive_port` is for the archive node",
                     group.role
                 );
             }
@@ -520,6 +506,13 @@ impl NetworkSpec {
                     "{:?} nodes: `version` and `bin` are for the archive node api",
                     group.role
                 );
+            }
+            if group.role == Role::Archive && count(Role::Standalone) > 0 {
+                if group.client_port.is_some() {
+                    return Err(SpecError::AttachedArchiveClientPort.into());
+                }
+                attached_archive = Some(group);
+                continue;
             }
             let uptime = uptime_files(group, &self.docker)?;
             for _ in 0..group.count {
@@ -545,8 +538,7 @@ impl NetworkSpec {
                     })
                     .collect();
                 nodes.push(PlannedNode {
-                    archive_port: group
-                        .runs_archive()
+                    archive_port: (group.role == Role::Archive)
                         .then(|| group.archive_port.unwrap_or(client_port + 5)),
                     name,
                     role: group.role,
@@ -562,12 +554,15 @@ impl NetworkSpec {
             }
         }
 
+        if let Some(archive) = attached_archive {
+            attach_archive(&mut nodes, archive);
+        }
+
         // rosetta reads the archive database and a daemon's GraphQL API
         for role in [Role::Rosetta, Role::ArchiveNodeApi] {
-            if count(role) > 0 && !self.has_archive() {
+            if count(role) > 0 && count(Role::Archive) == 0 {
                 bail!(
-                    "{} needs an archive node; add a node with role = \"archive\" \
-                     (or set archive = true on the standalone node)",
+                    "{} needs an archive node; add a node with role = \"archive\"",
                     role.default_name()
                 );
             }
@@ -576,9 +571,11 @@ impl NetworkSpec {
             .iter()
             .find(|n| n.runs_archive())
             .map(|n| n.name.clone());
+        // the groups of the planned nodes, in order (an attached archive is no node)
         let groups = self
             .nodes
             .iter()
+            .filter(|g| !attached_archive.is_some_and(|a| std::ptr::eq(a, *g)))
             .flat_map(|g| std::iter::repeat_n(g, g.count as usize));
         let daemons: Vec<(String, u16, Role)> = nodes
             .iter()
@@ -624,6 +621,7 @@ impl NetworkSpec {
             }
         }
         check_standalone_is_alone(&nodes)?;
+        ports::check(&nodes)?;
         Ok(nodes)
     }
 
@@ -633,12 +631,6 @@ impl NetworkSpec {
             .iter()
             .filter(|g| g.role == Role::Archive)
             .find_map(|g| g.database.as_ref())
-    }
-
-    /// Whether a node runs `mina-archive`: the archive node, or a standalone
-    /// node with `archive = true`.
-    pub fn has_archive(&self) -> bool {
-        self.nodes.iter().any(NodeGroup::runs_archive)
     }
 
     /// Names of the funded test accounts.
@@ -657,16 +649,25 @@ impl NetworkSpec {
     }
 }
 
+/// The archive node of a spec with a standalone node: its `mina-archive` runs
+/// next to the standalone daemon, which sends it its blocks, on `archive_port`
+/// (default: the standalone node's client port + 5).
+fn attach_archive(nodes: &mut [PlannedNode], archive: &NodeGroup) {
+    if let Some(standalone) = nodes.iter_mut().find(|n| n.role == Role::Standalone) {
+        standalone.archive_port = Some(archive.archive_port.unwrap_or(standalone.client_port + 5));
+    }
+}
+
 /// A standalone node is the network's only daemon: next to it a spec has
-/// only the services that are not daemons (rosetta, the archive node api).
-/// It runs its own archive with `archive = true`.
+/// only an archive node and the services that are not daemons (rosetta, the
+/// archive node api).
 fn check_standalone_is_alone(nodes: &[PlannedNode]) -> Result<(), SpecError> {
     let Some(standalone) = nodes.iter().find(|n| n.role == Role::Standalone) else {
         return Ok(());
     };
     let others: Vec<String> = nodes
         .iter()
-        .filter(|n| n.is_daemon() && n.name != standalone.name)
+        .filter(|n| n.is_daemon() && n.role != Role::Archive && n.name != standalone.name)
         .map(|n| n.name.clone())
         .collect();
     if others.is_empty() {
@@ -964,8 +965,8 @@ mod tests {
         assert_eq!(
             err(standalone_and_a_producer),
             "'standalone-1' is a standalone node, the network's only daemon: \
-             remove bp-1, node-1 (only rosetta and the archive node api can run \
-             next to it; for an archive, set archive = true on it)"
+             remove bp-1, node-1 (only an archive node, rosetta and the archive \
+             node api can run next to it)"
         );
         let two_standalones = r#"
             [[nodes]]
@@ -981,68 +982,105 @@ mod tests {
     }
 
     #[test]
-    fn standalone_archive_is_its_own() {
+    fn archive_node_next_to_a_standalone_node_runs_no_daemon() {
         let s = spec(
             r#"
             [[nodes]]
             role = "standalone"
             client_port = 3084
-            archive = true
+
+            [[nodes]]
+            role = "archive"
 
             [[nodes]]
             role = "archive-node-api"
+            client_port = 8282
             "#,
         );
-        assert!(s.has_archive());
         let plan = s.plan().unwrap();
+        let names: Vec<_> = plan.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["standalone-1", "archive-node-api-1"]);
         assert_eq!(plan[0].archive_port, Some(3089));
         assert!(plan[0].runs_archive());
 
-        let own_port = spec(
+        let forced_port = spec(
             r#"
             [[nodes]]
             role = "standalone"
-            archive = true
-            archive_port = 3086
+            client_port = 3084
+
+            [[nodes]]
+            role = "archive"
+            archive_port = 3090
             "#,
         );
-        assert_eq!(own_port.plan().unwrap()[0].archive_port, Some(3086));
+        assert_eq!(forced_port.plan().unwrap()[0].archive_port, Some(3090));
 
-        let err = |toml: &str| spec(toml).plan().unwrap_err().to_string();
-        let archive_node_next_to_it = r#"
+        let with_client_port = spec(
+            r#"
             [[nodes]]
             role = "standalone"
 
             [[nodes]]
             role = "archive"
+            client_port = 5005
+            "#,
+        );
+        assert!(with_client_port
+            .plan()
+            .unwrap_err()
+            .to_string()
+            .contains("runs no daemon of its own: remove `client_port`"));
+    }
+
+    #[test]
+    fn two_processes_cannot_share_a_port() {
+        let err = |toml: &str| spec(toml).plan().unwrap_err().to_string();
+        let archive_on_the_rest_port = r#"
+            [[nodes]]
+            role = "standalone"
+            client_port = 3084
+
+            [[nodes]]
+            role = "archive"
+            archive_port = 3085
             "#;
-        assert!(err(archive_node_next_to_it).contains(
-            "remove archive (only rosetta and the archive node api can run next \
-                       to it; for an archive, set archive = true on it)"
-        ));
-        let archive_on_a_producer = r#"
+        assert_eq!(
+            err(archive_on_the_rest_port),
+            "port 3085 is used by 'standalone-1' (rest port) and by 'standalone-1' \
+             (mina-archive port)"
+        );
+        let overlapping_daemons = r#"
             [[nodes]]
             role = "seed"
+            client_port = 3100
 
             [[nodes]]
             role = "block-producer"
-            archive = true
+            client_port = 3103
             "#;
-        assert!(err(archive_on_a_producer).contains("`archive` is for standalone nodes"));
-        let port_without_archive = r#"
+        assert_eq!(
+            err(overlapping_daemons),
+            "port 3103 is used by 'seed-1' (metrics port) and by 'bp-1' (client port)"
+        );
+        let api_on_a_daemon_port = r#"
             [[nodes]]
-            role = "standalone"
-            archive_port = 3086
-            "#;
-        assert!(err(port_without_archive).contains("`archive_port` is for the archive node"));
-        let api_without_archive = r#"
+            role = "seed"
+            client_port = 3100
+
             [[nodes]]
-            role = "standalone"
+            role = "archive"
+            client_port = 3110
 
             [[nodes]]
             role = "archive-node-api"
+            client_port = 3102
             "#;
-        assert!(err(api_without_archive).contains("set archive = true on the standalone node"));
+        assert_eq!(
+            err(api_on_a_daemon_port),
+            "port 3102 is used by 'seed-1' (external port) and by 'archive-node-api-1' \
+             (api port)"
+        );
     }
 
     #[test]
