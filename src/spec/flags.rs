@@ -21,16 +21,8 @@ impl NetworkSpec {
                 self.set_count(role, count);
             }
         }
-        // a standalone node runs its own archive: the network keeps one daemon
-        if flags.archive && !self.has_archive() {
-            if self.has(Role::Standalone) {
-                self.groups_mut(Role::Standalone)
-                    .for_each(|standalone| standalone.archive = true);
-            } else {
-                self.insert(NodeGroup::new(Role::Archive, 1));
-            }
-        }
         let switches = [
+            (Role::Archive, flags.archive),
             (Role::Rosetta, flags.rosetta),
             (Role::ArchiveNodeApi, flags.archive_node_api),
         ];
@@ -201,27 +193,6 @@ mod tests {
             roles(&spec.with_flags(&none)),
             [(Role::Seed, 2), (Role::Archive, 1)]
         );
-    }
-
-    #[test]
-    fn archive_flag_gives_a_standalone_node_its_own_archive() {
-        let spec: NetworkSpec = toml::from_str(
-            r#"
-            [[nodes]]
-            role = "standalone"
-            "#,
-        )
-        .unwrap();
-        let flags = NodeFlags {
-            archive: true,
-            rosetta: true,
-            ..Default::default()
-        };
-        let spec = spec.with_flags(&flags);
-        assert_eq!(roles(&spec), [(Role::Standalone, 1), (Role::Rosetta, 1)]);
-        assert!(spec.nodes[0].archive);
-        // still one daemon, and rosetta reads its archive
-        spec.plan().unwrap();
     }
 
     #[test]

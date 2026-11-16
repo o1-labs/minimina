@@ -446,13 +446,15 @@ mod tests {
     }
 
     #[test]
-    fn standalone_runs_its_own_archive() {
+    fn archive_node_attaches_to_the_standalone_daemon() {
         let spec: NetworkSpec = toml::from_str(
             r#"
             [[nodes]]
             role = "standalone"
             client_port = 3084
-            archive = true
+
+            [[nodes]]
+            role = "archive"
 
             [[nodes]]
             role = "rosetta"
@@ -460,6 +462,7 @@ mod tests {
         )
         .unwrap();
         let services = spec_services(&generated(spec), "net", ExecutionMode::Native).unwrap();
+        // the archive node is no service of its own: the standalone daemon runs it
         let (solo, rosetta) = (&services[0], &services[1]);
         assert_eq!(services.len(), 2);
         assert_eq!(solo.service_type, ServiceType::Standalone);

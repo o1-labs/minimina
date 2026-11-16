@@ -176,18 +176,19 @@ produces blocks with its own key and does its own snark work
 (`-run-snark-worker` with that key, `fee` per work, default `0.001`). It runs
 with `-demo-mode`, so it counts as synced without peers. A spec with only a
 `standalone` node is a valid network, and it stays the network's only daemon:
-next to it a spec can only have rosetta and the archive node api;
-`network create` refuses any other daemon, the archive node's included. For an
-archive, `archive = true` runs `mina-archive` next to the standalone node
-(`archive_port`, default client port + 5), which sends it its blocks; rosetta
-and the archive node api read that archive, and `--archive` sets it on a
-standalone node.
+next to it a spec can only have an archive node, rosetta and the archive node
+api; `network create` refuses any other daemon. The archive node next to it
+runs no daemon of its own: its `mina-archive` runs next to the standalone
+daemon, which sends it its blocks, on `archive_port` (default: the standalone
+node's client port + 5). It takes no `client_port`.
 
 ```toml
 [[nodes]]
 role = "standalone"
 client_port = 3084    # GraphQL on 3085
-archive = true        # mina-archive on 3089
+
+[[nodes]]
+role = "archive"      # mina-archive on 3089, fed by standalone-1
 ```
 A `rosetta` node runs `mina-rosetta` against the archive database and the GraphQL
 API of a daemon (`node = "<name>"`, default: the archive node); the output of
@@ -197,7 +198,11 @@ database (GraphQL at `/` on its port). In native mode it needs Node.js 22.12 or 
 minimina installs the npm package once per version into `~/.minimina/.tools`
 (`version`, default `2.0.0`), or runs your own build (`bin`).
 Names default to `<role>-<n>` (`seed-1`, `bp-1`, `node-1`); client ports start at
-3100 in steps of 10. Only block producers hold stake unless a node sets `balance`;
+3100 in steps of 10. A daemon listens on its client port and the four after it
+(REST, external, metrics, libp2p metrics), `mina-archive` on its archive port,
+rosetta and the archive node api on their client port; `network create`
+refuses a spec in which two of them share a port, naming both. Only block
+producers hold stake unless a node sets `balance`;
 a snark coordinator gets 1000 MINA, so that its snark fees can go to an existing
 account (a fee below the account creation fee cannot create one).
 [docs/examples/network.toml](docs/examples/network.toml) shows every option:
