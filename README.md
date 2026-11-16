@@ -168,9 +168,20 @@ minimina network create -n mynet --spec net.toml
 minimina network start -n mynet
 ```
 
-Roles: `seed`, `block-producer`, `plain`, `archive`, `snark-coordinator`, `rosetta`,
-`archive-node-api`, `uptime-service-backend` (see [Uptime service
+Roles: `seed`, `block-producer`, `plain`, `archive`, `snark-coordinator`, `standalone`,
+`rosetta`, `archive-node-api`, `uptime-service-backend` (see [Uptime service
 backend](#uptime-service-backend)).
+A `standalone` node is a whole network in one daemon: a seed (`-seed`) that
+produces blocks with its own key and does its own snark work
+(`-run-snark-worker` with that key, `fee` per work, default `0.001`). It runs
+with `-demo-mode`, so it counts as synced without peers. A spec with only a
+`standalone` node is a valid network; other daemons dial it as their seed.
+
+```toml
+[[nodes]]
+role = "standalone"
+client_port = 3084    # GraphQL on 3085
+```
 A `rosetta` node runs `mina-rosetta` against the archive database and the GraphQL
 API of a daemon (`node = "<name>"`, default: the archive node); the output of
 `network create` gives its `rosetta_uri`. An `archive-node-api` node runs

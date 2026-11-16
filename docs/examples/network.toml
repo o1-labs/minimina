@@ -32,6 +32,12 @@ role = "archive-node-api"     # GraphQL over the archive database (events, actio
 # version = "2.0.0"           # npm package / docker image version
 # bin = "/path/to/server"     # native mode: own executable instead of the npm install
 
+# A whole network in one daemon: a seed that produces blocks and does its
+# own snark work. A spec with only this node is a valid network.
+# [[nodes]]
+# role = "standalone"
+# fee = "0.001"        # per snark work (default)
+
 # [[nodes]]
 # role = "snark-coordinator"
 # workers = 1
