@@ -303,7 +303,8 @@ mod tests {
                 .timing
                 .as_ref()
                 .unwrap()
-                .cliff_time,
+                .cliff_time
+                .value(),
             "8"
         );
         assert_eq!(
@@ -319,7 +320,8 @@ mod tests {
                 .timing
                 .as_ref()
                 .unwrap()
-                .vesting_period,
+                .vesting_period
+                .value(),
             "4"
         );
         assert_eq!(

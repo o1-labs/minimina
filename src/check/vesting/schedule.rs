@@ -33,9 +33,9 @@ impl VestingSchedule {
                 "initial_minimum_balance",
                 &timing.initial_minimum_balance,
             )?,
-            cliff_time: slot("cliff_time", &timing.cliff_time)?,
+            cliff_time: slot("cliff_time", timing.cliff_time.value())?,
             cliff_amount: amount("cliff_amount", &timing.cliff_amount)?,
-            vesting_period: slot("vesting_period", &timing.vesting_period)?,
+            vesting_period: slot("vesting_period", timing.vesting_period.value())?,
             vesting_increment: amount("vesting_increment", &timing.vesting_increment)?,
         })
     }
