@@ -125,6 +125,9 @@ pub enum Role {
     /// Collects the block producers' uptime submissions, not a daemon;
     /// docker mode only (native mode skips it).
     UptimeServiceBackend,
+    /// Hands funded accounts out to tests (o1js `Lightnet.acquireKeyPair`),
+    /// not a daemon; native mode only.
+    AccountsManager,
 }
 
 impl Role {
@@ -139,6 +142,7 @@ impl Role {
             Role::Rosetta => "rosetta",
             Role::ArchiveNodeApi => "archive-node-api",
             Role::UptimeServiceBackend => "uptime-service-backend",
+            Role::AccountsManager => "accounts-manager",
         }
     }
 
@@ -156,12 +160,20 @@ impl Role {
         }
     }
 
+    /// Whether nodes of the role read a daemon's GraphQL API (`node`).
+    pub fn reads_a_daemon(&self) -> bool {
+        matches!(self, Role::Rosetta | Role::AccountsManager)
+    }
+
     /// Whether nodes of the role are mina daemons (have libp2p keys, peers
     /// and accounts).
     pub fn is_daemon(&self) -> bool {
         !matches!(
             self,
-            Role::Rosetta | Role::ArchiveNodeApi | Role::UptimeServiceBackend
+            Role::Rosetta
+                | Role::ArchiveNodeApi
+                | Role::UptimeServiceBackend
+                | Role::AccountsManager
         )
     }
 
@@ -197,13 +209,20 @@ pub struct NodeGroup {
     pub workers: Option<u16>,
     /// Snark coordinator, standalone: fee per snark work.
     pub fee: Option<String>,
-    /// Rosetta: the daemon whose GraphQL API it reads. Default: the archive node.
+    /// Rosetta, accounts manager: the daemon whose GraphQL API it reads.
+    /// Default: the archive node (rosetta), the first daemon (accounts manager).
     pub node: Option<String>,
     /// Archive node api: version of the npm package / docker image.
+    /// Accounts manager: version of its release.
     pub version: Option<String>,
     /// Archive node api, native mode: the server's executable instead of the
-    /// managed npm install.
+    /// managed npm install. Accounts manager: its executable instead of the
+    /// release binary.
     pub bin: Option<std::path::PathBuf>,
+    /// Accounts manager: key files of the accounts of `[ledger] file`, named
+    /// by public key, to import into its daemon when a test asks for an
+    /// unlocked account.
+    pub keys: Option<PathBuf>,
     /// Uptime service backend: see [`UptimeFiles`].
     pub app_config: Option<PathBuf>,
     pub minasheets: Option<PathBuf>,
@@ -235,6 +254,7 @@ impl Default for NodeGroup {
             node: None,
             version: None,
             bin: None,
+            keys: None,
             app_config: None,
             minasheets: None,
             config_files: None,
@@ -297,9 +317,11 @@ pub struct PlannedNode {
     pub fee: Option<String>,
     /// Rosetta: name and client port of the daemon it reads.
     pub graphql_node: Option<(String, u16)>,
-    /// Archive node api: version and own executable.
+    /// Archive node api, accounts manager: version and own executable.
     pub version: Option<String>,
     pub bin: Option<std::path::PathBuf>,
+    /// Accounts manager: key files of the given accounts.
+    pub keys: Option<PathBuf>,
     pub uptime: Option<UptimeFiles>,
 }
 
@@ -351,6 +373,7 @@ impl NetworkSpec {
         self.ledger.file.as_mut().map(resolve);
         for group in &mut self.nodes {
             group.bin.as_mut().map(resolve);
+            group.keys.as_mut().map(resolve);
             group.app_config.as_mut().map(resolve);
             group.minasheets.as_mut().map(resolve);
             group.config_files.iter_mut().flatten().for_each(resolve);
@@ -433,6 +456,7 @@ impl NetworkSpec {
             Role::Archive,
             Role::SnarkCoordinator,
             Role::UptimeServiceBackend,
+            Role::AccountsManager,
         ] {
             if count(role) > 1 {
                 bail!("the network spec has more than one {role:?} node; at most one is supported");
@@ -490,8 +514,14 @@ impl NetworkSpec {
             if group.role != Role::Archive && group.database.is_some() {
                 bail!("{:?} nodes: `database` is for the archive node", group.role);
             }
-            if group.role != Role::Rosetta && group.node.is_some() {
-                bail!("{:?} nodes: `node` is for rosetta", group.role);
+            if !group.role.reads_a_daemon() && group.node.is_some() {
+                bail!(
+                    "{:?} nodes: `node` is for rosetta and the accounts manager",
+                    group.role
+                );
+            }
+            if group.role != Role::AccountsManager && group.keys.is_some() {
+                bail!("{:?} nodes: `keys` is for the accounts manager", group.role);
             }
             if !group.role.is_daemon() && group.balance.is_some() {
                 bail!(
@@ -499,11 +529,12 @@ impl NetworkSpec {
                     group.role
                 );
             }
-            if group.role != Role::ArchiveNodeApi
+            if !matches!(group.role, Role::ArchiveNodeApi | Role::AccountsManager)
                 && (group.version.is_some() || group.bin.is_some())
             {
                 bail!(
-                    "{:?} nodes: `version` and `bin` are for the archive node api",
+                    "{:?} nodes: `version` and `bin` are for the archive node api and \
+                     the accounts manager",
                     group.role
                 );
             }
@@ -521,9 +552,10 @@ impl NetworkSpec {
                 *n += 1;
                 let name = group.name.clone().unwrap_or_else(|| match group.role {
                     // only one of each
-                    Role::Archive | Role::SnarkCoordinator | Role::UptimeServiceBackend => {
-                        prefix.to_string()
-                    }
+                    Role::Archive
+                    | Role::SnarkCoordinator
+                    | Role::UptimeServiceBackend
+                    | Role::AccountsManager => prefix.to_string(),
                     _ => format!("{prefix}-{n}"),
                 });
                 let client_port = group.client_port.unwrap_or_else(&mut auto_port);
@@ -549,6 +581,7 @@ impl NetworkSpec {
                     graphql_node: None,
                     version: group.version.clone(),
                     bin: group.bin.clone(),
+                    keys: group.keys.clone(),
                     uptime: uptime.clone(),
                 });
             }
@@ -582,22 +615,27 @@ impl NetworkSpec {
             .map(|n| (n.name.clone(), n.client_port, n.role))
             .collect();
         for (node, group) in nodes.iter_mut().zip(groups) {
-            if node.role != Role::Rosetta {
+            if !node.role.reads_a_daemon() {
                 continue;
             }
+            let by_default = |d: &&(String, u16, Role)| match node.role {
+                Role::Rosetta => archive_daemon.as_ref() == Some(&d.0),
+                _ => d.2.is_daemon(),
+            };
             let wanted = |d: &&(String, u16, Role)| match &group.node {
                 Some(name) => &d.0 == name,
-                None => archive_daemon.as_ref() == Some(&d.0),
+                None => by_default(d),
             };
+            let what = node.role.default_name();
             let (name, port, role) = daemons.iter().find(wanted).with_context(|| {
                 format!(
-                    "rosetta '{}': no node '{}'",
+                    "{what} '{}': no node '{}'",
                     node.name,
                     group.node.as_deref().unwrap_or_default()
                 )
             })?;
-            if *role == Role::Rosetta {
-                bail!("rosetta '{}': '{name}' is not a daemon", node.name);
+            if !role.is_daemon() {
+                bail!("{what} '{}': '{name}' is not a daemon", node.name);
             }
             node.graphql_node = Some((name.clone(), *port));
         }
@@ -1081,6 +1119,95 @@ mod tests {
             "port 3102 is used by 'seed-1' (external port) and by 'archive-node-api-1' \
              (api port)"
         );
+    }
+
+    #[test]
+    fn accounts_manager_asks_a_daemon() {
+        let s = spec(
+            r#"
+            [[nodes]]
+            role = "seed"
+
+            [[nodes]]
+            role = "block-producer"
+
+            [[nodes]]
+            role = "accounts-manager"
+            client_port = 8181
+            keys = "/keys"
+
+            [[nodes]]
+            role = "accounts-manager"
+            name = "am-2"
+            node = "bp-1"
+            version = "0.1.1"
+            "#,
+        );
+        let err = s.plan().unwrap_err().to_string();
+        assert!(err.contains("more than one AccountsManager node"), "{err}");
+
+        let one = spec(
+            r#"
+            [[nodes]]
+            role = "seed"
+
+            [[nodes]]
+            role = "block-producer"
+
+            [[nodes]]
+            role = "accounts-manager"
+            client_port = 8181
+            node = "bp-1"
+            keys = "/keys"
+            version = "0.1.1"
+            "#,
+        );
+        let plan = one.plan().unwrap();
+        let manager = &plan[2];
+        assert_eq!(manager.name, "accounts-manager");
+        assert_eq!(manager.graphql_node, Some(("bp-1".to_string(), 3110)));
+        assert_eq!(manager.keys.as_deref(), Some(Path::new("/keys")));
+        assert_eq!(manager.version.as_deref(), Some("0.1.1"));
+        assert!(!manager.is_daemon() && !manager.needs_key());
+
+        // the first daemon by default
+        let default_node = spec(
+            r#"
+            [[nodes]]
+            role = "seed"
+
+            [[nodes]]
+            role = "accounts-manager"
+            "#,
+        );
+        assert_eq!(
+            default_node.plan().unwrap()[1].graphql_node,
+            Some(("seed-1".to_string(), 3100))
+        );
+
+        let err = |toml: &str| spec(toml).plan().unwrap_err().to_string();
+        let keys_on_a_seed = r#"
+            [[nodes]]
+            role = "seed"
+            keys = "/keys"
+            "#;
+        assert!(err(keys_on_a_seed).contains("`keys` is for the accounts manager"));
+        let asks_no_daemon = r#"
+            [[nodes]]
+            role = "seed"
+
+            [[nodes]]
+            role = "archive"
+
+            [[nodes]]
+            role = "rosetta"
+
+            [[nodes]]
+            role = "accounts-manager"
+            node = "rosetta-1"
+            "#;
+        assert!(err(asks_no_daemon)
+            .contains("accounts-manager 'accounts-manager': 'rosetta-1' is not a daemon"));
     }
 
     #[test]

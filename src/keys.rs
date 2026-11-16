@@ -39,6 +39,16 @@ pub fn parse_public_key(stdout: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Parses the private key of `mina advanced dump-keypair` output.
+pub fn parse_private_key(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Private key:"))
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
+}
+
 /// Parses `mina libp2p generate-keypair` output: the keypair is printed on
 /// the line after the `libp2p keypair:` header.
 pub fn parse_libp2p_keypair(stdout: &str) -> Option<String> {

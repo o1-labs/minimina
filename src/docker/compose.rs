@@ -285,6 +285,8 @@ impl DockerCompose {
                         },
                     );
                 }
+                // typed::check refuses it in docker mode
+                Kind::AccountsManager(_) => {}
                 Kind::ArchiveNodeApi(api) => {
                     let port = api.port;
                     let mut depends_on = vec![postgres_name.clone()];

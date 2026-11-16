@@ -96,6 +96,7 @@ pub enum Kind<M: Mode> {
     Rosetta(Rosetta<M>),
     ArchiveNodeApi(ArchiveNodeApi<M>),
     UptimeServiceBackend(UptimeServiceBackend<M>),
+    AccountsManager(AccountsManager),
 }
 
 /// A `mina daemon` process.
@@ -220,6 +221,16 @@ pub struct Rosetta<M: Mode> {
 pub struct ArchiveNodeApi<M: Mode> {
     pub server: M::ApiServer,
     pub port: u16,
+}
+
+/// Native mode only: it asks its daemon on localhost.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccountsManager {
+    /// Its executable.
+    pub server: PathBuf,
+    pub port: u16,
+    /// REST (GraphQL) port of its daemon.
+    pub graphql_port: u16,
 }
 
 /// Docker mode only: native mode skips it.
@@ -462,6 +473,34 @@ pub fn check<M: Mode>(configs: &[ServiceConfig]) -> Result<Vec<Service<M>>, Inva
                     Some(Kind::ArchiveNodeApi(ArchiveNodeApi {
                         server: server?,
                         port: port?,
+                    }))
+                })()
+            }
+            ServiceType::AccountsManager => {
+                if M::MODE == ExecutionMode::Docker {
+                    check.problems.push(ServiceError::NativeOnly {
+                        service: check.service.clone(),
+                    });
+                }
+                let server = check.need(&config.accounts_manager_bin, "accounts_manager_bin");
+                let port = check.need(&config.client_port, "client_port");
+                let daemon_port = refers(
+                    &mut check,
+                    "accounts_manager_node",
+                    &config.accounts_manager_node,
+                    "daemon",
+                    is_daemon,
+                );
+                let graphql_port = check.need_or(
+                    &config.accounts_manager_graphql_port,
+                    daemon_port.map(|p| p + 1),
+                    "accounts_manager_graphql_port",
+                );
+                (|| {
+                    Some(Kind::AccountsManager(AccountsManager {
+                        server: server?,
+                        port: port?,
+                        graphql_port: graphql_port?,
                     }))
                 })()
             }
@@ -770,6 +809,40 @@ pub mod tests {
         assert_eq!(
             archive_node(&services).map(|s| s.name.as_str()),
             Some("solo")
+        );
+    }
+
+    #[test]
+    fn accounts_manager_runs_natively_against_a_daemon() {
+        let mut seed = config(ServiceType::Seed, "seed");
+        seed.client_port = Some(3100);
+        let mut manager = config(ServiceType::AccountsManager, "am");
+        manager.client_port = Some(8181);
+        manager.accounts_manager_node = Some("seed".into());
+        manager.accounts_manager_bin = Some("/tools/accounts-manager".into());
+        let services = check::<Native>(&[seed.clone(), manager.clone()]).unwrap();
+        assert_eq!(
+            services[1].kind,
+            Kind::AccountsManager(AccountsManager {
+                server: "/tools/accounts-manager".into(),
+                port: 8181,
+                graphql_port: 3101,
+            })
+        );
+        seed.docker_image = Some("mina".into());
+        assert_eq!(
+            problems::<Docker>(&[seed, manager.clone()]),
+            ["'am' runs in native mode only"]
+        );
+        manager.accounts_manager_node = Some("nope".into());
+        manager.accounts_manager_bin = None;
+        assert_eq!(
+            problems::<Native>(&[manager]),
+            [
+                "'am' has no accounts_manager_bin",
+                "'am': accounts_manager_node 'nope' is not a daemon of the network",
+                "'am' has no accounts_manager_graphql_port"
+            ]
         );
     }
 

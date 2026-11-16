@@ -46,6 +46,15 @@ role = "archive-node-api"     # GraphQL over the archive database (events, actio
 # fee = "0.001"
 # balance = "1000"     # default; its fees go to this account
 
+# Hands funded accounts out to tests (o1js Lightnet.acquireKeyPair); native
+# mode only. Needs more than 10 accounts with a private key: the test
+# accounts below, and those of [ledger] file with one.
+# [[nodes]]
+# role = "accounts-manager"
+# client_port = 8181
+# node = "bp-1"                # the daemon it asks (default: the first)
+# keys = "key-pairs"           # key files of the file's accounts, by public key
+
 # Docker mode only: block producers submit their uptime to it (port 8080).
 # [[nodes]]
 # role = "uptime-service-backend"

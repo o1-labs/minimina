@@ -37,6 +37,11 @@ profile = {{ profile|toml }}
 {% when Role::ArchiveNodeApi -%}
 # GraphQL over the archive database (events, actions); `version`: of the
 # npm package or docker image, `bin`: own executable (native mode).
+{% when Role::AccountsManager -%}
+# Hands funded accounts out to tests (o1js Lightnet.acquireKeyPair), native
+# mode only: the test accounts, and the accounts of [ledger] file with a
+# private key. `node`: the daemon it asks (default: the first); `keys`: key
+# files of the given accounts, named by public key; `version`, `bin`.
 {% when Role::UptimeServiceBackend -%}
 # Collects block producers' uptime submissions (docker mode, port 8080):
 # `app_config`, `minasheets` (credentials), `config_files`; the image is
@@ -75,6 +80,9 @@ version = {{ version|toml }}
 {% endif -%}
 {% if let Some(bin) = node.bin -%}
 bin = {{ bin|toml }}
+{% endif -%}
+{% if let Some(keys) = node.keys -%}
+keys = {{ keys|toml }}
 {% endif -%}
 {% if let Some(app_config) = node.app_config -%}
 app_config = {{ app_config|toml }}

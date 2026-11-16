@@ -169,8 +169,8 @@ minimina network start -n mynet
 ```
 
 Roles: `seed`, `block-producer`, `plain`, `archive`, `snark-coordinator`, `standalone`,
-`rosetta`, `archive-node-api`, `uptime-service-backend` (see [Uptime service
-backend](#uptime-service-backend)).
+`rosetta`, `archive-node-api`, `accounts-manager`, `uptime-service-backend` (see [Uptime
+service backend](#uptime-service-backend)).
 A `standalone` node is a whole network in one daemon: a seed (`-seed`) that
 produces blocks with its own key and does its own snark work
 (`-run-snark-worker` with that key, `fee` per work, default `0.001`). It runs
@@ -190,6 +190,36 @@ client_port = 3084    # GraphQL on 3085
 [[nodes]]
 role = "archive"      # mina-archive on 3089, fed by standalone-1
 ```
+An `accounts-manager` node runs [Mina
+Accounts-Manager](https://github.com/o1-labs/mina-accounts-manager), which hands
+funded accounts out to tests (`GET /acquire-account`, `PUT /release-account`;
+o1js `Lightnet.acquireKeyPair` asks it). Native mode only: it asks the GraphQL
+API of a daemon on localhost (`node`, default: the first daemon of the spec).
+
+```toml
+[[nodes]]
+role = "accounts-manager"
+client_port = 8181        # its HTTP API
+# node = "bp-1"           # the daemon it asks
+# keys = "key-pairs"      # key files of the [ledger] file's accounts, named by public key
+# version = "0.1.2"       # its GitHub release; `bin` runs your own build
+
+[ledger]
+accounts = 12             # needs more than 10 accounts with a private key
+```
+
+- It hands out the test accounts (`accounts`), whose private keys minimina
+  reads at create (`mina advanced dump-keypair`), and the accounts of
+  `[ledger] file` that have a private key (`sk`, or the `private_key` column).
+  It keeps 10 of them unused, so `network create` refuses a network with 10 or
+  fewer.
+- minimina downloads the release binary for the host once into
+  `~/.minimina/.tools/accounts-manager/<version>`, checked against the SHA-256
+  GitHub gives for it.
+- For `?unlockAccount=true` it imports the account's key file into its daemon:
+  minimina gives it the test accounts' key files and those of `keys`, in
+  `<network dir>/accounts-manager/keys` (`MINA_KEYS_PATH`), with its ledger file
+  next to them.
 A `rosetta` node runs `mina-rosetta` against the archive database and the GraphQL
 API of a daemon (`node = "<name>"`, default: the archive node); the output of
 `network create` gives its `rosetta_uri`. An `archive-node-api` node runs

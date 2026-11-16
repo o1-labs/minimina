@@ -5,10 +5,11 @@ use super::{
     DEFAULT_ROSETTA_DOCKER_IMAGE, IMAGE_COMMIT_HASH,
 };
 use crate::{
+    accounts_manager::{self, AccountsManagerError, GeneratedAccount, KeyPair},
     archive_node_api,
     cli::ExecutionMode,
     genesis_ledger::default,
-    install::Installer,
+    install::{mina::Fetch, Installer},
     keys::{KeysManager, NodeKey},
     native::keys::NativeKeysManager,
     service::{ServiceConfig, ServiceType},
@@ -57,6 +58,10 @@ fn generate_from_spec(
     inputs: CreateInputs,
 ) -> Result<SpecNetwork> {
     let CreateInputs { spec, nodes, given } = inputs;
+    let accounts_manager = nodes.iter().find(|n| n.role == Role::AccountsManager);
+    if accounts_manager.is_some() && ctx.mode == ExecutionMode::Docker {
+        return Err(AccountsManagerError::DockerMode.into());
+    }
     let daemons: Vec<&str> = nodes
         .iter()
         .filter(|n| n.is_daemon())
@@ -118,6 +123,39 @@ fn generate_from_spec(
         .clone()
         .unwrap_or(Balance::mina(DEFAULT_ACCOUNT_BALANCE));
     // the accounts of the ledger file first, then the generated ones
+    if let Some(manager) = accounts_manager {
+        let keys = NativeKeysManager::new(
+            network_path,
+            ctx.bin_path()?,
+            ctx.profile,
+            ctx.runner.clone(),
+        );
+        let generated = accounts
+            .iter()
+            .map(|name| -> Result<GeneratedAccount> {
+                let key = bp
+                    .get(name)
+                    .with_context(|| format!("no key generated for '{name}'"))?;
+                let sk =
+                    keys.private_key(name)
+                        .map_err(|cause| AccountsManagerError::PrivateKey {
+                            account: name.clone(),
+                            cause: cause.into(),
+                        })?;
+                Ok(GeneratedAccount {
+                    pair: KeyPair { pk: pk(name)?, sk },
+                    key_file: key.key_path.clone().into(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let ledger =
+            accounts_manager::prepare(network_path, &given, &generated, manager.keys.as_deref())?;
+        info!(
+            "The accounts manager has {} accounts; it keeps {} of them unused.",
+            ledger.served(),
+            accounts_manager::ACCOUNTS_KEPT
+        );
+    }
     let mut ledger = given;
     for node in &nodes {
         if let Some(balance) = &node.balance {
@@ -167,6 +205,34 @@ pub fn install_archive_node_api(ctx: &Context, services: &mut [ServiceConfig]) -
             )
             .with_context(|| format!("preparing '{}'", service.service_name))?;
         service.archive_node_api_bin = Some(bin);
+    }
+    Ok(())
+}
+
+/// Installs the accounts manager (native mode; docker mode refuses it at
+/// create): its release binary once into `~/.minimina/.tools`, or the
+/// executable the spec names, recorded in the service.
+pub fn install_accounts_manager(
+    ctx: &Context,
+    services: &mut [ServiceConfig],
+    fetch: &dyn Fetch,
+) -> Result<()> {
+    for service in services
+        .iter_mut()
+        .filter(|s| s.service_type == ServiceType::AccountsManager)
+    {
+        let version = service
+            .accounts_manager_version
+            .clone()
+            .unwrap_or_else(|| accounts_manager::DEFAULT_VERSION.to_string());
+        let bin = accounts_manager::install::resolve(
+            &ctx.dirs.tools_root(),
+            &version,
+            service.accounts_manager_bin.as_deref(),
+            fetch,
+        )
+        .with_context(|| format!("preparing '{}'", service.service_name))?;
+        service.accounts_manager_bin = Some(bin);
     }
     Ok(())
 }
@@ -277,6 +343,25 @@ fn spec_services(
                     client_port: Some(node.client_port),
                     archive_node_api_version: Some(version),
                     archive_node_api_bin: node.bin.clone(),
+                    ..Default::default()
+                }
+            }
+            Role::AccountsManager => {
+                let (daemon, daemon_port) = node.graphql_node.clone().with_context(|| {
+                    format!("accounts manager '{}' has no daemon to ask", node.name)
+                })?;
+                ServiceConfig {
+                    service_type: ServiceType::AccountsManager,
+                    service_name: node.name.clone(),
+                    client_port: Some(node.client_port),
+                    accounts_manager_version: Some(
+                        node.version
+                            .clone()
+                            .unwrap_or_else(|| accounts_manager::DEFAULT_VERSION.to_string()),
+                    ),
+                    accounts_manager_bin: node.bin.clone(),
+                    accounts_manager_node: Some(daemon),
+                    accounts_manager_graphql_port: Some(daemon_port + 1),
                     ..Default::default()
                 }
             }
@@ -506,6 +591,36 @@ mod tests {
         assert_eq!(services[0].archive_port, None);
         assert_eq!(services[0].archive_schema_files, None);
         assert!(ServiceConfig::get_archive_node(&services).is_none());
+    }
+
+    #[test]
+    fn accounts_manager_service_asks_its_daemon() {
+        let spec: NetworkSpec = toml::from_str(
+            r#"
+            [[nodes]]
+            role = "seed"
+
+            [[nodes]]
+            role = "accounts-manager"
+            client_port = 8181
+            "#,
+        )
+        .unwrap();
+        let services = spec_services(&generated(spec), "net", ExecutionMode::Native).unwrap();
+        let manager = &services[1];
+        assert_eq!(manager.service_type, ServiceType::AccountsManager);
+        assert_eq!(manager.client_port, Some(8181));
+        assert_eq!(manager.accounts_manager_node.as_deref(), Some("seed-1"));
+        assert_eq!(manager.accounts_manager_graphql_port, Some(3101));
+        assert_eq!(
+            manager.accounts_manager_version.as_deref(),
+            Some(accounts_manager::DEFAULT_VERSION)
+        );
+        assert_eq!(manager.libp2p_keypair, None);
+        assert_eq!(
+            manager.to_node_info().accounts_manager_uri.as_deref(),
+            Some("http://localhost:8181")
+        );
     }
 
     #[test]

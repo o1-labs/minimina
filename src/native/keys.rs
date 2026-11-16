@@ -1,6 +1,8 @@
 use super::binary::Binary;
 use crate::cli::Profile;
-use crate::keys::{parse_libp2p_keypair, parse_public_key, NodeKey};
+use crate::keys::{
+    parse_libp2p_keypair, parse_private_key, parse_public_key, NodeKey, KEY_PASSWORD,
+};
 use crate::runner::{check, Runner};
 use std::collections::HashMap;
 use std::io;
@@ -149,6 +151,31 @@ impl NativeKeysManager {
         })
     }
 
+    /// The private key of the key pair generated for `name`
+    /// (`mina advanced dump-keypair`).
+    pub fn private_key(&self, name: &str) -> io::Result<String> {
+        let privkey_path = self.network_path.join("network-keypairs").join(name);
+        let mina_bin = Binary::Mina.path(&self.bin_path);
+        let mina_env = super::mina_env(&self.bin_path, self.profile);
+        let output = self
+            .runner
+            .run(
+                mina_bin.as_os_str(),
+                &[
+                    "advanced",
+                    "dump-keypair",
+                    "-privkey-path",
+                    utf8(&privkey_path)?,
+                ],
+                &super::env_refs(&[("MINA_PRIVKEY_PASS", KEY_PASSWORD)], &mina_env),
+            )
+            .map_err(|e| mina_command_error(&mina_bin, name, e))?;
+        let output = check(output, &format!("Reading the key pair of {name}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_private_key(&stdout)
+            .ok_or_else(|| io::Error::other(format!("no private key in the key pair of {name}")))
+    }
+
     pub fn generate_libp2p_key_pairs(
         &self,
         service_names: &[&str],
@@ -166,6 +193,34 @@ impl NativeKeysManager {
 mod tests {
     use super::*;
     use crate::runner::fake::FakeRunner;
+
+    #[test]
+    fn reads_the_private_key_of_a_generated_key_pair() {
+        let net = tempfile::tempdir().unwrap();
+        let fake = Rc::new(FakeRunner::default());
+        fake.reply(0, "Public key: B62qn\nPrivate key: EKsecret\n", "")
+            .reply(0, "Public key: B62qn\n", "");
+        let keys = NativeKeysManager::new(
+            net.path(),
+            Path::new("/bin"),
+            Profile::Lightnet,
+            fake.clone(),
+        );
+        assert_eq!(keys.private_key("account-1").unwrap(), "EKsecret");
+        assert!(keys
+            .private_key("account-2")
+            .unwrap_err()
+            .to_string()
+            .contains("no private key in the key pair of account-2"));
+        let call = &fake.calls.borrow()[0];
+        assert!(call.line().ends_with(&format!(
+            "advanced dump-keypair -privkey-path {}/network-keypairs/account-1",
+            net.path().display()
+        )));
+        assert!(call
+            .envs
+            .contains(&("MINA_PRIVKEY_PASS".into(), "naughty blue worm".into())));
+    }
 
     #[test]
     fn generates_keys_with_local_mina() {

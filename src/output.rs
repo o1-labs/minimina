@@ -194,6 +194,9 @@ pub mod node {
         /// Rosetta API of a rosetta service.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub rosetta_uri: Option<String>,
+        /// HTTP API of the accounts manager (`/acquire-account`, ...).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub accounts_manager_uri: Option<String>,
     }
 
     #[derive(Debug, Serialize, PartialEq)]
@@ -333,9 +336,10 @@ pub struct Error {
 impl ServiceConfig {
     pub fn to_node_info(&self) -> node::Info {
         let is_rosetta = self.service_type == ServiceType::Rosetta;
+        let is_accounts_manager = self.service_type == ServiceType::AccountsManager;
         node::Info {
             graphql_uri: self.client_port.and_then(|port| match self.service_type {
-                ServiceType::Rosetta => None,
+                ServiceType::Rosetta | ServiceType::AccountsManager => None,
                 // GraphQL at `/` on its only port
                 ServiceType::ArchiveNodeApi => Some(format!("http://localhost:{port}/")),
                 _ => Some(format!("http://localhost:{}/graphql", port + 1)),
@@ -345,6 +349,10 @@ impl ServiceConfig {
             rosetta_uri: self
                 .client_port
                 .filter(|_| is_rosetta)
+                .map(|port| format!("http://localhost:{port}")),
+            accounts_manager_uri: self
+                .client_port
+                .filter(|_| is_accounts_manager)
                 .map(|port| format!("http://localhost:{port}")),
         }
     }
@@ -499,6 +507,7 @@ mod tests {
             private_key: bp_service.private_key,
             node_type: bp_service.service_type,
             rosetta_uri: None,
+            accounts_manager_uri: None,
         };
         let expect = network::Create {
             network_id: network_id.to_string(),
