@@ -169,15 +169,15 @@ minimina network start -n mynet
 ```
 
 Roles: `seed`, `block-producer`, `plain`, `archive`, `snark-coordinator`, `standalone`,
-`rosetta`, `archive-node-api`, `uptime-service-backend` (see [Uptime service
-backend](#uptime-service-backend)).
+`rosetta`, `archive-node-api`, `accounts-manager`, `uptime-service-backend` (see [Uptime
+service backend](#uptime-service-backend)).
 A `standalone` node is a whole network in one daemon: a seed (`-seed`) that
 produces blocks with its own key and does its own snark work
 (`-run-snark-worker` with that key, `fee` per work, default `0.001`). It runs
 with `-demo-mode`, so it counts as synced without peers. A spec with only a
 `standalone` node is a valid network, and it stays the network's only daemon:
-next to it a spec can only have an archive node, rosetta and the archive node
-api; `network create` refuses any other daemon. The archive node next to it
+next to it a spec can only have an archive node, rosetta, the archive node
+api and the accounts manager; `network create` refuses any other daemon. The archive node next to it
 runs no daemon of its own: its `mina-archive` runs next to the standalone
 daemon, which sends it its blocks, on `archive_port` (default: the standalone
 node's client port + 5). It takes no `client_port`.
@@ -190,6 +190,62 @@ client_port = 3084    # GraphQL on 3085
 [[nodes]]
 role = "archive"      # mina-archive on 3089, fed by standalone-1
 ```
+An `accounts-manager` node runs [Mina
+Accounts-Manager](https://github.com/o1-labs/mina-accounts-manager), which hands
+funded accounts out to tests (`GET /acquire-account`, `PUT /release-account`;
+o1js `Lightnet.acquireKeyPair` asks it). Native mode only: it asks the GraphQL
+API of a daemon on localhost (`node`, default: the first daemon of the spec).
+
+Its accounts can be given already generated, so that `network create` spends no
+time generating them: it takes no longer with a thousand accounts than with
+one. Give a ledger file whose accounts have their private key (`sk`) and their
+own balance, and a directory of their key files:
+
+```text
+my-network/
+├── net.toml              # the spec
+├── daemon.json           # [ledger] file: accounts with `pk`, `sk` and `balance`
+└── key-pairs/            # keys: one key pair per account of daemon.json
+    ├── B62qk…            # its private key file, named by its public key
+    ├── B62qk….pub        # its public key
+    └── …
+```
+
+```json
+{ "ledger": { "accounts": [
+  { "pk": "B62qk…", "sk": "EKE…", "balance": "1550" }
+] } }
+```
+
+```toml
+[[nodes]]
+role = "accounts-manager"
+client_port = 8181        # its HTTP API
+keys = "key-pairs"        # relative to the spec file
+# node = "bp-1"           # the daemon it asks
+# version = "0.1.2"       # its GitHub release; `bin` runs your own build
+
+[ledger]
+file = "daemon.json"
+```
+
+The private key files are the ones `mina advanced generate-keypair` writes,
+encrypted with the password `naughty blue worm`, which minimina gives the
+accounts manager to unlock them.
+
+- It hands out the accounts of `[ledger] file` that have a private key (`sk`,
+  or the `private_key` column of a CSV file). It keeps 10 of them unused, so
+  `network create` refuses a network with 10 or fewer.
+- It also hands out the test accounts (`accounts = N`). minimina generates
+  them and reads their private keys at create (`mina advanced dump-keypair`):
+  two mina runs per account, so this suits a few accounts, not hundreds.
+- minimina downloads the release binary for the host once into
+  `~/.minimina/.tools/accounts-manager/<version>`, checked against the SHA-256
+  GitHub gives for it.
+- For `?unlockAccount=true` it imports the account's key file into its daemon:
+  minimina gives it the test accounts' key files and those of `keys`, in
+  `<network dir>/accounts-manager/keys` (`MINA_KEYS_PATH`), with its ledger file
+  next to them.
 A `rosetta` node runs `mina-rosetta` against the archive database and the GraphQL
 API of a daemon (`node = "<name>"`, default: the archive node); the output of
 `network create` gives its `rosetta_uri`. An `archive-node-api` node runs

@@ -5,6 +5,7 @@
 //! `minimina network start` does not stop the network.
 
 use super::binary::Binary;
+use crate::accounts_manager;
 use crate::archive_node_api;
 use crate::cli::{ExecutionMode, Profile};
 use crate::daemon_args::{
@@ -230,9 +231,13 @@ impl NativeManager {
 
         // rosetta and the archive node api read a daemon and the archive
         // database, so they come last
-        let (apis, others): (Vec<&Service<Native>>, Vec<&Service<Native>>) = others
-            .into_iter()
-            .partition(|s| matches!(s.kind, Kind::Rosetta(_) | Kind::ArchiveNodeApi(_)));
+        let (apis, others): (Vec<&Service<Native>>, Vec<&Service<Native>>) =
+            others.into_iter().partition(|s| {
+                matches!(
+                    s.kind,
+                    Kind::Rosetta(_) | Kind::ArchiveNodeApi(_) | Kind::AccountsManager(_)
+                )
+            });
 
         let result = seeds
             .iter()
@@ -363,6 +368,15 @@ impl NativeManager {
                 self.spawn_with_env(name, &rosetta, &args, ROSETTA_ENV)
             }
             Kind::UptimeServiceBackend(_) => Err(NativeError::UptimeServiceUnsupported.into()),
+            Kind::AccountsManager(manager) => {
+                let ledger = accounts_manager::ledger_path(&self.network_path);
+                let keys = accounts_manager::keys_dir(&self.network_path);
+                let args =
+                    accounts_manager::args(utf8(&ledger)?, manager.port, manager.graphql_port);
+                let env = accounts_manager::env(utf8(&keys)?);
+                let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                self.spawn_with_env(name, &manager.server, &args, &env)
+            }
             Kind::Daemon(daemon) => {
                 // the archive daemon pushes blocks to mina-archive, so that comes up first
                 if let Some(archive) = daemon.archive_server() {

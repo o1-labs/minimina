@@ -52,6 +52,7 @@ pub fn collect_all_ports(services: &[Service<Native>]) -> Vec<PortUse> {
             Kind::SnarkWorker(_) | Kind::UptimeServiceBackend(_) => {}
             Kind::Rosetta(rosetta) => add(rosetta.port),
             Kind::ArchiveNodeApi(api) => add(api.port),
+            Kind::AccountsManager(manager) => add(manager.port),
             Kind::Daemon(daemon) => {
                 // typed::check keeps all five below 65536
                 for offset in 0..5 {

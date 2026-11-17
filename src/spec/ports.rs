@@ -37,7 +37,10 @@ fn uses(node: &PlannedNode) -> Vec<(u16, PortUse)> {
             ports.push(used(node.client_port.saturating_add(offset), purpose));
         }
     }
-    if matches!(node.role, Role::Rosetta | Role::ArchiveNodeApi) {
+    if matches!(
+        node.role,
+        Role::Rosetta | Role::ArchiveNodeApi | Role::AccountsManager
+    ) {
         ports.push(used(node.client_port, "api"));
     }
     if let Some(port) = node.archive_port {

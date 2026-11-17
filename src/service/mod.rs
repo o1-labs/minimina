@@ -37,6 +37,9 @@ pub enum ServiceType {
     /// Archive Node API: GraphQL over the archive database (events, actions).
     #[serde(rename = "Archive_node_api")]
     ArchiveNodeApi,
+    /// Hands funded accounts out to tests; native mode only.
+    #[serde(rename = "Accounts_manager")]
+    AccountsManager,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -87,6 +90,15 @@ pub struct ServiceConfig {
     /// Native mode: the server's executable, resolved (and installed) at create.
     pub archive_node_api_bin: Option<PathBuf>,
 
+    //accounts manager specific: its port is client_port
+    pub accounts_manager_version: Option<String>,
+    /// Its executable, resolved (and installed) at create.
+    pub accounts_manager_bin: Option<PathBuf>,
+    /// Daemon whose GraphQL API it asks.
+    pub accounts_manager_node: Option<String>,
+    /// GraphQL (REST) port of that daemon.
+    pub accounts_manager_graphql_port: Option<u16>,
+
     //uptime service backend specific
     pub uptime_service_backend_app_config: Option<PathBuf>,
     pub uptime_service_backend_minasheets: Option<PathBuf>,
@@ -119,6 +131,8 @@ pub enum ServiceError {
     },
     #[error("'{service}' needs an archive node")]
     NeedsArchive { service: String },
+    #[error("'{service}' runs in native mode only")]
+    NativeOnly { service: String },
 }
 
 impl ServiceConfig {

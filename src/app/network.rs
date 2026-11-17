@@ -63,6 +63,7 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
                 .context("Failed to write the fork schedule")?;
             }
             setup::install_archive_node_api(ctx, &mut services)?;
+            setup::install_accounts_manager(ctx, &mut services, &crate::install::mina::Http)?;
             // copy libp2p + network keys
             ctx.dirs
                 .copy_all_network_keys(&network_id, &services)
