@@ -196,22 +196,42 @@ funded accounts out to tests (`GET /acquire-account`, `PUT /release-account`;
 o1js `Lightnet.acquireKeyPair` asks it). Native mode only: it asks the GraphQL
 API of a daemon on localhost (`node`, default: the first daemon of the spec).
 
-Its accounts are best given, as the lightnet docker image ships them: a ledger
-file whose accounts have their private key (`sk`) and their own balance, and a
-directory of their key files named by public key. Nothing is generated, so
-`network create` takes no longer with a thousand accounts than with one.
+Its accounts can be given already generated, so that `network create` spends no
+time generating them: it takes no longer with a thousand accounts than with
+one. Give a ledger file whose accounts have their private key (`sk`) and their
+own balance, and a directory of their key files:
+
+```text
+my-network/
+├── net.toml              # the spec
+├── daemon.json           # [ledger] file: accounts with `pk`, `sk` and `balance`
+└── key-pairs/            # keys: one key pair per account of daemon.json
+    ├── B62qk…            # its private key file, named by its public key
+    ├── B62qk….pub        # its public key
+    └── …
+```
+
+```json
+{ "ledger": { "accounts": [
+  { "pk": "B62qk…", "sk": "EKE…", "balance": "1550" }
+] } }
+```
 
 ```toml
 [[nodes]]
 role = "accounts-manager"
 client_port = 8181        # its HTTP API
-keys = "key-pairs"        # key files of the ledger file's accounts, named by public key
+keys = "key-pairs"        # relative to the spec file
 # node = "bp-1"           # the daemon it asks
 # version = "0.1.2"       # its GitHub release; `bin` runs your own build
 
 [ledger]
-file = "daemon.json"      # accounts with `pk`, `sk` and `balance`
+file = "daemon.json"
 ```
+
+The private key files are the ones `mina advanced generate-keypair` writes,
+encrypted with the password `naughty blue worm`, which minimina gives the
+accounts manager to unlock them.
 
 - It hands out the accounts of `[ledger] file` that have a private key (`sk`,
   or the `private_key` column of a CSV file). It keeps 10 of them unused, so
