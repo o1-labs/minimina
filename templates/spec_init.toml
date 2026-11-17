@@ -94,6 +94,16 @@ minasheets = {{ minasheets|toml }}
 config_files = {{ files|toml }}
 {% endif -%}
 {% endfor %}
+# Keys of the nodes and test accounts: with `seed`, every create makes the
+# same keys from it and the node or account name; without it, new ones.
+{% match spec.keys.seed -%}
+{% when Some(seed) -%}
+[keys]
+seed = {{ seed|toml }}
+{% when None -%}
+# [keys]
+# seed = "my-network"
+{% endmatch %}
 # Funded accounts for transactions in tests: account-1 .. account-N, with
 # `balance` MINA each; keys are in <network dir>/network-keypairs.
 # `file` gives accounts to start with; the generated ones are added after them:

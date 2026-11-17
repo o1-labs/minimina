@@ -29,7 +29,7 @@ mod filters {
 mod tests {
     use super::*;
     use crate::cli::{NodeFlags, Profile};
-    use crate::spec::{LedgerSpec, NodeGroup};
+    use crate::spec::{KeysSpec, LedgerSpec, NodeGroup};
     use askama::Template;
 
     fn render(spec: &NetworkSpec) -> String {
@@ -67,6 +67,10 @@ mod tests {
         );
         assert!(text.contains("# profile = \"devnet\"\n"), "{text}");
         assert!(text.contains("# balance = \"1000\"\n"), "{text}");
+        assert!(
+            text.contains("# [keys]\n# seed = \"my-network\"\n"),
+            "{text}"
+        );
         let back: NetworkSpec = toml::from_str(&text).unwrap();
         assert_eq!(back, spec);
     }
@@ -101,11 +105,18 @@ mod tests {
                 balance: Some("7".parse().unwrap()),
                 file: Some("/tmp/a b.csv".into()),
             },
+            keys: KeysSpec {
+                seed: Some("light \"net\"".into()),
+            },
             ..NetworkSpec::default_network()
         };
         let text = render(&spec);
         assert!(text.contains("profile = \"lightnet\"\n"), "{text}");
         assert!(text.contains("name = 'r \"1\"'\n"), "{text}");
+        assert!(
+            text.contains("\n[keys]\nseed = 'light \"net\"'\n"),
+            "{text}"
+        );
         let back: NetworkSpec = toml::from_str(&text).unwrap();
         assert_eq!(back, spec);
     }

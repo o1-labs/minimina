@@ -628,6 +628,167 @@ fn native_spec_network() {
     assert!(services.contains("\"node-1\""), "{services}");
 }
 
+/// The public keys of a network's genesis ledger, in order.
+fn ledger_keys(net: &Path) -> Vec<String> {
+    let ledger: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(net.join("genesis_ledger.json")).unwrap())
+            .unwrap();
+    ledger["ledger"]["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["pk"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn seeded_network_has_the_same_keys_on_every_create() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let spec = dir.path().join("net.toml");
+    std::fs::write(
+        &spec,
+        "[[nodes]]\nrole = \"seed\"\n[[nodes]]\nrole = \"block-producer\"\n\
+         [ledger]\naccounts = 2\n[keys]\nseed = \"lightnet\"\n",
+    )
+    .unwrap();
+    let create = |network_id: &str, extra: &[&str]| {
+        let mut args = vec![
+            "--mode",
+            "native",
+            "--bin-path",
+            path_arg(bin.path()),
+            "network",
+            "create",
+            "-n",
+            network_id,
+            "--spec",
+            path_arg(&spec),
+        ];
+        args.extend(extra);
+        h.run(&args).unwrap();
+        h.dirs.network_path(network_id)
+    };
+    let (first, second) = (create("first", &[]), create("second", &[]));
+    // mina makes and reads no key
+    let no_key_calls = || !h.fake.lines().iter().any(|l| l.contains("keypair"));
+    assert!(no_key_calls(), "{:?}", h.fake.lines());
+
+    let keys = ledger_keys(&first);
+    let expected: Vec<String> = ["bp-1", "account-1", "account-2"]
+        .iter()
+        .map(|name| {
+            crate::seeded_keys::AccountKey::derive("lightnet", name)
+                .public_key(name)
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(keys, expected);
+    assert_eq!(ledger_keys(&second), keys);
+    let peer_id =
+        |net: &Path| std::fs::read_to_string(net.join("libp2p-keypairs/seed-1.peerid")).unwrap();
+    assert_eq!(peer_id(&first), peer_id(&second));
+
+    // the daemons find their keys in the network directory
+    let services = std::fs::read_to_string(first.join("services.json")).unwrap();
+    let bp_key = first.join("network-keypairs/bp-1");
+    assert!(
+        services.contains(&format!("{}", bp_key.display())),
+        "{services}"
+    );
+    assert!(bp_key.exists() && first.join("network-keypairs/bp-1.pub").exists());
+    // the kept spec makes the same keys again
+    let kept = std::fs::read_to_string(h.dirs.spec_path("first")).unwrap();
+    assert!(kept.contains("[keys]\nseed = \"lightnet\""), "{kept}");
+
+    // --key-seed replaces the spec's seed
+    let other = create("other", &["--key-seed", "other"]);
+    assert_ne!(ledger_keys(&other), keys);
+    assert!(no_key_calls());
+}
+
+#[test]
+fn accounts_manager_serves_seeded_keys_without_reading_them_back() {
+    let h = Harness::new();
+    let bin = fake_mina_dir();
+    let manager = bin.path().join("accounts-manager");
+    std::fs::write(&manager, "").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let spec = dir.path().join("net.toml");
+    std::fs::write(
+        &spec,
+        format!(
+            "[[nodes]]\nrole = \"standalone\"\n[[nodes]]\nrole = \"accounts-manager\"\n\
+             bin = {:?}\n[ledger]\naccounts = 11\n[keys]\nseed = \"lightnet\"\n",
+            manager.display().to_string()
+        ),
+    )
+    .unwrap();
+    h.run(&[
+        "--mode",
+        "native",
+        "--bin-path",
+        path_arg(bin.path()),
+        "network",
+        "create",
+        "-n",
+        "am",
+        "--spec",
+        path_arg(&spec),
+    ])
+    .unwrap();
+    assert!(
+        !h.fake.lines().iter().any(|l| l.contains("keypair")),
+        "{:?}",
+        h.fake.lines()
+    );
+    let net = h.dirs.network_path("am");
+    let ledger = std::fs::read_to_string(crate::accounts_manager::ledger_path(&net)).unwrap();
+    let account = crate::seeded_keys::AccountKey::derive("lightnet", "account-1");
+    assert!(ledger.contains(&account.private_key()), "{ledger}");
+    let public_key = account.public_key("account-1").unwrap();
+    assert!(crate::accounts_manager::keys_dir(&net)
+        .join(&public_key)
+        .exists());
+}
+
+#[test]
+fn seeded_docker_network_mounts_its_keys() {
+    let h = Harness::new();
+    h.docker_ok();
+    let spec = h.small_spec();
+    h.run(&[
+        "network",
+        "create",
+        "-n",
+        "small",
+        "--spec",
+        &spec,
+        "--key-seed",
+        "lightnet",
+    ])
+    .unwrap();
+    let lines = h.fake.lines();
+    assert!(
+        !lines.iter().any(|l| l.contains("generate-keypair")),
+        "{lines:?}"
+    );
+    let net = h.dirs.network_path("small");
+    assert!(net.join("network-keypairs/receiver").exists());
+    let compose = std::fs::read_to_string(net.join("docker-compose.yaml")).unwrap();
+    // the containers read the keys where the network directory is mounted
+    assert!(
+        compose.contains("/local-network/network-keypairs/receiver"),
+        "{compose}"
+    );
+    let peer = crate::seeded_keys::Libp2pKey::derive("lightnet", "seed-0").peer_id();
+    assert!(
+        compose.contains(&format!("-peer /dns4/seed-0-small/tcp/3102/p2p/{peer}")),
+        "{compose}"
+    );
+}
+
 #[test]
 fn native_mode_requires_mina_binary() {
     let h = Harness::new();

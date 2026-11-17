@@ -32,11 +32,26 @@ sha2 = "0.10"
 askama = { version = "0.16", default-features = false, features = ["derive", "std"] }
 signal-hook = "0.3"
 postgres = "0.19"
+# seeded keys: mina's account keys (Pallas), key files and libp2p keys
+pasta_curves = "0.6"
+argon2 = "0.6"
+crypto_secretbox = "0.1"
+ed25519-dalek = "3"
+bs58 = { version = "0.5", features = ["check"] }
+base64 = "0.22"
+getrandom = "0.4"
 
 [dev-dependencies]
 assert_cmd = "2"
 tempfile = "3"
 md-5 = "0.10"
+
+# argon2 runs at mina's key file cost (128 MiB) in tests too
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
 
 [package.metadata.deb]
 maintainer = "Piotr Stachyra <piotr.stachyra@minaprotocol.com>"

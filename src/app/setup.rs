@@ -12,6 +12,7 @@ use crate::{
     install::{mina::Fetch, Installer},
     keys::{KeysManager, NodeKey},
     native::keys::NativeKeysManager,
+    seeded_keys::SeededKeys,
     service::{ServiceConfig, ServiceType},
     spec::{
         ledger::{Balance, LedgerAccount, PublicKey},
@@ -80,34 +81,20 @@ fn generate_from_spec(
         accounts.len()
     );
 
-    let (bp, libp2p) = match ctx.mode {
-        ExecutionMode::Docker => {
-            let image = spec
-                .docker
-                .daemon_image
-                .as_deref()
-                .unwrap_or(DEFAULT_DAEMON_DOCKER_IMAGE);
-            let keys = KeysManager::new(network_path, image, ctx.profile, ctx.runner.clone());
-            (
-                keys.generate_bp_key_pairs(&with_keys),
-                keys.generate_libp2p_key_pairs(&daemons),
-            )
+    let seeded = match &spec.keys.seed {
+        Some(seed) => {
+            let key_root = match ctx.mode {
+                ExecutionMode::Docker => "/local-network".to_string(),
+                ExecutionMode::Native => network_path.display().to_string(),
+            };
+            Some(SeededKeys::new(seed, network_path, &key_root)?)
         }
-        ExecutionMode::Native => {
-            let keys = NativeKeysManager::new(
-                network_path,
-                ctx.bin_path()?,
-                ctx.profile,
-                ctx.runner.clone(),
-            );
-            (
-                keys.generate_bp_key_pairs(&with_keys),
-                keys.generate_libp2p_key_pairs(&daemons),
-            )
-        }
+        None => None,
     };
-    let bp = bp.context("Failed to generate key pairs for mina services")?;
-    let libp2p = libp2p.context("Failed to generate libp2p key pairs for mina services")?;
+    let (bp, libp2p) = match &seeded {
+        Some(keys) => (keys.account_keys(&with_keys)?, keys.libp2p_keys(&daemons)?),
+        None => generated_keys(ctx, network_path, &spec, &with_keys, &daemons)?,
+    };
 
     let pk = |name: &str| -> Result<PublicKey> {
         let key = bp
@@ -136,12 +123,15 @@ fn generate_from_spec(
                 let key = bp
                     .get(name)
                     .with_context(|| format!("no key generated for '{name}'"))?;
-                let sk =
-                    keys.private_key(name)
-                        .map_err(|cause| AccountsManagerError::PrivateKey {
+                let sk = match &seeded {
+                    Some(seeded) => seeded.private_key(name),
+                    None => keys.private_key(name).map_err(|cause| {
+                        AccountsManagerError::PrivateKey {
                             account: name.clone(),
                             cause: cause.into(),
-                        })?;
+                        }
+                    })?,
+                };
                 Ok(GeneratedAccount {
                     pair: KeyPair { pk: pk(name)?, sk },
                     key_file: key.key_path.clone().into(),
@@ -174,6 +164,46 @@ fn generate_from_spec(
         bp,
         libp2p,
     })
+}
+
+/// Block producer and libp2p key pairs that mina generates, new on every
+/// create: for `with_keys` and `daemons`.
+fn generated_keys(
+    ctx: &Context,
+    network_path: &Path,
+    spec: &NetworkSpec,
+    with_keys: &[&str],
+    daemons: &[&str],
+) -> Result<(HashMap<String, NodeKey>, HashMap<String, NodeKey>)> {
+    let (bp, libp2p) = match ctx.mode {
+        ExecutionMode::Docker => {
+            let image = spec
+                .docker
+                .daemon_image
+                .as_deref()
+                .unwrap_or(DEFAULT_DAEMON_DOCKER_IMAGE);
+            let keys = KeysManager::new(network_path, image, ctx.profile, ctx.runner.clone());
+            (
+                keys.generate_bp_key_pairs(with_keys),
+                keys.generate_libp2p_key_pairs(daemons),
+            )
+        }
+        ExecutionMode::Native => {
+            let keys = NativeKeysManager::new(
+                network_path,
+                ctx.bin_path()?,
+                ctx.profile,
+                ctx.runner.clone(),
+            );
+            (
+                keys.generate_bp_key_pairs(with_keys),
+                keys.generate_libp2p_key_pairs(daemons),
+            )
+        }
+    };
+    let bp = bp.context("Failed to generate key pairs for mina services")?;
+    let libp2p = libp2p.context("Failed to generate libp2p key pairs for mina services")?;
+    Ok((bp, libp2p))
 }
 
 /// Installs what the archive node api needs to run.

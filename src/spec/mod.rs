@@ -30,6 +30,9 @@
 //! [docker]
 //! uptime_service_backend_image = "uptime-service-backend:..."
 //!
+//! [keys]                          # optional: the same keys on every create
+//! seed = "lightnet"
+//!
 //! [ledger]                        # funded accounts for tests: account-1 ...
 //! accounts = 5
 //! balance = "1000"
@@ -55,12 +58,14 @@ pub mod archive_database;
 mod error;
 pub mod flags;
 pub mod init;
+mod keys;
 pub mod ledger;
 mod ports;
 mod uptime;
 
 use archive_database::ArchiveDatabase;
 pub use error::{LedgerProblem, SpecError};
+pub use keys::KeysSpec;
 use ledger::Balance;
 pub use uptime::UptimeFiles;
 
@@ -96,6 +101,8 @@ pub struct NetworkSpec {
     pub nodes: Vec<NodeGroup>,
     #[serde(default)]
     pub ledger: LedgerSpec,
+    #[serde(default, skip_serializing_if = "KeysSpec::is_empty")]
+    pub keys: KeysSpec,
     /// Merged into the generated genesis runtime config (`genesis`, `proof`, `daemon`, ...).
     pub runtime_config: Option<toml::Table>,
     #[serde(default, skip_serializing_if = "DockerSpec::is_empty")]
@@ -402,6 +409,7 @@ impl NetworkSpec {
                 NodeGroup::new(Role::BlockProducer, 1),
             ],
             ledger: LedgerSpec::default(),
+            keys: KeysSpec::default(),
             runtime_config: None,
             docker: DockerSpec::default(),
             hardfork: None,
@@ -431,6 +439,7 @@ impl NetworkSpec {
                 archive,
             ],
             ledger: LedgerSpec::default(),
+            keys: KeysSpec::default(),
             runtime_config: None,
             docker: DockerSpec::default(),
             hardfork: None,
@@ -451,6 +460,14 @@ impl NetworkSpec {
                 "the network spec has no seed; add a node with role = \"seed\" \
                  (or \"standalone\")"
             );
+        }
+        if self
+            .keys
+            .seed
+            .as_deref()
+            .is_some_and(|seed| seed.trim().is_empty())
+        {
+            bail!("`[keys] seed` is empty: give a seed, or remove it for new keys on every create");
         }
         for role in [
             Role::Archive,
@@ -814,6 +831,26 @@ mod tests {
             s.runtime_config_json().unwrap().unwrap(),
             serde_json::json!({"proof": {"block_window_duration_ms": 30000}})
         );
+    }
+
+    #[test]
+    fn a_key_seed_is_kept_with_the_spec() {
+        let s = spec("[[nodes]]\nrole = \"standalone\"\n[keys]\nseed = \"lightnet\"");
+        assert_eq!(s.keys.seed.as_deref(), Some("lightnet"));
+        let kept = s.to_toml().unwrap();
+        assert!(kept.contains("[keys]\nseed = \"lightnet\"\n"), "{kept}");
+        assert_eq!(toml::from_str::<NetworkSpec>(&kept).unwrap(), s);
+        // without a seed, the kept spec has no [keys]
+        let mut random = s.clone();
+        random.keys = KeysSpec::default();
+        assert!(!random.to_toml().unwrap().contains("[keys]"));
+
+        random.keys.seed = Some(" ".into());
+        let err = random.plan().unwrap_err().to_string();
+        assert!(err.contains("`[keys] seed` is empty"), "{err}");
+        let err = toml::from_str::<NetworkSpec>("[[nodes]]\nrole = \"seed\"\n[keys]\nsalt = \"x\"")
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown field `salt`"), "{err}");
     }
 
     #[test]
