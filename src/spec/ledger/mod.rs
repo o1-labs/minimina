@@ -13,12 +13,14 @@ mod account;
 mod balance;
 mod csv_header;
 mod public_key;
+mod slot;
 mod timing;
 
 pub use account::LedgerAccount;
 pub use balance::Balance;
 pub use csv_header::{Column, CsvHeader};
 pub use public_key::PublicKey;
+pub use slot::{Slot, SlotKind};
 pub use timing::Timing;
 
 use super::{LedgerProblem, SpecError};
@@ -213,6 +215,31 @@ mod tests {
         );
     }
 
+    /// A ledger written by mina tags the slots of a vesting schedule, and the
+    /// genesis ledger keeps them as they are.
+    #[test]
+    fn json_takes_mina_tagged_vesting_slots() {
+        let dir = tempfile::tempdir().unwrap();
+        let timing = json!({
+            "initial_minimum_balance": "1000",
+            "cliff_time": ["Since_genesis", "10"],
+            "cliff_amount": "100",
+            "vesting_period": ["Global_slot_span", "20"],
+            "vesting_increment": "100"
+        });
+        let given = json!({"pk": PK1, "balance": "1550", "timing": timing});
+        let text = json!({"ledger": {"name": "x", "accounts": [given]}}).to_string();
+        let ledger = LedgerFile::load(&file(&dir, "l.json", &text)).unwrap();
+        let account = &ledger.accounts[0];
+        let read = account.timing.as_ref().unwrap();
+        assert_eq!(
+            read.cliff_time,
+            Slot::Tagged(SlotKind::SinceGenesis, "10".into())
+        );
+        assert_eq!(read.vesting_period.value(), "20");
+        assert_eq!(serde_json::to_value(account).unwrap(), given);
+    }
+
     #[test]
     fn json_takes_a_runtime_config_or_its_accounts() {
         let dir = tempfile::tempdir().unwrap();
@@ -232,7 +259,7 @@ mod tests {
             let ledger = LedgerFile::load(&file(&dir, "l.json", &text.to_string())).unwrap();
             assert_eq!(ledger.accounts.len(), 1);
             let account = &ledger.accounts[0];
-            assert_eq!(account.timing.as_ref().unwrap().cliff_time, "10");
+            assert_eq!(account.timing.as_ref().unwrap().cliff_time.value(), "10");
             // other fields are kept; a null sk is no sk
             assert_eq!(
                 serde_json::to_value(account).unwrap(),
