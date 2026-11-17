@@ -1,6 +1,6 @@
 //! Port checks for native networks, where every node shares the host's ports.
 
-use crate::service::typed::{Kind, Native, Role, Service};
+use crate::service::typed::{Kind, Native, Service};
 use std::collections::HashMap;
 use std::io;
 use std::net::TcpListener;
@@ -57,8 +57,8 @@ pub fn collect_all_ports(services: &[Service<Native>]) -> Vec<PortUse> {
                 for offset in 0..5 {
                     add(daemon.client_port + offset);
                 }
-                if let Role::Archive { port, .. } = daemon.role {
-                    add(port);
+                if let Some(archive) = daemon.archive_server() {
+                    add(archive.port);
                 }
             }
         }

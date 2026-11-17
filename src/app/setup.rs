@@ -14,7 +14,7 @@ use crate::{
     service::{ServiceConfig, ServiceType},
     spec::{
         ledger::{Balance, LedgerAccount, PublicKey},
-        NetworkSpec, PlannedNode, Role, DEFAULT_ACCOUNT_BALANCE,
+        NetworkSpec, PlannedNode, Role, DEFAULT_ACCOUNT_BALANCE, DEFAULT_SNARK_WORK_FEE,
     },
 };
 use anyhow::{Context as _, Result};
@@ -205,7 +205,7 @@ fn spec_services(
     };
 
     let mut peers = Vec::new();
-    for seed in net.nodes.iter().filter(|n| n.role == Role::Seed) {
+    for seed in net.nodes.iter().filter(|n| n.role.is_seed()) {
         peers.push(ServiceConfig::generate_peer(
             &seed.name,
             network_id,
@@ -233,7 +233,7 @@ fn spec_services(
                 client_port: Some(node.client_port),
                 public_key: key.map(|k| k.key_string.clone()),
                 libp2p_keypair: Some(libp2p(&node.name)?.key_string.clone()),
-                peers: (service_type != ServiceType::Seed).then(|| peers.clone()),
+                peers: (!node.role.is_seed()).then(|| peers.clone()),
                 ..Default::default()
             })
         };
@@ -247,20 +247,18 @@ fn spec_services(
                 ..daemon(ServiceType::BlockProducer)?
             },
             Role::Plain => daemon(ServiceType::PlainNode)?,
+            Role::Standalone => ServiceConfig {
+                libp2p_peerid: Some(peer_id(&node.name)?),
+                public_key_path: key.map(|k| k.key_path.clone()),
+                snark_worker_fee: node.fee.clone().or(Some(DEFAULT_SNARK_WORK_FEE.into())),
+                ..with_archive(daemon(ServiceType::Standalone)?, node, archive_image)
+            },
             Role::SnarkCoordinator => ServiceConfig {
-                snark_coordinator_fees: node.fee.clone().or(Some("0.001".into())),
+                snark_coordinator_fees: node.fee.clone().or(Some(DEFAULT_SNARK_WORK_FEE.into())),
                 worker_nodes: Some(node.workers.len() as u16),
                 ..daemon(ServiceType::SnarkCoordinator)?
             },
-            Role::Archive => ServiceConfig {
-                archive_docker_image: Some(archive_image.into()),
-                // replaced by the archive package's own copy when it has one
-                archive_schema_files: Some(vec![format!(
-                    "https://raw.githubusercontent.com/MinaProtocol/mina/{IMAGE_COMMIT_HASH}/src/app/archive/create_schema.sql"
-                )]),
-                archive_port: node.archive_port,
-                ..daemon(ServiceType::ArchiveNode)?
-            },
+            Role::Archive => with_archive(daemon(ServiceType::ArchiveNode)?, node, archive_image),
             Role::ArchiveNodeApi => {
                 let version = node
                     .version
@@ -326,6 +324,23 @@ fn spec_services(
         }
     }
     Ok(services)
+}
+
+/// `daemon` with the `mina-archive` of `node`, when it runs one: its port,
+/// image and schema.
+fn with_archive(daemon: ServiceConfig, node: &PlannedNode, archive_image: &str) -> ServiceConfig {
+    if !node.runs_archive() {
+        return daemon;
+    }
+    ServiceConfig {
+        archive_docker_image: Some(archive_image.into()),
+        // replaced by the archive package's own copy when it has one
+        archive_schema_files: Some(vec![format!(
+            "https://raw.githubusercontent.com/MinaProtocol/mina/{IMAGE_COMMIT_HASH}/src/app/archive/create_schema.sql"
+        )]),
+        archive_port: node.archive_port,
+        ..daemon
+    }
 }
 
 #[cfg(test)]
@@ -428,6 +443,69 @@ mod tests {
         );
         assert_eq!(services[1].public_key, None);
         assert_eq!(services[1].docker_image.as_deref(), Some("img"));
+    }
+
+    #[test]
+    fn archive_node_attaches_to_the_standalone_daemon() {
+        let spec: NetworkSpec = toml::from_str(
+            r#"
+            [[nodes]]
+            role = "standalone"
+            client_port = 3084
+
+            [[nodes]]
+            role = "archive"
+
+            [[nodes]]
+            role = "rosetta"
+            "#,
+        )
+        .unwrap();
+        let services = spec_services(&generated(spec), "net", ExecutionMode::Native).unwrap();
+        // the archive node is no service of its own: the standalone daemon runs it
+        let (solo, rosetta) = (&services[0], &services[1]);
+        assert_eq!(services.len(), 2);
+        assert_eq!(solo.service_type, ServiceType::Standalone);
+        assert_eq!(solo.libp2p_peerid.as_deref(), Some("peer-standalone-1"));
+        assert_eq!(solo.peers, None);
+        assert_eq!(solo.public_key.as_deref(), Some("B62standalone-1"));
+        assert_eq!(
+            solo.public_key_path.as_deref(),
+            Some("/keys/B62standalone-1")
+        );
+        assert_eq!(
+            solo.snark_worker_fee.as_deref(),
+            Some(DEFAULT_SNARK_WORK_FEE)
+        );
+        // mina-archive on client port + 5, with the schema the archive node gets
+        assert_eq!(solo.archive_port, Some(3089));
+        assert!(solo.archive_schema_files.is_some());
+        assert_eq!(
+            ServiceConfig::get_archive_node(&services).map(|s| s.service_name.as_str()),
+            Some("standalone-1")
+        );
+        // rosetta reads the daemon that runs the archive
+        assert_eq!(
+            rosetta.rosetta_graphql_node.as_deref(),
+            Some("standalone-1")
+        );
+        assert_eq!(rosetta.rosetta_graphql_port, Some(3085));
+        crate::service::typed::check::<crate::service::typed::Native>(&services).unwrap();
+    }
+
+    #[test]
+    fn standalone_without_archive_runs_none() {
+        let spec: NetworkSpec = toml::from_str(
+            r#"
+            [[nodes]]
+            role = "standalone"
+            "#,
+        )
+        .unwrap();
+        let services = spec_services(&generated(spec), "net", ExecutionMode::Native).unwrap();
+        assert_eq!(services[0].archive_port, None);
+        assert_eq!(services[0].archive_schema_files, None);
+        assert!(ServiceConfig::get_archive_node(&services).is_none());
     }
 
     #[test]

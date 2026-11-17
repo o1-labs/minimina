@@ -56,6 +56,7 @@ mod error;
 pub mod flags;
 pub mod init;
 pub mod ledger;
+mod ports;
 mod uptime;
 
 use archive_database::ArchiveDatabase;
@@ -78,6 +79,8 @@ pub const DEFAULT_BLOCK_PRODUCER_BALANCE: u64 = 11_550_000;
 /// account creation fee, 1 MINA): a smaller fee is refused, so its work never
 /// reaches the snark pool and blocks stay empty once the scan state is full.
 pub const DEFAULT_SNARK_COORDINATOR_BALANCE: u64 = 1000;
+/// MINA per snark work of a snark coordinator or standalone node that sets no `fee`.
+pub const DEFAULT_SNARK_WORK_FEE: &str = "0.001";
 /// Genesis balance in MINA of the funded test accounts of a spec that sets none.
 pub const DEFAULT_ACCOUNT_BALANCE: u64 = 1000;
 /// First client port of automatically placed daemons; each takes `PORT_STEP` ports.
@@ -110,6 +113,10 @@ pub enum Role {
     Plain,
     Archive,
     SnarkCoordinator,
+    /// One daemon that is a whole network: a seed that produces blocks and
+    /// does its own snark work (`-demo-mode`, so it counts as synced without
+    /// peers).
+    Standalone,
     /// `mina-rosetta`, not a daemon: needs an archive node.
     Rosetta,
     /// Archive Node API (GraphQL over the archive database), not a daemon:
@@ -128,6 +135,7 @@ impl Role {
             Role::Plain => "node",
             Role::Archive => "archive",
             Role::SnarkCoordinator => "snark-coordinator",
+            Role::Standalone => "standalone",
             Role::Rosetta => "rosetta",
             Role::ArchiveNodeApi => "archive-node-api",
             Role::UptimeServiceBackend => "uptime-service-backend",
@@ -140,7 +148,9 @@ impl Role {
     /// ([`DEFAULT_SNARK_COORDINATOR_BALANCE`]); other nodes get no account.
     pub fn default_balance(&self) -> Option<Balance> {
         match self {
-            Role::BlockProducer => Some(Balance::mina(DEFAULT_BLOCK_PRODUCER_BALANCE)),
+            Role::BlockProducer | Role::Standalone => {
+                Some(Balance::mina(DEFAULT_BLOCK_PRODUCER_BALANCE))
+            }
             Role::SnarkCoordinator => Some(Balance::mina(DEFAULT_SNARK_COORDINATOR_BALANCE)),
             _ => None,
         }
@@ -153,6 +163,17 @@ impl Role {
             self,
             Role::Rosetta | Role::ArchiveNodeApi | Role::UptimeServiceBackend
         )
+    }
+
+    /// Whether nodes of the role are seeds: the other daemons (with a
+    /// standalone node, only the archive's) dial them.
+    pub fn is_seed(&self) -> bool {
+        matches!(self, Role::Seed | Role::Standalone)
+    }
+
+    /// Whether nodes of the role do snark work for a fee (`fee`).
+    pub fn does_snark_work(&self) -> bool {
+        matches!(self, Role::SnarkCoordinator | Role::Standalone)
     }
 }
 
@@ -174,7 +195,7 @@ pub struct NodeGroup {
     pub database: Option<ArchiveDatabase>,
     /// Snark coordinator: number of snark workers.
     pub workers: Option<u16>,
-    /// Snark coordinator: fee per snark work.
+    /// Snark coordinator, standalone: fee per snark work.
     pub fee: Option<String>,
     /// Rosetta: the daemon whose GraphQL API it reads. Default: the archive node.
     pub node: Option<String>,
@@ -290,8 +311,17 @@ impl PlannedNode {
         self.role.is_daemon()
     }
 
+    /// Whether the node runs `mina-archive`: the archive node, or a
+    /// standalone node with the archive node attached.
+    pub fn runs_archive(&self) -> bool {
+        self.archive_port.is_some()
+    }
+
     pub fn needs_key(&self) -> bool {
-        matches!(self.role, Role::BlockProducer | Role::SnarkCoordinator) || self.balance.is_some()
+        matches!(
+            self.role,
+            Role::BlockProducer | Role::SnarkCoordinator | Role::Standalone
+        ) || self.balance.is_some()
     }
 }
 
@@ -393,8 +423,11 @@ impl NetworkSpec {
                 .map(|g| g.count as usize)
                 .sum::<usize>()
         };
-        if count(Role::Seed) == 0 {
-            bail!("the network spec has no seed; add a node with role = \"seed\"");
+        if count(Role::Seed) + count(Role::Standalone) == 0 {
+            bail!(
+                "the network spec has no seed; add a node with role = \"seed\" \
+                 (or \"standalone\")"
+            );
         }
         for role in [
             Role::Archive,
@@ -423,6 +456,9 @@ impl NetworkSpec {
 
         let mut index = std::collections::HashMap::<&str, usize>::new();
         let mut nodes = Vec::new();
+        // with a standalone node, the archive node runs no daemon of its own:
+        // its mina-archive is the standalone daemon's (see below)
+        let mut attached_archive = None;
         for group in &self.nodes {
             if group.count == 0 {
                 bail!("{:?} nodes: count must be at least 1", group.role);
@@ -433,11 +469,15 @@ impl NetworkSpec {
                     group.role
                 );
             }
-            if group.role != Role::SnarkCoordinator
-                && (group.workers.is_some() || group.fee.is_some())
-            {
+            if group.role != Role::SnarkCoordinator && group.workers.is_some() {
                 bail!(
-                    "{:?} nodes: `workers` and `fee` are for snark coordinators",
+                    "{:?} nodes: `workers` is for snark coordinators",
+                    group.role
+                );
+            }
+            if !group.role.does_snark_work() && group.fee.is_some() {
+                bail!(
+                    "{:?} nodes: `fee` is for snark coordinators and standalone nodes",
                     group.role
                 );
             }
@@ -466,6 +506,13 @@ impl NetworkSpec {
                     "{:?} nodes: `version` and `bin` are for the archive node api",
                     group.role
                 );
+            }
+            if group.role == Role::Archive && count(Role::Standalone) > 0 {
+                if group.client_port.is_some() {
+                    return Err(SpecError::AttachedArchiveClientPort.into());
+                }
+                attached_archive = Some(group);
+                continue;
             }
             let uptime = uptime_files(group, &self.docker)?;
             for _ in 0..group.count {
@@ -507,6 +554,10 @@ impl NetworkSpec {
             }
         }
 
+        if let Some(archive) = attached_archive {
+            attach_archive(&mut nodes, archive);
+        }
+
         // rosetta reads the archive database and a daemon's GraphQL API
         for role in [Role::Rosetta, Role::ArchiveNodeApi] {
             if count(role) > 0 && count(Role::Archive) == 0 {
@@ -516,9 +567,15 @@ impl NetworkSpec {
                 );
             }
         }
+        let archive_daemon = nodes
+            .iter()
+            .find(|n| n.runs_archive())
+            .map(|n| n.name.clone());
+        // the groups of the planned nodes, in order (an attached archive is no node)
         let groups = self
             .nodes
             .iter()
+            .filter(|g| !attached_archive.is_some_and(|a| std::ptr::eq(a, *g)))
             .flat_map(|g| std::iter::repeat_n(g, g.count as usize));
         let daemons: Vec<(String, u16, Role)> = nodes
             .iter()
@@ -530,7 +587,7 @@ impl NetworkSpec {
             }
             let wanted = |d: &&(String, u16, Role)| match &group.node {
                 Some(name) => &d.0 == name,
-                None => d.2 == Role::Archive,
+                None => archive_daemon.as_ref() == Some(&d.0),
             };
             let (name, port, role) = daemons.iter().find(wanted).with_context(|| {
                 format!(
@@ -563,6 +620,8 @@ impl NetworkSpec {
                 );
             }
         }
+        check_standalone_is_alone(&nodes)?;
+        ports::check(&nodes)?;
         Ok(nodes)
     }
 
@@ -588,6 +647,36 @@ impl NetworkSpec {
             .map(|t| serde_json::to_value(t).context("runtime_config is not valid JSON"))
             .transpose()
     }
+}
+
+/// The archive node of a spec with a standalone node: its `mina-archive` runs
+/// next to the standalone daemon, which sends it its blocks, on `archive_port`
+/// (default: the standalone node's client port + 5).
+fn attach_archive(nodes: &mut [PlannedNode], archive: &NodeGroup) {
+    if let Some(standalone) = nodes.iter_mut().find(|n| n.role == Role::Standalone) {
+        standalone.archive_port = Some(archive.archive_port.unwrap_or(standalone.client_port + 5));
+    }
+}
+
+/// A standalone node is the network's only daemon: next to it a spec has
+/// only an archive node and the services that are not daemons (rosetta, the
+/// archive node api).
+fn check_standalone_is_alone(nodes: &[PlannedNode]) -> Result<(), SpecError> {
+    let Some(standalone) = nodes.iter().find(|n| n.role == Role::Standalone) else {
+        return Ok(());
+    };
+    let others: Vec<String> = nodes
+        .iter()
+        .filter(|n| n.is_daemon() && n.role != Role::Archive && n.name != standalone.name)
+        .map(|n| n.name.clone())
+        .collect();
+    if others.is_empty() {
+        return Ok(());
+    }
+    Err(SpecError::StandaloneNotAlone {
+        standalone: standalone.name.clone(),
+        others,
+    })
 }
 
 /// The uptime files of `group`: required of the uptime service backend, and
@@ -814,6 +903,184 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("database name 'My-DB'"), "{err}");
+    }
+
+    #[test]
+    fn standalone_is_a_network_of_one_daemon() {
+        let s = spec(
+            r#"
+            [[nodes]]
+            role = "standalone"
+            client_port = 3084
+            "#,
+        );
+        let plan = s.plan().unwrap();
+        assert_eq!(plan.len(), 1);
+        let solo = &plan[0];
+        assert_eq!(solo.name, "standalone-1");
+        assert_eq!(solo.client_port, 3084);
+        assert_eq!(solo.balance.as_ref().map(Balance::as_str), Some("11550000"));
+        assert!(solo.is_daemon() && solo.needs_key() && solo.role.is_seed());
+
+        let with_fee = spec(
+            r#"
+            [[nodes]]
+            role = "standalone"
+            fee = "0.01"
+            "#,
+        );
+        assert_eq!(with_fee.plan().unwrap()[0].fee.as_deref(), Some("0.01"));
+    }
+
+    #[test]
+    fn fee_and_workers_belong_to_the_nodes_that_do_snark_work() {
+        let err = |toml: &str| spec(toml).plan().unwrap_err().to_string();
+        let fee_on_a_producer = r#"
+            [[nodes]]
+            role = "seed"
+
+            [[nodes]]
+            role = "block-producer"
+            fee = "0.01"
+            "#;
+        assert!(
+            err(fee_on_a_producer).contains("`fee` is for snark coordinators and standalone nodes")
+        );
+        let workers_on_a_standalone = r#"
+            [[nodes]]
+            role = "standalone"
+            workers = 1
+            "#;
+        assert!(err(workers_on_a_standalone).contains("`workers` is for snark coordinators"));
+        let standalone_and_a_producer = r#"
+            [[nodes]]
+            role = "standalone"
+
+            [[nodes]]
+            role = "block-producer"
+
+            [[nodes]]
+            role = "plain"
+            "#;
+        assert_eq!(
+            err(standalone_and_a_producer),
+            "'standalone-1' is a standalone node, the network's only daemon: \
+             remove bp-1, node-1 (only an archive node, rosetta and the archive \
+             node api can run next to it)"
+        );
+        let two_standalones = r#"
+            [[nodes]]
+            role = "standalone"
+            count = 2
+            "#;
+        assert!(err(two_standalones).contains("remove standalone-2 "));
+        let no_seed = r#"
+            [[nodes]]
+            role = "block-producer"
+            "#;
+        assert!(err(no_seed).contains("(or \"standalone\")"));
+    }
+
+    #[test]
+    fn archive_node_next_to_a_standalone_node_runs_no_daemon() {
+        let s = spec(
+            r#"
+            [[nodes]]
+            role = "standalone"
+            client_port = 3084
+
+            [[nodes]]
+            role = "archive"
+
+            [[nodes]]
+            role = "archive-node-api"
+            client_port = 8282
+            "#,
+        );
+        let plan = s.plan().unwrap();
+        let names: Vec<_> = plan.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["standalone-1", "archive-node-api-1"]);
+        assert_eq!(plan[0].archive_port, Some(3089));
+        assert!(plan[0].runs_archive());
+
+        let forced_port = spec(
+            r#"
+            [[nodes]]
+            role = "standalone"
+            client_port = 3084
+
+            [[nodes]]
+            role = "archive"
+            archive_port = 3090
+            "#,
+        );
+        assert_eq!(forced_port.plan().unwrap()[0].archive_port, Some(3090));
+
+        let with_client_port = spec(
+            r#"
+            [[nodes]]
+            role = "standalone"
+
+            [[nodes]]
+            role = "archive"
+            client_port = 5005
+            "#,
+        );
+        assert!(with_client_port
+            .plan()
+            .unwrap_err()
+            .to_string()
+            .contains("runs no daemon of its own: remove `client_port`"));
+    }
+
+    #[test]
+    fn two_processes_cannot_share_a_port() {
+        let err = |toml: &str| spec(toml).plan().unwrap_err().to_string();
+        let archive_on_the_rest_port = r#"
+            [[nodes]]
+            role = "standalone"
+            client_port = 3084
+
+            [[nodes]]
+            role = "archive"
+            archive_port = 3085
+            "#;
+        assert_eq!(
+            err(archive_on_the_rest_port),
+            "port 3085 is used by 'standalone-1' (rest port) and by 'standalone-1' \
+             (mina-archive port)"
+        );
+        let overlapping_daemons = r#"
+            [[nodes]]
+            role = "seed"
+            client_port = 3100
+
+            [[nodes]]
+            role = "block-producer"
+            client_port = 3103
+            "#;
+        assert_eq!(
+            err(overlapping_daemons),
+            "port 3103 is used by 'seed-1' (metrics port) and by 'bp-1' (client port)"
+        );
+        let api_on_a_daemon_port = r#"
+            [[nodes]]
+            role = "seed"
+            client_port = 3100
+
+            [[nodes]]
+            role = "archive"
+            client_port = 3110
+
+            [[nodes]]
+            role = "archive-node-api"
+            client_port = 3102
+            "#;
+        assert_eq!(
+            err(api_on_a_daemon_port),
+            "port 3102 is used by 'seed-1' (external port) and by 'archive-node-api-1' \
+             (api port)"
+        );
     }
 
     #[test]

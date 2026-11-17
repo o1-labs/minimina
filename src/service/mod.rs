@@ -24,6 +24,9 @@ pub enum ServiceType {
     SnarkWorker,
     #[serde(rename = "Snark_coordinator")]
     SnarkCoordinator,
+    /// A seed that produces blocks and does its own snark work.
+    #[serde(rename = "Standalone_node")]
+    Standalone,
     #[serde(rename = "Archive_node")]
     ArchiveNode,
     #[serde(rename = "Uptime_service_backend")]
@@ -58,6 +61,9 @@ pub struct ServiceConfig {
     //snark coordinator specific
     pub snark_coordinator_fees: Option<String>,
     pub worker_nodes: Option<u16>,
+
+    //standalone specific: the fee of its own snark work
+    pub snark_worker_fee: Option<String>,
 
     //snark worker specific
     pub snark_worker_proof_level: Option<String>,
@@ -141,15 +147,25 @@ impl ServiceConfig {
                 | ServiceType::BlockProducer
                 | ServiceType::PlainNode
                 | ServiceType::SnarkCoordinator
+                | ServiceType::Standalone
                 | ServiceType::ArchiveNode
         )
     }
 
-    /// The first archive node; [`typed::check`] reports a second one.
+    /// Whether the service runs `mina-archive`: the archive node, or a
+    /// standalone node with an archive port.
+    pub fn runs_archive(&self) -> bool {
+        match self.service_type {
+            ServiceType::ArchiveNode => true,
+            ServiceType::Standalone => self.archive_port.is_some(),
+            _ => false,
+        }
+    }
+
+    /// The first service that runs `mina-archive`; [`typed::check`] reports a
+    /// second archive node.
     pub fn get_archive_node(services: &[Self]) -> Option<&Self> {
-        services
-            .iter()
-            .find(|s| s.service_type == ServiceType::ArchiveNode)
+        services.iter().find(|s| s.runs_archive())
     }
 
     /// The first uptime service backend; [`typed::check`] reports a second one.

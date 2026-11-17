@@ -97,6 +97,12 @@ impl Layout<'_> {
         }
     }
 
+    /// Where the daemon `name` reaches its `mina-archive` (the compose
+    /// service `<name>-service`, or localhost).
+    fn archive_address(&self, name: &str, port: u16) -> String {
+        format!("{}:{port}", self.host(&format!("{name}-service")))
+    }
+
     fn block_producer_key(&self, name: &str, key: &BlockProducerKey) -> String {
         match key {
             BlockProducerKey::File => {
@@ -176,6 +182,30 @@ impl Layout<'_> {
                 }
             }
             Role::Plain => self.add_peers(name, &daemon.peers, &mut args),
+            Role::Standalone {
+                key,
+                fee,
+                public_key,
+                archive,
+            } => {
+                args.push("-seed".to_string());
+                // no peers to sync from: it counts as synced from the start
+                args.push("-demo-mode".to_string());
+                arg(
+                    &mut args,
+                    "-block-producer-key",
+                    self.block_producer_key(name, key),
+                );
+                arg(&mut args, "-run-snark-worker", public_key.clone());
+                arg(&mut args, "-snark-worker-fee", fee.clone());
+                if let Some(archive) = archive {
+                    arg(
+                        &mut args,
+                        "-archive-address",
+                        self.archive_address(name, archive.port),
+                    );
+                }
+            }
             Role::SnarkCoordinator { fee, public_key } => {
                 arg(&mut args, "-work-selection", "seq");
                 self.add_peers(name, &daemon.peers, &mut args);
@@ -187,7 +217,7 @@ impl Layout<'_> {
                 arg(
                     &mut args,
                     "-archive-address",
-                    format!("{}:{port}", self.host(&format!("{name}-service"))),
+                    self.archive_address(name, *port),
                 );
             }
         }
@@ -255,7 +285,7 @@ pub fn sort_precomputed_block_files(names: &mut [String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::typed::{Kind, Native, Service};
+    use crate::service::typed::{ArchiveServer, Kind, Native, Service};
 
     fn layout(mode: ExecutionMode) -> Layout<'static> {
         Layout {
@@ -404,6 +434,59 @@ mod tests {
         assert_eq!(value_of(&args, "-snark-worker-fee"), Some("0.001"));
         assert_eq!(value_of(&args, "-run-snark-coordinator"), Some("B62"));
         assert_eq!(value_of(&args, "-work-selection"), Some("seq"));
+    }
+
+    #[test]
+    fn standalone_is_a_seed_that_produces_blocks_and_does_snark_work() {
+        let standalone = node(
+            "solo",
+            Role::Standalone {
+                key: BlockProducerKey::File,
+                fee: "0.001".into(),
+                public_key: "B62solo".into(),
+                archive: None,
+            },
+        );
+        let solo = args(&standalone, ExecutionMode::Native);
+        assert!(solo.contains(&"-seed".to_string()));
+        assert!(solo.contains(&"-demo-mode".to_string()));
+        assert_eq!(
+            value_of(&solo, "-block-producer-key"),
+            Some("/n/network-keypairs/solo.json")
+        );
+        assert_eq!(value_of(&solo, "-run-snark-worker"), Some("B62solo"));
+        assert_eq!(value_of(&solo, "-snark-worker-fee"), Some("0.001"));
+        // a seed: no peers to dial
+        assert_eq!(value_of(&solo, "-peer"), None);
+        assert_eq!(value_of(&solo, "-peer-list-file"), None);
+        assert_eq!(value_of(&solo, "-archive-address"), None);
+
+        let with_archive = node(
+            "solo",
+            Role::Standalone {
+                key: BlockProducerKey::File,
+                fee: "0.001".into(),
+                public_key: "B62solo".into(),
+                archive: Some(ArchiveServer {
+                    port: 3089,
+                    image: (),
+                }),
+            },
+        );
+        assert_eq!(
+            value_of(
+                &args(&with_archive, ExecutionMode::Native),
+                "-archive-address"
+            ),
+            Some("127.0.0.1:3089")
+        );
+        assert_eq!(
+            value_of(
+                &args(&with_archive, ExecutionMode::Docker),
+                "-archive-address"
+            ),
+            Some("solo-service-net:3089")
+        );
     }
 
     #[test]

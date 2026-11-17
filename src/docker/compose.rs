@@ -10,7 +10,7 @@ use crate::daemon_args::{
 };
 use crate::genesis_ledger::GENESIS_LEDGER_JSON;
 use crate::native::binary::Binary;
-use crate::service::typed::{self, Daemon, Docker, Kind, Role};
+use crate::service::typed::{self, ArchiveServer, Daemon, Docker, Kind};
 use log::debug;
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
@@ -177,7 +177,7 @@ impl DockerCompose {
                         ports: daemon_ports(daemon),
                         ..mina_service(&name, &daemon.image, args)
                     };
-                    if let Role::Archive { port, image } = &daemon.role {
+                    if let Some(ArchiveServer { port, image }) = &daemon.archive_server() {
                         // the daemon pushes blocks to mina-archive, which writes to postgres
                         volumes.insert(POSTGRES_DATA.to_string(), None);
                         compose_services.insert(

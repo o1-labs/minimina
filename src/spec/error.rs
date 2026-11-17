@@ -8,6 +8,27 @@ pub enum SpecError {
         file: PathBuf,
         problem: LedgerProblem,
     },
+    #[error(
+        "'{standalone}' is a standalone node, the network's only daemon: remove {} \
+         (only an archive node, rosetta and the archive node api can run next to it)",
+        .others.join(", ")
+    )]
+    StandaloneNotAlone {
+        standalone: String,
+        /// The other daemons of the spec.
+        others: Vec<String>,
+    },
+    #[error(
+        "the archive node next to a standalone node runs no daemon of its own: remove \
+         `client_port` (`archive_port` sets the port of its mina-archive)"
+    )]
+    AttachedArchiveClientPort,
+    #[error("port {port} is used by {first} and by {second}")]
+    PortConflict {
+        port: u16,
+        first: super::ports::PortUse,
+        second: super::ports::PortUse,
+    },
 }
 
 /// What is wrong with a ledger file (see [`super::ledger`]).

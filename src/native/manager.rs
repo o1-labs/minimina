@@ -16,7 +16,7 @@ use crate::hardfork::dispatch::Dispatch;
 use crate::native::error::NativeError;
 use crate::native::port_manager;
 use crate::native::process_tracker::{proc_stat, ProcessRecord, ProcessTracker, Records};
-use crate::service::typed::{Kind, Native, Role, Service};
+use crate::service::typed::{Kind, Native, Service};
 use crate::service::ServiceConfig;
 use crate::spec::archive_database::ArchiveDatabase;
 use chrono::Local;
@@ -321,7 +321,7 @@ impl NativeManager {
     /// after `node stop` of that process: its daemon reconnects to it. An
     /// archive with `--hardfork-handover` settles the fork at its start.
     pub fn start_archive_process(&self, service: &Service<Native>) -> Result<()> {
-        let Some(Role::Archive { port, .. }) = service.daemon().map(|d| &d.role) else {
+        let Some(archive) = service.daemon().and_then(|d| d.archive_server()) else {
             return Err(NativeError::NotArchive(service.name.clone()).into());
         };
         let name = format!("{}{ARCHIVE_SUFFIX}", service.name);
@@ -336,7 +336,7 @@ impl NativeManager {
             }
             .into());
         }
-        self.spawn_archive(&name, *port)
+        self.spawn_archive(&name, archive.port)
     }
 
     fn spawn_service(&self, service: &Service<Native>, network_id: &str) -> Result<()> {
@@ -365,8 +365,8 @@ impl NativeManager {
             Kind::UptimeServiceBackend(_) => Err(NativeError::UptimeServiceUnsupported.into()),
             Kind::Daemon(daemon) => {
                 // the archive daemon pushes blocks to mina-archive, so that comes up first
-                if let Role::Archive { port, .. } = daemon.role {
-                    self.spawn_archive(&format!("{name}{ARCHIVE_SUFFIX}"), port)?;
+                if let Some(archive) = daemon.archive_server() {
+                    self.spawn_archive(&format!("{name}{ARCHIVE_SUFFIX}"), archive.port)?;
                 }
                 let config_dir = self.mina_config_dir(name)?;
                 let args = layout(utf8(&config_dir)?)?.daemon(name, daemon);
@@ -647,7 +647,7 @@ fn wait_until_dead(records: &[ProcessRecord], timeout: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::typed::{self, ArchiveNodeApi, Daemon, Peers, Rosetta};
+    use crate::service::typed::{self, ArchiveNodeApi, Daemon, Peers, Role, Rosetta};
     use crate::service::ServiceType;
     use std::io;
 

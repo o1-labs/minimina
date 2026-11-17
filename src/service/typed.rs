@@ -126,6 +126,17 @@ pub enum Role<M: Mode> {
         /// Receives the snark fees.
         public_key: String,
     },
+    /// A seed that produces blocks and does its own snark work: a network of
+    /// one daemon.
+    Standalone {
+        key: BlockProducerKey,
+        /// Fee per snark work.
+        fee: String,
+        /// Receives the snark fees: its block producer's public key.
+        public_key: String,
+        /// `mina-archive` next to it, which it sends its blocks to.
+        archive: Option<ArchiveServer<M>>,
+    },
     /// A daemon that sends its blocks to `mina-archive`.
     Archive {
         /// Server port of `mina-archive`.
@@ -133,6 +144,30 @@ pub enum Role<M: Mode> {
         /// Image of `mina-archive`.
         image: M::Image,
     },
+}
+
+/// A `mina-archive` process a daemon sends its blocks to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArchiveServer<M: Mode> {
+    /// Server port of `mina-archive`.
+    pub port: u16,
+    /// Image of `mina-archive`.
+    pub image: M::Image,
+}
+
+impl<M: Mode> Daemon<M> {
+    /// The `mina-archive` the daemon sends its blocks to: the archive node's,
+    /// or a standalone node's own.
+    pub fn archive_server(&self) -> Option<ArchiveServer<M>> {
+        match &self.role {
+            Role::Archive { port, image } => Some(ArchiveServer {
+                port: *port,
+                image: image.clone(),
+            }),
+            Role::Standalone { archive, .. } => archive.clone(),
+            _ => None,
+        }
+    }
 }
 
 /// Where a daemon finds the seeds.
@@ -203,13 +238,16 @@ impl<M: Mode> Service<M> {
         }
     }
 
+    /// Whether the other daemons dial it: a seed, or a standalone node.
     pub fn is_seed(&self) -> bool {
-        self.daemon().is_some_and(|d| matches!(d.role, Role::Seed))
+        self.daemon()
+            .is_some_and(|d| matches!(d.role, Role::Seed | Role::Standalone { .. }))
     }
 
+    /// Whether it runs `mina-archive`: the archive node, or a standalone node
+    /// with its own archive.
     pub fn is_archive(&self) -> bool {
-        self.daemon()
-            .is_some_and(|d| matches!(d.role, Role::Archive { .. }))
+        self.daemon().is_some_and(|d| d.archive_server().is_some())
     }
 }
 
@@ -337,9 +375,7 @@ pub fn check<M: Mode>(configs: &[ServiceConfig]) -> Result<Vec<Service<M>>, Inva
             .and_then(Service::daemon)
             .map(|d| d.client_port)
     };
-    let has_archive = configs
-        .iter()
-        .any(|c| c.service_type == ServiceType::ArchiveNode);
+    let has_archive = configs.iter().any(ServiceConfig::runs_archive);
 
     let mut others = Vec::new();
     for config in configs.iter().filter(|c| !is_daemon(c.service_type)) {
@@ -480,8 +516,19 @@ fn is_daemon(service_type: ServiceType) -> bool {
             | ServiceType::BlockProducer
             | ServiceType::PlainNode
             | ServiceType::SnarkCoordinator
+            | ServiceType::Standalone
             | ServiceType::ArchiveNode
     )
+}
+
+/// The block producer key of a config: a topology key file, or the path key
+/// generation left.
+fn block_producer_key(config: &ServiceConfig) -> Option<BlockProducerKey> {
+    match (&config.private_key_path, &config.public_key_path) {
+        (Some(_), _) => Some(BlockProducerKey::File),
+        (None, Some(path)) => Some(BlockProducerKey::Path(path.clone())),
+        (None, None) => None,
+    }
 }
 
 fn daemon<M: Mode>(check: &mut Check, config: &ServiceConfig) -> Option<Daemon<M>> {
@@ -496,11 +543,7 @@ fn daemon<M: Mode>(check: &mut Check, config: &ServiceConfig) -> Option<Daemon<M
     let role = match config.service_type {
         ServiceType::Seed => Some(Role::Seed),
         ServiceType::BlockProducer => Some(Role::BlockProducer {
-            key: match (&config.private_key_path, &config.public_key_path) {
-                (Some(_), _) => Some(BlockProducerKey::File),
-                (None, Some(path)) => Some(BlockProducerKey::Path(path.clone())),
-                (None, None) => None,
-            },
+            key: block_producer_key(config),
         }),
         ServiceType::PlainNode => Some(Role::Plain),
         ServiceType::SnarkCoordinator => {
@@ -510,6 +553,24 @@ fn daemon<M: Mode>(check: &mut Check, config: &ServiceConfig) -> Option<Daemon<M
                 Some(Role::SnarkCoordinator {
                     fee: fee?,
                     public_key: public_key?,
+                })
+            })()
+        }
+        ServiceType::Standalone => {
+            let key = check.need(&block_producer_key(config), "public_key_path");
+            let fee = check.need(&config.snark_worker_fee, "snark_worker_fee");
+            let public_key = check.need(&config.public_key, "public_key");
+            // its own archive: the port says it has one, so it is not defaulted
+            let archive = config.archive_port.map(|port| {
+                M::image(check, &config.archive_docker_image, "archive_docker_image")
+                    .map(|image| ArchiveServer { port, image })
+            });
+            (|| {
+                Some(Role::Standalone {
+                    key: key?,
+                    fee: fee?,
+                    public_key: public_key?,
+                    archive: archive.map_or(Some(None), |a| a.map(Some))?,
                 })
             })()
         }
@@ -649,6 +710,67 @@ pub mod tests {
             ),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn standalone_needs_its_key_fee_and_public_key() {
+        let mut standalone = config(ServiceType::Standalone, "solo");
+        standalone.client_port = Some(3084);
+        assert_eq!(
+            problems::<Native>(&[standalone.clone()]),
+            [
+                "'solo' has no public_key_path",
+                "'solo' has no snark_worker_fee",
+                "'solo' has no public_key"
+            ]
+        );
+        standalone.public_key_path = Some("/keys/solo".into());
+        standalone.snark_worker_fee = Some("0.001".into());
+        standalone.public_key = Some("B62solo".into());
+        let services = check::<Native>(&[standalone]).unwrap();
+        assert!(services[0].is_seed());
+        assert_eq!(
+            services[0].daemon().map(|d| &d.role),
+            Some(&Role::Standalone {
+                key: BlockProducerKey::Path("/keys/solo".into()),
+                fee: "0.001".into(),
+                public_key: "B62solo".into(),
+                archive: None,
+            })
+        );
+        assert!(!services[0].is_archive());
+    }
+
+    #[test]
+    fn standalone_with_an_archive_port_runs_mina_archive() {
+        let mut standalone = config(ServiceType::Standalone, "solo");
+        standalone.client_port = Some(3084);
+        standalone.public_key_path = Some("/keys/solo".into());
+        standalone.snark_worker_fee = Some("0.001".into());
+        standalone.public_key = Some("B62solo".into());
+        standalone.archive_port = Some(3089);
+        assert!(standalone.runs_archive());
+        // docker mode needs the image of mina-archive
+        assert_eq!(
+            problems::<Docker>(&[ServiceConfig {
+                docker_image: Some("mina".into()),
+                ..standalone.clone()
+            }]),
+            ["'solo' has no archive_docker_image"]
+        );
+        let services = check::<Native>(&[standalone]).unwrap();
+        assert!(services[0].is_archive() && services[0].is_seed());
+        assert_eq!(
+            services[0].daemon().and_then(Daemon::archive_server),
+            Some(ArchiveServer {
+                port: 3089,
+                image: ()
+            })
+        );
+        assert_eq!(
+            archive_node(&services).map(|s| s.name.as_str()),
+            Some("solo")
+        );
     }
 
     #[test]
