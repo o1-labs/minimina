@@ -215,8 +215,8 @@ mod tests {
         );
     }
 
-    /// The lightnet docker image's ledger: mina writes the slots of a vesting
-    /// schedule tagged, and the genesis ledger keeps them as they are.
+    /// A ledger written by mina tags the slots of a vesting schedule, and the
+    /// genesis ledger keeps them as they are.
     #[test]
     fn json_takes_mina_tagged_vesting_slots() {
         let dir = tempfile::tempdir().unwrap();

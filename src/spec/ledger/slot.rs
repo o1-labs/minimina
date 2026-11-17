@@ -9,7 +9,7 @@ pub enum Slot {
     /// `"10"`, as minimina and most runtime configs write it.
     Plain(String),
     /// `["Since_genesis", "10"]` or `["Global_slot_span", "20"]`, as mina's
-    /// own runtime configs write it (the lightnet docker image's ledger).
+    /// own runtime configs write it.
     Tagged(SlotKind, String),
 }
 
