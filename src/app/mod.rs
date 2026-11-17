@@ -31,6 +31,7 @@ use crate::{
     network_meta::{HardforkState, NetworkMeta},
     runner::{Runner, SystemRunner},
     service::typed::{self, Mode, Service},
+    spec::archive_database::ArchiveDatabase,
 };
 use anyhow::{bail, Context as _, Result};
 use std::{
@@ -64,6 +65,9 @@ pub struct Context {
     pub mina_version: Option<String>,
     /// Postgres server URI (no database) for native archive nodes.
     pub postgres_uri: String,
+    /// The archive database the network was created with, if its spec names
+    /// one; see [`NetworkMeta::archive_database`].
+    pub archive_database: Option<ArchiveDatabase>,
     /// Build profile exported as `MINA_PROFILE` to every mina process.
     pub profile: Profile,
     /// Version-dependent daemon flags recorded at create (probed again by create).
@@ -91,6 +95,7 @@ impl Context {
                 bin_path: None,
                 mina_version: None,
                 postgres_uri: None,
+                archive_database: None,
                 profile: self.profile,
                 features: self.features,
                 genesis_pending: false,
@@ -101,6 +106,7 @@ impl Context {
                 bin_path: self.bin_path.clone(),
                 mina_version: self.mina_version.clone(),
                 postgres_uri: Some(self.postgres_uri.clone()),
+                archive_database: None,
                 profile: self.profile,
                 features: self.features,
                 genesis_pending: false,
@@ -135,7 +141,8 @@ impl Context {
         .with_archive_config(self.archive_config.clone())
         .with_archive_handover(self.archive_handover)
         .with_dispatch(self.dispatch.clone())
-        .with_archive_ledgers(self.archive_ledgers.clone()))
+        .with_archive_ledgers(self.archive_ledgers.clone())
+        .with_archive_database(self.archive_database.clone()))
     }
 
     /// The services of a network from its `services.json`, checked for mode `M`.
@@ -249,6 +256,7 @@ pub fn run_with(
         let script = h.dispatcher.as_ref()?;
         Some(Dispatch::new(script, &dirs.network_path(id), profile))
     });
+    let archive_database = stored.as_ref().and_then(|m| m.archive_database.clone());
     let postgres_uri = stored
         .and_then(|m| m.postgres_uri)
         .or_else(|| std::env::var(POSTGRES_URI_ENV).ok())
@@ -275,6 +283,7 @@ pub fn run_with(
         bin_path,
         mina_version,
         postgres_uri,
+        archive_database,
         profile,
         features,
         archive_config,
@@ -354,6 +363,7 @@ mod archive_config_tests {
             bin_path: None,
             mina_version: None,
             postgres_uri: None,
+            archive_database: None,
             profile: Profile::Devnet,
             features: DaemonFeatures::default(),
             genesis_pending: false,

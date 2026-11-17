@@ -245,6 +245,7 @@ mod tests {
             bin_path: Some(installed.bin_path()),
             mina_version: Some(installed.version.clone()),
             postgres_uri: None,
+            archive_database: None,
             profile: Default::default(),
             features: Default::default(),
             genesis_pending: false,

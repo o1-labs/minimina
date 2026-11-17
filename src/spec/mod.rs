@@ -17,6 +17,7 @@
 //!
 //! [[nodes]]
 //! role = "archive"
+//! # database = "archive"          # native mode; default minimina_<network id>
 //!
 //! [[nodes]]
 //! role = "rosetta"                # reads the archive and the archive's daemon
@@ -50,12 +51,14 @@
 //! - [`ledger`]: the accounts of `[ledger] file`.
 //! - [`init`]: a spec written as commented TOML (`spec init`).
 
+pub mod archive_database;
 mod error;
 pub mod flags;
 pub mod init;
 pub mod ledger;
 mod uptime;
 
+use archive_database::ArchiveDatabase;
 pub use error::{LedgerProblem, SpecError};
 use ledger::Balance;
 pub use uptime::UptimeFiles;
@@ -167,6 +170,8 @@ pub struct NodeGroup {
     pub client_port: Option<u16>,
     /// Archive node: port of the `mina-archive` process. Default: client port + 5.
     pub archive_port: Option<u16>,
+    /// Archive node, native mode: its database. Default: `minimina_<network id>`.
+    pub database: Option<ArchiveDatabase>,
     /// Snark coordinator: number of snark workers.
     pub workers: Option<u16>,
     /// Snark coordinator: fee per snark work.
@@ -203,6 +208,7 @@ impl Default for NodeGroup {
             balance: None,
             client_port: None,
             archive_port: None,
+            database: None,
             workers: None,
             fee: None,
             node: None,
@@ -441,6 +447,9 @@ impl NetworkSpec {
                     group.role
                 );
             }
+            if group.role != Role::Archive && group.database.is_some() {
+                bail!("{:?} nodes: `database` is for the archive node", group.role);
+            }
             if group.role != Role::Rosetta && group.node.is_some() {
                 bail!("{:?} nodes: `node` is for rosetta", group.role);
             }
@@ -555,6 +564,14 @@ impl NetworkSpec {
             }
         }
         Ok(nodes)
+    }
+
+    /// `database` of the archive node, if it sets one.
+    pub fn archive_database(&self) -> Option<&ArchiveDatabase> {
+        self.nodes
+            .iter()
+            .filter(|g| g.role == Role::Archive)
+            .find_map(|g| g.database.as_ref())
     }
 
     /// Names of the funded test accounts.
@@ -748,6 +765,55 @@ mod tests {
         );
         assert!(err("[[nodes]]\nrole = \"seed\"\nversion = \"2\"")
             .contains("are for the archive node api"));
+    }
+
+    #[test]
+    fn archive_node_names_its_database() {
+        let named = spec(
+            r#"
+            [[nodes]]
+            role = "seed"
+
+            [[nodes]]
+            role = "archive"
+            database = "archive"
+            "#,
+        );
+        named.plan().unwrap();
+        assert_eq!(
+            named.archive_database().map(|d| d.as_str()),
+            Some("archive")
+        );
+
+        let unnamed = spec(
+            r#"
+            [[nodes]]
+            role = "seed"
+            "#,
+        );
+        assert_eq!(unnamed.archive_database(), None);
+
+        let on_a_seed = spec(
+            r#"
+            [[nodes]]
+            role = "seed"
+            database = "archive"
+            "#,
+        );
+        let err = on_a_seed.plan().unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("`database` is for the archive node"));
+
+        let err = toml::from_str::<NetworkSpec>(
+            r#"
+            [[nodes]]
+            role = "archive"
+            database = "My-DB"
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("database name 'My-DB'"), "{err}");
     }
 
     #[test]

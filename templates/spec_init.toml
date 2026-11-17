@@ -24,7 +24,8 @@ profile = {{ profile|toml }}
 {% when Role::Plain -%}
 # Follow the chain and produce no blocks.
 {% when Role::Archive -%}
-# A daemon with mina-archive and a postgres database.
+# A daemon with mina-archive and a postgres database; `database`: its name
+# (native mode, default minimina_<network id>).
 {% when Role::SnarkCoordinator -%}
 # Hands out snark work to `workers` snark workers; `fee`: MINA per snark work.
 {% when Role::Rosetta -%}
@@ -52,6 +53,9 @@ client_port = {{ port }}
 {% endif -%}
 {% if let Some(port) = node.archive_port -%}
 archive_port = {{ port }}
+{% endif -%}
+{% if let Some(database) = node.database -%}
+database = {{ database|toml }}
 {% endif -%}
 {% if let Some(workers) = node.workers -%}
 workers = {{ workers }}

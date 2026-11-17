@@ -838,6 +838,135 @@ fn docker_archive_create_fails_when_createdb_fails() {
     assert!(err.to_string().contains("container is not running"));
 }
 
+/// A seed and an archive whose database is named `archive`, written to
+/// `net.toml` in `dir`.
+fn named_archive_database_spec(dir: &Path) -> std::path::PathBuf {
+    let spec = dir.join("net.toml");
+    std::fs::write(
+        &spec,
+        r#"
+        [[nodes]]
+        role = "seed"
+
+        [[nodes]]
+        role = "archive"
+        database = "archive"
+        "#,
+    )
+    .unwrap();
+    spec
+}
+
+/// A native seed and archive whose spec names the archive database.
+fn create_named_archive_database(
+    h: &Harness,
+    lookup: &str,
+    comment_exit: i32,
+) -> anyhow::Result<()> {
+    let bin = fake_mina_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let spec = named_archive_database_spec(dir.path());
+    for i in 0..2 {
+        h.fake
+            .reply(0, &format!("libp2p keypair:\nenc,pub,peer{i}\n"), "");
+    }
+    h.fake.reply(0, "", ""); // mina daemon -help
+    h.fake.reply(1, "", ""); // mina version: no installed config
+    h.fake.reply(0, lookup, ""); // the database's comment, if it exists
+    h.fake.reply(0, "", "").reply(0, "", ""); // drop, create
+                                              // a failing comment stops create before it fetches the schema over HTTP
+    h.fake.reply(comment_exit, "", "comment refused");
+    h.run(&[
+        "--mode",
+        "native",
+        "--bin-path",
+        path_arg(bin.path()),
+        "network",
+        "create",
+        "-n",
+        "light",
+        "--spec",
+        path_arg(&spec),
+    ])
+}
+
+#[test]
+fn native_archive_database_is_created_with_its_owner() {
+    let h = Harness::new();
+    let err = create_named_archive_database(&h, "", 1).unwrap_err();
+    assert!(err.to_string().contains("comment refused"), "{err:#}");
+
+    let meta = NetworkMeta::load(&h.dirs.network_path("light"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        meta.archive_database.map(String::from).as_deref(),
+        Some("archive")
+    );
+    let lines = h.fake.lines();
+    let psql: Vec<_> = lines.iter().filter(|l| l.starts_with("psql ")).collect();
+    let admin = "psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1";
+    assert_eq!(
+        psql,
+        [
+            &format!(
+                "{admin} -tA -c SELECT coalesce(shobj_description(oid, 'pg_database'), '') \
+                 FROM pg_database WHERE datname = 'archive'"
+            ),
+            &format!("{admin} -c DROP DATABASE IF EXISTS archive"),
+            &format!("{admin} -c CREATE DATABASE archive"),
+            &format!("{admin} -c COMMENT ON DATABASE archive IS 'minimina network light'"),
+        ]
+    );
+}
+
+#[test]
+fn native_archive_database_of_someone_else_is_not_dropped() {
+    let h = Harness::new();
+    // it exists, without minimina's comment
+    let err = create_named_archive_database(&h, "\n", 0).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "database 'archive' exists and minimina did not create it for network 'light'"
+        ),
+        "{err:#}"
+    );
+    assert!(!h.fake.lines().iter().any(|l| l.contains("DROP DATABASE")));
+
+    // created by minimina for this network: dropped and created again
+    let h = Harness::new();
+    create_named_archive_database(&h, "minimina network light\n", 1).unwrap_err();
+    assert!(h
+        .fake
+        .lines()
+        .iter()
+        .any(|l| l.ends_with("DROP DATABASE IF EXISTS archive")));
+}
+
+#[test]
+fn docker_network_keeps_its_archive_database_name() {
+    let h = Harness::new();
+    let dir = tempfile::tempdir().unwrap();
+    let spec = named_archive_database_spec(dir.path());
+    h.docker_ok();
+    let checks = h.fake.lines().len();
+    let err = h
+        .run(&["network", "create", "-n", "d", "--spec", path_arg(&spec)])
+        .unwrap_err();
+    assert!(err.to_string().contains("is for native mode"), "{err:#}");
+    // only the docker checks ran: nothing was created
+    assert!(
+        h.fake
+            .lines()
+            .iter()
+            .skip(checks)
+            .all(|l| l.starts_with("docker ")),
+        "{:?}",
+        h.fake.lines()
+    );
+    assert!(!h.dirs.network_path_exists("d"));
+}
+
 /// A seed and an archive, with a fork at slot 42 to the binaries in `postfork`.
 fn hardfork_spec(dir: &Path, postfork: &Path, hardfork: &str) -> std::path::PathBuf {
     let spec = dir.join("hf.toml");
@@ -943,6 +1072,7 @@ fn hardfork_network_gets_its_schedule_and_status() {
             bin_path: Some(bin.path().into()),
             mina_version: None,
             postgres_uri: String::new(),
+            archive_database: None,
             profile: Profile::Devnet,
             features: Default::default(),
             archive_config: None,

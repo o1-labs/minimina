@@ -18,6 +18,7 @@ use crate::native::port_manager;
 use crate::native::process_tracker::{proc_stat, ProcessRecord, ProcessTracker, Records};
 use crate::service::typed::{Kind, Native, Role, Service};
 use crate::service::ServiceConfig;
+use crate::spec::archive_database::ArchiveDatabase;
 use chrono::Local;
 use log::{info, warn};
 use nix::sys::signal::{self, Signal};
@@ -56,6 +57,8 @@ pub struct NativeManager {
     /// `MINA_KEYS_PATH` of `mina-archive`: where it finds the ledgers its
     /// config names by hash (an auto mode fork config has no accounts).
     pub archive_ledgers: Option<PathBuf>,
+    /// The archive database the spec names; `None`: `minimina_<network id>`.
+    pub archive_database: Option<ArchiveDatabase>,
 }
 
 /// A tracked process and whether it is still running.
@@ -78,6 +81,7 @@ impl NativeManager {
             archive_handover: false,
             dispatch: None,
             archive_ledgers: None,
+            archive_database: None,
         }
     }
 
@@ -101,14 +105,23 @@ impl NativeManager {
         self
     }
 
+    pub fn with_archive_database(mut self, database: Option<ArchiveDatabase>) -> Self {
+        self.archive_database = database;
+        self
+    }
+
     pub fn with_archive_handover(mut self, handover: bool) -> Self {
         self.archive_handover = handover;
         self
     }
 
-    /// Archive database of this network: `minimina_<network_id>`, one per network
-    /// so that networks sharing a postgres server do not mix chains.
+    /// Archive database of this network: the one the spec names, else
+    /// `minimina_<network_id>`, one per network so that networks sharing a
+    /// postgres server do not mix chains.
     pub fn archive_db_name(&self) -> String {
+        if let Some(database) = &self.archive_database {
+            return database.to_string();
+        }
         let network_id = self
             .network_path
             .file_name()
