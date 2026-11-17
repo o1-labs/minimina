@@ -698,7 +698,7 @@ fn attach_archive(nodes: &mut [PlannedNode], archive: &NodeGroup) {
 
 /// A standalone node is the network's only daemon: next to it a spec has
 /// only an archive node and the services that are not daemons (rosetta, the
-/// archive node api).
+/// archive node api, the accounts manager).
 fn check_standalone_is_alone(nodes: &[PlannedNode]) -> Result<(), SpecError> {
     let Some(standalone) = nodes.iter().find(|n| n.role == Role::Standalone) else {
         return Ok(());
@@ -1003,8 +1003,8 @@ mod tests {
         assert_eq!(
             err(standalone_and_a_producer),
             "'standalone-1' is a standalone node, the network's only daemon: \
-             remove bp-1, node-1 (only an archive node, rosetta and the archive \
-             node api can run next to it)"
+             remove bp-1, node-1 (only an archive node, rosetta, the archive node \
+             api and the accounts manager can run next to it)"
         );
         let two_standalones = r#"
             [[nodes]]
@@ -1118,6 +1118,45 @@ mod tests {
             err(api_on_a_daemon_port),
             "port 3102 is used by 'seed-1' (external port) and by 'archive-node-api-1' \
              (api port)"
+        );
+        let accounts_manager_on_a_daemon_port = r#"
+            [[nodes]]
+            role = "standalone"
+            client_port = 3084
+
+            [[nodes]]
+            role = "accounts-manager"
+            client_port = 3085
+            "#;
+        assert_eq!(
+            err(accounts_manager_on_a_daemon_port),
+            "port 3085 is used by 'standalone-1' (rest port) and by 'accounts-manager' \
+             (api port)"
+        );
+    }
+
+    #[test]
+    fn accounts_manager_runs_next_to_a_standalone_node() {
+        let s = spec(
+            r#"
+            [[nodes]]
+            role = "standalone"
+            client_port = 3084
+
+            [[nodes]]
+            role = "archive"
+
+            [[nodes]]
+            role = "accounts-manager"
+            client_port = 8181
+            "#,
+        );
+        let plan = s.plan().unwrap();
+        let names: Vec<_> = plan.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["standalone-1", "accounts-manager"]);
+        assert_eq!(
+            plan[1].graphql_node,
+            Some(("standalone-1".to_string(), 3084))
         );
     }
 

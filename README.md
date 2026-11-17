@@ -176,8 +176,8 @@ produces blocks with its own key and does its own snark work
 (`-run-snark-worker` with that key, `fee` per work, default `0.001`). It runs
 with `-demo-mode`, so it counts as synced without peers. A spec with only a
 `standalone` node is a valid network, and it stays the network's only daemon:
-next to it a spec can only have an archive node, rosetta and the archive node
-api; `network create` refuses any other daemon. The archive node next to it
+next to it a spec can only have an archive node, rosetta, the archive node
+api and the accounts manager; `network create` refuses any other daemon. The archive node next to it
 runs no daemon of its own: its `mina-archive` runs next to the standalone
 daemon, which sends it its blocks, on `archive_port` (default: the standalone
 node's client port + 5). It takes no `client_port`.
