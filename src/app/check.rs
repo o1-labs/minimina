@@ -154,7 +154,7 @@ fn wait_for_postfork_tip(
     wait: bool,
 ) -> Result<()> {
     let slot = Duration::from_millis(
-        hardfork::status(ctx, network_id, chrono::Utc::now())?.slot_duration_ms,
+        hardfork::status(ctx, network_id, jiff::Timestamp::now())?.slot_duration_ms,
     );
     loop {
         let status = client.status()?;

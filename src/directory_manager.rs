@@ -278,7 +278,7 @@ impl DirectoryManager {
 
     /// Checks whether the genesis timestamp is too far in the past.
     pub fn check_genesis_timestamp(&self, network_id: &str) -> Result<()> {
-        use chrono::{prelude::*, Duration};
+        use jiff::{SignedDuration, Timestamp};
 
         let network_path = self.network_path(network_id);
         let genesis_ledger_path = network_path.join(GENESIS_LEDGER_JSON);
@@ -291,7 +291,7 @@ impl DirectoryManager {
             .get("genesis_state_timestamp")
             .and_then(|t| t.as_str())
             .ok_or_else(|| invalid("'genesis.genesis_state_timestamp' missing or not a string"))?;
-        let genesis_timestamp = DateTime::parse_from_rfc3339(timestamp).map_err(|e| {
+        let genesis_timestamp = crate::timestamp::parse(timestamp).map_err(|e| {
             invalid(format!(
                 "invalid genesis_state_timestamp '{timestamp}': {e}"
             ))
@@ -305,16 +305,16 @@ impl DirectoryManager {
                 .ok_or_else(|| invalid(format!("'genesis.k' is not an unsigned integer: {k}")))?,
             None => 20,
         };
-        let cutoff = Local::now()
-            .checked_sub_signed(Duration::minutes((k / 2 * 3) as i64))
-            .ok_or_else(|| invalid(format!("genesis cutoff out of range for k={k}")))?;
+        let cutoff = Timestamp::now()
+            .checked_sub(SignedDuration::from_mins((k / 2 * 3) as i64))
+            .map_err(|_| invalid(format!("genesis cutoff out of range for k={k}")))?;
 
         // if we're outside of the first half of the first transition frontier,
         // we throw an error
-        if cutoff > genesis_timestamp {
+        if cutoff > genesis_timestamp.timestamp() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("Genesis timestamp '{genesis_timestamp}' may be outdated."),
+                format!("Genesis timestamp '{timestamp}' may be outdated."),
             ));
         }
 
@@ -511,7 +511,8 @@ mod tests {
 
     #[test]
     fn test_check_genesis_timestamp() -> Result<()> {
-        use chrono::{prelude::*, Duration};
+        use crate::genesis_ledger::format_timestamp;
+        use jiff::SignedDuration;
         let tempdir = tempfile::Builder::new()
             .prefix("test_network_subdirectories_paths")
             .tempdir()
@@ -525,15 +526,9 @@ mod tests {
         fs::create_dir_all(PathBuf::from(base_path).join(network_id))?;
 
         let k = 20;
-        let now = Local::now();
-        let old_time = now
-            .checked_sub_signed(Duration::minutes(k / 2 * 3 + 1))
-            .unwrap()
-            .format("%Y-%m-%dT%H:%M:%S%.6f%Z");
-        let recent_time = now
-            .checked_sub_signed(Duration::minutes(k / 2 * 3 - 1))
-            .unwrap()
-            .format("%Y-%m-%dT%H:%M:%S%.6f%Z");
+        let now = crate::timestamp::now();
+        let old_time = format_timestamp(&(&now - SignedDuration::from_mins(k / 2 * 3 + 1)));
+        let recent_time = format_timestamp(&(&now - SignedDuration::from_mins(k / 2 * 3 - 1)));
 
         let old_genesis = format!(
             "{{

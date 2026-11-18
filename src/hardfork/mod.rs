@@ -25,14 +25,15 @@ pub mod reference;
 pub mod toolbox;
 
 use crate::runtime_config::{self, RuntimeConfig};
-use chrono::{DateTime, Duration, FixedOffset, Utc};
+use crate::timestamp;
+use jiff::{SignedDuration, Timestamp, ZonedDateTime};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Time from the genesis to `slot_tx_end` that a network needs: the daemons
 /// start their provers and sync before they produce blocks (about 12 minutes
 /// for 5 nodes with 30 s slots).
-pub const MIN_LEAD: Duration = Duration::minutes(10);
+pub const MIN_LEAD: SignedDuration = SignedDuration::from_mins(10);
 const DEFAULT_GENESIS_SLOT_DELTA: u32 = 20;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -172,8 +173,8 @@ impl From<Schedule> for runtime_config::Daemon {
 }
 
 /// Start of `slot` for a chain with this genesis.
-pub fn slot_time(genesis: DateTime<FixedOffset>, c: Constants, slot: u32) -> DateTime<FixedOffset> {
-    genesis + Duration::milliseconds((c.slot_ms * u64::from(slot)) as i64)
+pub fn slot_time(genesis: &ZonedDateTime, c: Constants, slot: u32) -> ZonedDateTime {
+    genesis + SignedDuration::from_millis((c.slot_ms * u64::from(slot)) as i64)
 }
 
 impl HardforkSpec {
@@ -182,7 +183,7 @@ impl HardforkSpec {
     /// `[runtime_config]` sets itself.
     pub fn schedule(
         &self,
-        genesis: DateTime<FixedOffset>,
+        genesis: &ZonedDateTime,
         c: Constants,
         runtime_daemon: &runtime_config::Daemon,
     ) -> Result<Schedule, Vec<String>> {
@@ -217,7 +218,7 @@ impl HardforkSpec {
 
         let slot_chain_end = match &self.at {
             ForkAt::Slot { slot } => Some(*slot),
-            ForkAt::Date(date) => match DateTime::parse_from_rfc3339(date) {
+            ForkAt::Date(date) => match timestamp::parse(date) {
                 Err(e) => {
                     problems.push(format!(
                         "[hardfork] at = \"{date}\" is not an RFC 3339 date ({e}); \
@@ -225,15 +226,16 @@ impl HardforkSpec {
                     ));
                     None
                 }
-                Ok(at) if at <= genesis => {
+                Ok(at) if at <= *genesis => {
                     problems.push(format!(
-                        "[hardfork] at = \"{date}\" is not after the genesis ({genesis})"
+                        "[hardfork] at = \"{date}\" is not after the genesis ({})",
+                        timestamp::rfc3339(genesis)
                     ));
                     None
                 }
                 // the first slot that starts at `at` or later
                 Ok(at) => {
-                    let ms = (at - genesis).num_milliseconds() as u64;
+                    let ms = at.duration_since(genesis).as_millis() as u64;
                     u32::try_from(ms.div_ceil(c.slot_ms)).ok()
                 }
             },
@@ -269,18 +271,15 @@ impl HardforkSpec {
             })
         });
         if let Some(s) = schedule {
-            let lead = slot_time(genesis, c, s.slot_tx_end) - genesis;
+            let lead = slot_time(genesis, c, s.slot_tx_end).duration_since(genesis);
             if lead < MIN_LEAD {
                 problems.push(format!(
                     "slot_tx_end {} is {} s after the genesis; the network needs at least {} s \
                      to start and sync: move [hardfork] at {} slots later",
                     s.slot_tx_end,
-                    lead.num_seconds(),
-                    MIN_LEAD.num_seconds(),
-                    (MIN_LEAD - lead)
-                        .num_milliseconds()
-                        .unsigned_abs()
-                        .div_ceil(c.slot_ms)
+                    lead.as_secs(),
+                    MIN_LEAD.as_secs(),
+                    ((MIN_LEAD - lead).as_millis().unsigned_abs() as u64).div_ceil(c.slot_ms)
                 ));
             }
         }
@@ -310,21 +309,24 @@ pub enum Phase {
 }
 
 /// The next phase and when it begins.
-pub type NextPhase = Option<(Phase, DateTime<FixedOffset>)>;
+pub type NextPhase = Option<(Phase, ZonedDateTime)>;
 
 /// The phase at `now`, the global slot (none before the genesis), and the next phase.
 pub fn phase(
-    genesis: DateTime<FixedOffset>,
+    genesis: &ZonedDateTime,
     c: Constants,
     s: Schedule,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> (Phase, Option<u64>, NextPhase) {
     let at = |slot| slot_time(genesis, c, slot);
-    if now < genesis {
-        return (Phase::BeforeGenesis, None, Some((Phase::Prefork, genesis)));
+    if now < genesis.timestamp() {
+        return (
+            Phase::BeforeGenesis,
+            None,
+            Some((Phase::Prefork, genesis.clone())),
+        );
     }
-    let slot =
-        (now.with_timezone(genesis.offset()) - genesis).num_milliseconds() as u64 / c.slot_ms;
+    let slot = now.duration_since(genesis.timestamp()).as_millis() as u64 / c.slot_ms;
     let (phase, next) = match slot {
         x if x < u64::from(s.slot_tx_end) => {
             (Phase::Prefork, Some((Phase::TxEnd, at(s.slot_tx_end))))
@@ -350,8 +352,8 @@ mod tests {
         slot_ms: 30_000,
     };
 
-    fn genesis() -> DateTime<FixedOffset> {
-        DateTime::parse_from_rfc3339("2026-10-29T12:00:00+01:00").unwrap()
+    fn genesis() -> ZonedDateTime {
+        timestamp::parse("2026-10-29T12:00:00+01:00").unwrap()
     }
 
     fn hardfork(toml: &str) -> HardforkSpec {
@@ -368,7 +370,7 @@ mod tests {
     #[test]
     fn slot_gives_the_schedule_with_defaults() {
         let h = hardfork("mode = \"manual\"\nat = { slot = 42 }\n[postfork]\nbin_path = \"/b\"");
-        let s = h.schedule(genesis(), C, &Default::default()).unwrap();
+        let s = h.schedule(&genesis(), C, &Default::default()).unwrap();
         assert_eq!(
             s,
             Schedule {
@@ -385,7 +387,7 @@ mod tests {
     fn date_is_the_first_slot_at_or_after_it() {
         // 21 min 10 s after the genesis: slot 42.33 -> 43
         let h = hardfork("mode = \"auto\"\ndispatcher = \"/d.sh\"\nat = \"2026-10-29T11:21:10Z\"");
-        let s = h.schedule(genesis(), C, &Default::default()).unwrap();
+        let s = h.schedule(&genesis(), C, &Default::default()).unwrap();
         assert_eq!((s.slot_tx_end, s.slot_chain_end), (35, 43));
     }
 
@@ -398,7 +400,7 @@ mod tests {
             slot_chain_end: Some(1),
             ..Default::default()
         };
-        let problems = h.schedule(genesis(), C, &daemon).unwrap_err();
+        let problems = h.schedule(&genesis(), C, &daemon).unwrap_err();
         let text = problems.join("\n");
         for part in [
             "daemon.slot_chain_end conflicts",
@@ -417,7 +419,7 @@ mod tests {
     fn bad_dates_are_explained() {
         let err = |at: &str| {
             hardfork(&format!("mode = \"auto\"\nat = \"{at}\""))
-                .schedule(genesis(), C, &Default::default())
+                .schedule(&genesis(), C, &Default::default())
                 .unwrap_err()
                 .join("\n")
         };
@@ -430,7 +432,7 @@ mod tests {
     fn only_auto_mode_has_a_dispatcher() {
         let problems = |text: &str| {
             hardfork(text)
-                .schedule(genesis(), C, &Default::default())
+                .schedule(&genesis(), C, &Default::default())
                 .err()
                 .unwrap_or_default()
                 .join("\n")
@@ -467,9 +469,9 @@ mod tests {
             slot_chain_end: 42,
             genesis_slot_delta: 10,
         };
-        let at = |min: i64| genesis().with_timezone(&Utc) + Duration::minutes(min);
+        let at = |min: i64| genesis().timestamp() + SignedDuration::from_mins(min);
         let p = |min| {
-            let (phase, slot, next) = phase(genesis(), C, s, at(min));
+            let (phase, slot, next) = phase(&genesis(), C, s, at(min));
             (phase, slot, next.map(|(n, _)| n))
         };
         assert_eq!(p(-1), (Phase::BeforeGenesis, None, Some(Phase::Prefork)));
@@ -477,8 +479,8 @@ mod tests {
         assert_eq!(p(15), (Phase::TxEnd, Some(30), Some(Phase::ChainEnd)));
         assert_eq!(p(21), (Phase::ChainEnd, Some(42), Some(Phase::ForkGenesis)));
         assert_eq!(p(26), (Phase::ForkGenesis, Some(52), None));
-        let (_, _, next) = phase(genesis(), C, s, at(1));
-        assert_eq!(next.unwrap().1, slot_time(genesis(), C, 30));
+        let (_, _, next) = phase(&genesis(), C, s, at(1));
+        assert_eq!(next.unwrap().1, slot_time(&genesis(), C, 30));
     }
 
     #[test]

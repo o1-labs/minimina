@@ -16,7 +16,7 @@ impl LoadProcess {
         LoadProcess {
             pid,
             start_time: proc_stat(pid).map(|s| s.start_time),
-            started_at: chrono::Local::now().to_rfc3339(),
+            started_at: crate::timestamp::now_rfc3339(),
         }
     }
 

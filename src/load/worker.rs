@@ -271,7 +271,7 @@ impl<'a, G: Gateway, C: Clock, J: Journal> Worker<'a, G, C, J> {
             Err(e) => (None, None, Some(e.to_string())),
         };
         self.journal.payment(&PaymentRecord {
-            at: chrono::Local::now().to_rfc3339(),
+            at: crate::timestamp::now_rfc3339(),
             round: self.status.rounds,
             genesis: self.genesis.clone(),
             sender: sender.public_key.clone(),
@@ -299,7 +299,7 @@ impl<'a, G: Gateway, C: Clock, J: Journal> Worker<'a, G, C, J> {
     }
 
     fn save(&mut self) -> Result<(), LoadError> {
-        self.status.updated_at = chrono::Local::now().to_rfc3339();
+        self.status.updated_at = crate::timestamp::now_rfc3339();
         self.journal.status(&self.status)
     }
 }

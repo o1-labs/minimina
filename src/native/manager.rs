@@ -20,7 +20,6 @@ use crate::native::process_tracker::{proc_stat, ProcessRecord, ProcessTracker, R
 use crate::service::typed::{Kind, Native, Service};
 use crate::service::ServiceConfig;
 use crate::spec::archive_database::ArchiveDatabase;
-use chrono::Local;
 use log::{info, warn};
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
@@ -496,7 +495,7 @@ impl NativeManager {
         self.tracker().add(ProcessRecord {
             pid,
             service_name: name.to_string(),
-            started_at: Local::now().to_rfc3339(),
+            started_at: crate::timestamp::now_rfc3339(),
             log_file: log_file_path,
             config_dir: self.config_dir_for_service(name),
             start_time: proc_stat(pid).map(|s| s.start_time),

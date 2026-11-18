@@ -1086,7 +1086,7 @@ fn hardfork_network_gets_its_schedule_and_status() {
             super::hardfork::set_genesis(&ctx, "hf").unwrap();
             return super::hardfork::status(&ctx, "hf", now).unwrap();
         }
-        super::hardfork::status(&ctx, "hf", chrono::Utc::now()).unwrap()
+        super::hardfork::status(&ctx, "hf", jiff::Timestamp::now()).unwrap()
     };
     let before = ctx_status(None);
     assert_eq!(before.phase, crate::hardfork::Phase::NotStarted);
@@ -1095,7 +1095,7 @@ fn hardfork_network_gets_its_schedule_and_status() {
     assert!(before.slot_chain_end.time.is_none());
 
     // the first start sets the genesis; 17 min 15 s later it is past slot_tx_end
-    let started = chrono::Utc::now() + chrono::Duration::seconds(17 * 60 + 15);
+    let started = jiff::Timestamp::now() + jiff::SignedDuration::from_secs(17 * 60 + 15);
     let status = ctx_status(Some(started));
     assert_eq!(status.phase, crate::hardfork::Phase::TxEnd);
     assert_eq!(status.slot, Some(34));
