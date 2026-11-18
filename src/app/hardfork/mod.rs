@@ -16,10 +16,10 @@ use crate::{
     replayer::AppliedFork,
     runtime_config::{self, RuntimeConfig},
     spec::{NetworkSpec, Role},
-    utils,
+    timestamp, utils,
 };
 use anyhow::{bail, Context as _, Result};
-use chrono::{DateTime, FixedOffset, Local, Utc};
+use jiff::{Timestamp, ZonedDateTime};
 use log::info;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -54,7 +54,7 @@ pub fn check_create(ctx: &Context, spec: &NetworkSpec) -> Result<Option<(Hardfor
         .unwrap_or_default();
     let schedule = match Constants::from_runtime_config(&runtime_config) {
         Ok(c) => h
-            .schedule(Local::now().fixed_offset(), c, &runtime_config.daemon)
+            .schedule(&timestamp::now(), c, &runtime_config.daemon)
             .map_err(|p| problems.extend(p))
             .ok(),
         Err(p) => {
@@ -308,9 +308,10 @@ pub fn set_genesis(ctx: &Context, network_id: &str) -> Result<()> {
     if !meta.genesis_pending {
         return Ok(());
     }
-    let now = Local::now().fixed_offset();
+    let now = timestamp::now();
+    let genesis_timestamp = genesis_ledger::format_timestamp(&now);
     let mut overrides = serde_json::json!({
-        "genesis": { "genesis_state_timestamp": genesis_ledger::format_timestamp(now) }
+        "genesis": { "genesis_state_timestamp": genesis_timestamp }
     });
     if meta.hardfork.is_some() {
         let spec_path = ctx.dirs.spec_path(network_id);
@@ -323,7 +324,7 @@ pub fn set_genesis(ctx: &Context, network_id: &str) -> Result<()> {
             let c = Constants::from_runtime_config(&read_runtime_config(&network_path)?)
                 .map_err(|p| anyhow::anyhow!(p.join("; ")))?;
             // the fork keys in the genesis ledger are the ones placed at create
-            let schedule = h.schedule(now, c, &Default::default()).map_err(|p| {
+            let schedule = h.schedule(&now, c, &Default::default()).map_err(|p| {
                 anyhow::anyhow!(
                     "the fork date of network '{network_id}' does not fit a genesis of now:\n  - {}\n\
                      Change [hardfork] at in {} and create the network again",
@@ -340,7 +341,7 @@ pub fn set_genesis(ctx: &Context, network_id: &str) -> Result<()> {
     }
     genesis_ledger::update(&network_path, &overrides)
         .with_context(|| format!("Failed to set the genesis timestamp of '{network_id}'"))?;
-    info!("Genesis timestamp of '{network_id}': {now}");
+    info!("Genesis timestamp of '{network_id}': {genesis_timestamp}");
     meta.genesis_pending = false;
     meta.save(&network_path)
         .context("Failed to record the genesis timestamp")?;
@@ -364,7 +365,7 @@ pub fn applied_fork(ctx: &Context, network_id: &str) -> Result<Option<AppliedFor
             .dirs
             .network_path(network_id)
             .join(genesis_ledger::PREFORK_GENESIS_LEDGER_JSON),
-        fork_genesis_slot: status(ctx, network_id, Utc::now())?.fork_genesis.slot,
+        fork_genesis_slot: status(ctx, network_id, Timestamp::now())?.fork_genesis.slot,
     }))
 }
 
@@ -414,7 +415,7 @@ impl std::fmt::Display for Status {
 }
 
 /// `network hardfork status`: the fork schedule and the phase of the network now.
-pub fn status(ctx: &Context, network_id: &str, now: DateTime<Utc>) -> Result<Status> {
+pub fn status(ctx: &Context, network_id: &str, now: Timestamp) -> Result<Status> {
     let network_path = ctx.dirs.network_path(network_id);
     let meta = NetworkMeta::load(&network_path)?
         .with_context(|| format!("network '{network_id}' has no minimina.json"))?;
@@ -429,22 +430,24 @@ pub fn status(ctx: &Context, network_id: &str, now: DateTime<Utc>) -> Result<Sta
     let genesis = (!meta.genesis_pending)
         .then_some(config.genesis.genesis_state_timestamp.as_deref())
         .flatten()
-        .map(DateTime::parse_from_rfc3339)
+        .map(timestamp::parse)
         .transpose()
         .context("invalid genesis.genesis_state_timestamp")?;
 
     let point = |slot: u32| Point {
         slot,
-        time: genesis.map(|g| hardfork::slot_time(g, c, slot).to_rfc3339()),
+        time: genesis
+            .as_ref()
+            .map(|g| timestamp::rfc3339(&hardfork::slot_time(g, c, slot))),
     };
-    let (phase, slot, next) = match genesis {
+    let (phase, slot, next) = match &genesis {
         None => (hardfork::Phase::NotStarted, None, None),
         Some(g) => hardfork::phase(g, c, schedule, now),
     };
-    let next = next.map(|(phase, at): (_, DateTime<FixedOffset>)| Next {
+    let next = next.map(|(phase, at): (_, ZonedDateTime)| Next {
         phase,
-        time: at.to_rfc3339(),
-        in_seconds: (at.with_timezone(&Utc) - now).num_seconds(),
+        time: timestamp::rfc3339(&at),
+        in_seconds: at.timestamp().duration_since(now).as_secs(),
     });
     Ok(Status {
         network_id: network_id.to_string(),
@@ -453,7 +456,7 @@ pub fn status(ctx: &Context, network_id: &str, now: DateTime<Utc>) -> Result<Sta
         method: h.method,
         phase,
         slot,
-        genesis_timestamp: genesis.map(|g| g.to_rfc3339()),
+        genesis_timestamp: genesis.as_ref().map(timestamp::rfc3339),
         slot_duration_ms: c.slot_ms,
         k: c.k,
         slot_tx_end: point(schedule.slot_tx_end),

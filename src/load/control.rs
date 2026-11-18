@@ -84,7 +84,7 @@ impl LoadStore {
         }
         if let Some(mut status) = self.status(id)?.filter(|s| !s.state.is_finished()) {
             status.state = LoadState::Finished(StopReason::Stopped);
-            status.updated_at = chrono::Local::now().to_rfc3339();
+            status.updated_at = crate::timestamp::now_rfc3339();
             self.save_status(id, &status)?;
         }
         self.summary(network_id, id)

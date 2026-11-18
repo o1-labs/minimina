@@ -20,7 +20,7 @@ use crate::{
     service::ServiceConfig,
 };
 use anyhow::{bail, Context as _, Result};
-use chrono::Utc;
+use jiff::{SignedDuration, Timestamp};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -167,7 +167,7 @@ pub fn prepare(
         serde_json::to_string_pretty(fork_config)?,
     )?;
 
-    let schedule = status(ctx, network_id, Utc::now())?;
+    let schedule = status(ctx, network_id, Timestamp::now())?;
     let fork_genesis = schedule.fork_genesis;
     if fork.global_slot_since_genesis != fork_genesis.slot {
         bail!(
@@ -338,20 +338,14 @@ fn legacy_fork_config(
     services: &[ServiceConfig],
     wait: bool,
 ) -> Result<std::result::Result<(String, ForkPoint, serde_json::Value), String>> {
-    let s = status(ctx, network_id, Utc::now())?;
-    let time = |p: &super::Point| {
-        p.time
-            .as_deref()
-            .map(chrono::DateTime::parse_from_rfc3339)
-            .transpose()
-            .map(|t| t.map(|t| t.with_timezone(&Utc)))
-    };
+    let s = status(ctx, network_id, Timestamp::now())?;
+    let time = |p: &super::Point| p.time.as_deref().map(str::parse::<Timestamp>).transpose();
     let (Some(tx_end), Some(chain_end)) = (time(&s.slot_tx_end)?, time(&s.slot_chain_end)?) else {
         return Ok(Err(format!("network '{network_id}' has not started")));
     };
-    let ready = tx_end + chrono::Duration::milliseconds(s.slot_duration_ms as i64);
+    let ready = tx_end + SignedDuration::from_millis(s.slot_duration_ms as i64);
     loop {
-        let now = Utc::now();
+        let now = Timestamp::now();
         if now >= chain_end {
             return Ok(Err(format!(
                 "prepare started after slot_chain_end {}, when the daemons dump their fork \
@@ -359,7 +353,7 @@ fn legacy_fork_config(
                 s.slot_chain_end.slot
             )));
         }
-        let seconds = (ready - now).num_seconds();
+        let seconds = ready.duration_since(now).as_secs();
         if seconds <= 0 {
             break;
         }
@@ -580,18 +574,16 @@ fn fork_point(
 /// Fails before `slot_chain_end` and one slot more (the daemons need the
 /// last block), or with `wait`, sleeps until then.
 fn wait_for_chain_end(ctx: &Context, network_id: &str, wait: bool) -> Result<()> {
-    let s = status(ctx, network_id, Utc::now())?;
+    let s = status(ctx, network_id, Timestamp::now())?;
     let chain_end = s
         .slot_chain_end
         .time
         .as_deref()
-        .map(chrono::DateTime::parse_from_rfc3339)
-        .transpose()?
         .with_context(|| format!("network '{network_id}' has not started"))?;
     let ready =
-        chain_end.with_timezone(&Utc) + chrono::Duration::milliseconds(s.slot_duration_ms as i64);
+        chain_end.parse::<Timestamp>()? + SignedDuration::from_millis(s.slot_duration_ms as i64);
     loop {
-        let seconds = (ready - Utc::now()).num_seconds();
+        let seconds = ready.duration_since(Timestamp::now()).as_secs();
         if seconds <= 0 {
             return Ok(());
         }

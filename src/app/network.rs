@@ -235,7 +235,7 @@ pub fn run(ctx: &Context, cmd: NetworkCommand) -> Result<()> {
             ctx.ensure_network_exists(&cmd.network_id)?;
             println!(
                 "{}",
-                hardfork::status(ctx, &cmd.network_id, chrono::Utc::now())?
+                hardfork::status(ctx, &cmd.network_id, jiff::Timestamp::now())?
             );
             Ok(())
         }

@@ -4,10 +4,8 @@
 //! The generated ledger contains basic account structures populated with information from provided service keys.
 //! It handles the serialization of the ledger to a formatted JSON structure and saves it as `genesis_ledger.json`.
 
-extern crate chrono;
-use chrono::prelude::*;
-
-use crate::spec::ledger::LedgerAccount;
+use crate::{spec::ledger::LedgerAccount, timestamp};
+use jiff::ZonedDateTime;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -165,12 +163,12 @@ pub(crate) fn merge_json(base: &mut serde_json::Value, overrides: &serde_json::V
 }
 
 pub fn current_timestamp() -> String {
-    format_timestamp(Local::now().fixed_offset())
+    format_timestamp(&timestamp::now())
 }
 
 /// A `genesis_state_timestamp` value.
-pub fn format_timestamp(time: DateTime<FixedOffset>) -> String {
-    time.format("%Y-%m-%dT%H:%M:%S%.6f%Z").to_string()
+pub fn format_timestamp(time: &ZonedDateTime) -> String {
+    timestamp::rfc3339_micros(time)
 }
 
 pub fn set_slot_since_genesis(network_path: &Path, slot_since_genesis: u64) -> std::io::Result<()> {

@@ -23,7 +23,7 @@ use crate::{
     utils,
 };
 use anyhow::{bail, Context as _, Result};
-use chrono::{DateTime, FixedOffset, Utc};
+use jiff::Timestamp;
 use log::{info, warn};
 use serde::Serialize;
 use std::{
@@ -177,7 +177,7 @@ pub fn apply(
                 &toolbox,
                 db,
                 prepared.fork.global_slot_since_genesis,
-                genesis_wait(Utc::now(), genesis_time),
+                genesis_wait(Timestamp::now(), genesis_time),
                 h.archive_handover,
             )
             .with_context(|| {
@@ -201,7 +201,7 @@ pub fn apply(
 }
 
 /// The postfork genesis time, from the fork config the daemons gave.
-fn postfork_genesis_time(network_path: &Path) -> Result<Option<DateTime<FixedOffset>>> {
+fn postfork_genesis_time(network_path: &Path) -> Result<Option<Timestamp>> {
     let path = network_path.join(HARDFORK_DIR).join(FORK_CONFIG_JSON);
     let config = RuntimeConfig::from_json(&genesis_ledger::read_file(&path)?)
         .with_context(|| format!("parsing {}", path.display()))?;
@@ -209,7 +209,7 @@ fn postfork_genesis_time(network_path: &Path) -> Result<Option<DateTime<FixedOff
         .genesis
         .genesis_state_timestamp
         .as_deref()
-        .map(DateTime::parse_from_rfc3339)
+        .map(str::parse::<Timestamp>)
         .transpose()
         .with_context(|| {
             format!(
@@ -223,9 +223,9 @@ fn postfork_genesis_time(network_path: &Path) -> Result<Option<DateTime<FixedOff
 /// [`ARCHIVE_GENESIS_TIMEOUT`] after the postfork genesis time. With
 /// `--hardfork-handover` the archive does not insert the block at its start;
 /// the daemons send it at the genesis time.
-fn genesis_wait(now: DateTime<Utc>, genesis: Option<DateTime<FixedOffset>>) -> Duration {
+fn genesis_wait(now: Timestamp, genesis: Option<Timestamp>) -> Duration {
     let until_genesis = genesis
-        .and_then(|g| (g.with_timezone(&Utc) - now).to_std().ok())
+        .and_then(|g| Duration::try_from(g.duration_since(now)).ok())
         .unwrap_or_default();
     until_genesis + ARCHIVE_GENESIS_TIMEOUT
 }
@@ -390,15 +390,13 @@ mod tests {
 
     #[test]
     fn the_archive_has_until_after_the_postfork_genesis_time() {
-        let now = DateTime::parse_from_rfc3339("2026-11-12T00:41:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        let genesis = DateTime::parse_from_rfc3339("2026-11-12T01:46:59+01:00").ok();
+        let now: Timestamp = "2026-11-12T00:41:00Z".parse().unwrap();
+        let genesis = "2026-11-12T01:46:59+01:00".parse().ok();
         assert_eq!(
             genesis_wait(now, genesis),
             Duration::from_secs(359) + ARCHIVE_GENESIS_TIMEOUT
         );
-        let past = DateTime::parse_from_rfc3339("2026-11-12T00:30:00Z").ok();
+        let past = "2026-11-12T00:30:00Z".parse().ok();
         assert_eq!(genesis_wait(now, past), ARCHIVE_GENESIS_TIMEOUT);
         assert_eq!(genesis_wait(now, None), ARCHIVE_GENESIS_TIMEOUT);
     }
@@ -416,7 +414,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             postfork_genesis_time(net.path()).unwrap(),
-            DateTime::parse_from_rfc3339("2026-11-12T00:46:59.717Z").ok()
+            "2026-11-12T00:46:59.717Z".parse().ok()
         );
     }
 }

@@ -23,7 +23,7 @@ impl LoadStatus {
     pub fn new(senders: impl IntoIterator<Item = (String, String)>) -> Self {
         LoadStatus {
             state: LoadState::Starting,
-            updated_at: chrono::Local::now().to_rfc3339(),
+            updated_at: crate::timestamp::now_rfc3339(),
             rounds: 0,
             accepted: 0,
             rejected: 0,
