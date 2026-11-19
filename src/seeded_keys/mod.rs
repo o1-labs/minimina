@@ -10,17 +10,16 @@
 //! about a second.
 //!
 //! Why not mina-rust's keys (`mina-node-account`, `mina-p2p`, `mina-signer`):
-//! - they are not on crates.io, and minimina is published there, which
-//!   refuses git dependencies;
 //! - they derive the encryption key for every file, so a thousand accounts
 //!   take minutes, they cannot write libp2p key files yet, and they do not
 //!   make keys from a seed;
-//! - they would pull in all of mina's wire types for a few lines of code.
+//! - they would pull in all of mina's wire types for a few lines of code;
+//! - they are not on crates.io, only git dependencies.
 //!
 //! Both build on the same crates (`argon2`, `crypto_secretbox`,
 //! `ed25519-dalek`, `bs58`), and the tests here check the keys against files
-//! and keys mina made. Once those crates are on crates.io, [`AccountKey`] can
-//! use them instead.
+//! and keys mina made. If mina-rust's keys gain seeds and one encryption key
+//! for many files, [`AccountKey`] can use them instead.
 
 mod account_key;
 mod error;
