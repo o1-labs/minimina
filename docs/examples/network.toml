@@ -8,6 +8,11 @@
 # --profile overrides it. Default: devnet.
 profile = "devnet"
 
+# Log level of the mina processes (daemons, snark workers, mina-archive):
+# Spam, Trace, Debug, Info, Warn, Error, Fatal. Default: daemons Info, and
+# Trace to their mina.log.
+# log_level = "Trace"
+
 [[nodes]]
 role = "seed"
 

@@ -3,6 +3,7 @@
 use crate::cli::{ExecutionMode, Profile};
 use crate::daemon_args::DaemonFeatures;
 use crate::hardfork::{ForkMethod, HardforkMode};
+use crate::log_level::LogLevel;
 use crate::spec::archive_database::ArchiveDatabase;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -32,6 +33,9 @@ pub struct NetworkMeta {
     /// recorded use the default.
     #[serde(default)]
     pub profile: Profile,
+    /// Log level of the mina processes, from the spec; `None`: minimina's defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<LogLevel>,
     /// Version-dependent daemon flags, probed at create.
     #[serde(default)]
     pub features: DaemonFeatures,
@@ -129,6 +133,7 @@ mod tests {
             postgres_uri: None,
             archive_database: Some("archive".parse().unwrap()),
             profile: Profile::Lightnet,
+            log_level: Some(LogLevel::Trace),
             features: DaemonFeatures {
                 precomputed_blocks_dir: true,
                 hardfork_handling: false,

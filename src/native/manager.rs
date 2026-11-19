@@ -14,6 +14,7 @@ use crate::daemon_args::{
 };
 use crate::docker::compose::CONFIG_DIRECTORY;
 use crate::hardfork::dispatch::Dispatch;
+use crate::log_level::LogLevel;
 use crate::native::error::NativeError;
 use crate::native::port_manager;
 use crate::native::process_tracker::{proc_stat, ProcessRecord, ProcessTracker, Records};
@@ -59,6 +60,8 @@ pub struct NativeManager {
     pub archive_ledgers: Option<PathBuf>,
     /// The archive database the spec names; `None`: `minimina_<network id>`.
     pub archive_database: Option<ArchiveDatabase>,
+    /// The spec's log level of the mina processes; `None`: their defaults.
+    pub log_level: Option<LogLevel>,
 }
 
 /// A tracked process and whether it is still running.
@@ -82,7 +85,13 @@ impl NativeManager {
             dispatch: None,
             archive_ledgers: None,
             archive_database: None,
+            log_level: None,
         }
+    }
+
+    pub fn with_log_level(mut self, log_level: Option<LogLevel>) -> Self {
+        self.log_level = log_level;
+        self
     }
 
     pub fn with_features(mut self, features: DaemonFeatures) -> Self {
@@ -352,6 +361,7 @@ impl NativeManager {
                 config_dir,
                 uptime_service: None,
                 features: self.features,
+                log_level: self.log_level,
             })
         };
         let name = &service.name;
@@ -429,6 +439,9 @@ impl NativeManager {
         }
         if self.archive_handover {
             args.push("--hardfork-handover".into());
+        }
+        if let Some(level) = self.log_level {
+            args.extend(["--log-level".into(), level.to_string()]);
         }
         args
     }
@@ -675,6 +688,7 @@ mod tests {
             config_dir: "/net/config-directory/x",
             uptime_service: None,
             features: DaemonFeatures::default(),
+            log_level: None,
         };
         match &service.kind {
             Kind::Daemon(daemon) => layout.daemon(name, daemon),
@@ -1144,6 +1158,17 @@ exec sleep 300"#
                 "--hardfork-handover"
             ]
         );
+    }
+
+    #[test]
+    fn the_archive_runs_at_the_spec_log_level() {
+        let sandbox = Sandbox::new("exec sleep 300");
+        let manager = sandbox.manager();
+        assert!(!manager
+            .archive_args(3125)
+            .contains(&"--log-level".to_string()));
+        let traced = manager.with_log_level(Some(LogLevel::Trace));
+        assert_eq!(traced.archive_args(3125)[5..], ["--log-level", "Trace"]);
     }
 
     #[test]

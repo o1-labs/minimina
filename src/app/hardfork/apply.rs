@@ -165,6 +165,7 @@ pub fn apply(
     let typed = ctx.services::<Native>(network_id)?;
     NativeManager::new(&network_path, &postfork, &ctx.postgres_uri, ctx.profile)
         .with_features(features)
+        .with_log_level(ctx.log_level)
         .with_archive_config(archive_config.clone())
         .with_archive_handover(h.archive_handover)
         .with_dispatch(ctx.dispatch.clone())
