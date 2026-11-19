@@ -239,6 +239,8 @@ accounts manager to unlock them.
 - It also hands out the test accounts (`accounts = N`). minimina generates
   them and reads their private keys at create (`mina advanced dump-keypair`):
   two mina runs per account, so this suits a few accounts, not hundreds.
+  With [seeded keys](#seeded-keys), minimina makes them without mina, and a
+  thousand take about a second.
 - minimina downloads the release binary for the host once into
   `~/.minimina/.tools/accounts-manager/<version>`, checked against the SHA-256
   GitHub gives for it.
@@ -320,6 +322,32 @@ public_key,balance,delegate
 B62qrPN5Y5yq8kGE3FbVKbGTdTAJNdtNtB5sNVpxyRwWGcDEhpMzc8g,1000,
 B62qiy32p8kAKnny8ZFwoMhYpBppM1DWVCqAPBYNcXnsAHhnfAAuXgg,0.5,B62qrPN5Y5yq8kGE3FbVKbGTdTAJNdtNtB5sNVpxyRwWGcDEhpMzc8g
 ```
+
+### Seeded keys
+
+By default, every `network create` generates new keys with mina, about a
+second per key. With a seed, minimina makes every key itself, from the seed
+and the node or account name: block producers, the snark coordinator, test
+accounts and libp2p keys. Each create gives the same accounts and peer ids, on
+any machine, and a thousand accounts take about a second.
+
+```toml
+[keys]
+seed = "my-network"
+```
+
+```bash
+minimina network create -n mynet --spec net.toml --key-seed other   # replaces the spec's seed
+```
+
+- The key files are in mina's format, encrypted with `naughty blue worm`,
+  where generated keys go: `network-keypairs/<name>` with `<name>.pub`, and
+  `libp2p-keypairs/<name>` with `<name>.peerid`. Their salt and nonce are
+  random, so the files differ between creates; the keys in them do not.
+- A key depends on the seed and the name: renaming a node, or changing the
+  seed, gives it another key.
+- Anyone who knows the seed can compute the private keys: use seeded keys for
+  local and test networks only.
 
 ### Profile
 

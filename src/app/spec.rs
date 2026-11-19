@@ -36,6 +36,7 @@ fn invocation() -> String {
 fn spec_init(args: &SpecInitArgs, command: &str) -> Result<String> {
     let mut spec = NetworkSpec::flags_base().with_flags(&args.nodes);
     spec.profile = args.profile;
+    spec.keys.seed = args.key_seed.clone();
     // a spec that `network create` would refuse is not written
     spec.plan()?;
     Ok(SpecInit {
@@ -54,6 +55,7 @@ mod tests {
     fn init_refuses_a_network_create_would() {
         let args = SpecInitArgs {
             profile: None,
+            key_seed: None,
             nodes: NodeFlags {
                 seeds: Some(0),
                 ..Default::default()
@@ -63,6 +65,7 @@ mod tests {
         assert!(err.contains("no seed"), "{err}");
         let args = SpecInitArgs {
             profile: None,
+            key_seed: None,
             nodes: NodeFlags {
                 rosetta: true,
                 ..Default::default()

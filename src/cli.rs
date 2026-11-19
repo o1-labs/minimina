@@ -118,6 +118,11 @@ pub struct SpecInitArgs {
     #[clap(long, value_enum)]
     pub profile: Option<Profile>,
 
+    /// Seed written into the spec (`[keys] seed`): every create of the spec
+    /// makes the same keys from it
+    #[clap(long, value_name = "SEED")]
+    pub key_seed: Option<String>,
+
     #[clap(flatten)]
     pub nodes: NodeFlags,
 }
@@ -437,6 +442,12 @@ pub struct CreateNetworkArgs {
     #[clap(long, value_enum)]
     pub profile: Option<Profile>,
 
+    /// Make every key from this seed and the node or account name, so each
+    /// create gives the same accounts and peer ids [default: the spec's
+    /// `[keys] seed`; without one, new keys on every create]
+    #[clap(long, value_name = "SEED")]
+    pub key_seed: Option<String>,
+
     #[clap(flatten)]
     pub nodes: NodeFlags,
 }
@@ -754,6 +765,7 @@ mod tests {
             Command::Network(NetworkCommand::Create(args)) => {
                 assert_eq!(args.spec.as_deref(), Some(std::path::Path::new("n.toml")));
                 assert_eq!(args.profile, None);
+                assert_eq!(args.key_seed, None);
             }
             _ => panic!("not a create"),
         }
@@ -793,6 +805,20 @@ mod tests {
             panic!("not spec init");
         };
         assert_eq!(args.nodes.block_producers, Some(3));
+        let cli = Cli::try_parse_from([
+            "minimina",
+            "network",
+            "create",
+            "-s",
+            "n.toml",
+            "--key-seed",
+            "lightnet",
+        ])
+        .unwrap();
+        let Command::Network(NetworkCommand::Create(args)) = cli.command else {
+            panic!("not a create");
+        };
+        assert_eq!(args.key_seed.as_deref(), Some("lightnet"));
         assert!(Cli::try_parse_from(["minimina", "network", "create", "--bps", "x"]).is_err());
     }
 

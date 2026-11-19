@@ -13,13 +13,18 @@ use anyhow::Result;
 
 /// The spec of `network create`: the node flags on top of `--spec`, else of
 /// [`NetworkSpec::flags_base`]; with neither, the default network.
+/// `--key-seed` replaces the spec's seed.
 pub fn create_spec(cmd: &CreateNetworkArgs) -> Result<NetworkSpec> {
     let spec = match (&cmd.spec, cmd.nodes.is_empty()) {
         (Some(path), _) => NetworkSpec::load(path)?,
         (None, false) => NetworkSpec::flags_base(),
         (None, true) => NetworkSpec::default_network(),
     };
-    Ok(spec.with_flags(&cmd.nodes))
+    let mut spec = spec.with_flags(&cmd.nodes);
+    if let Some(seed) = &cmd.key_seed {
+        spec.keys.seed = Some(seed.clone());
+    }
+    Ok(spec)
 }
 
 /// The spec of `network create`, checked as far as it can be without the
