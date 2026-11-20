@@ -247,6 +247,7 @@ mod tests {
             postgres_uri: None,
             archive_database: None,
             profile: Default::default(),
+            log_level: None,
             features: Default::default(),
             genesis_pending: false,
             hardfork: None,

@@ -556,6 +556,7 @@ fn native_spec_network() {
         &spec,
         r#"
         profile = "lightnet"
+        log_level = "trace"
         [[nodes]]
         role = "seed"
         [[nodes]]
@@ -597,6 +598,7 @@ fn native_spec_network() {
     let net = h.dirs.network_path("spec");
     let meta = NetworkMeta::load(&net).unwrap().unwrap();
     assert_eq!(meta.profile, Profile::Lightnet);
+    assert_eq!(meta.log_level, Some(crate::log_level::LogLevel::Trace));
     assert!(h.dirs.spec_path("spec").exists());
     assert!(h.fake.calls.borrow()[0]
         .envs
@@ -1235,6 +1237,7 @@ fn hardfork_network_gets_its_schedule_and_status() {
             postgres_uri: String::new(),
             archive_database: None,
             profile: Profile::Devnet,
+            log_level: None,
             features: Default::default(),
             archive_config: None,
             archive_handover: false,

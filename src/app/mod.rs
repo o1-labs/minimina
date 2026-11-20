@@ -27,6 +27,7 @@ use crate::{
     genesis_ledger::GENESIS_LEDGER_JSON,
     hardfork::dispatch::Dispatch,
     install,
+    log_level::LogLevel,
     native::manager::{NativeManager, DEFAULT_POSTGRES_URI, DEFAULT_SHUTDOWN_TIMEOUT},
     network_meta::{HardforkState, NetworkMeta},
     runner::{Runner, SystemRunner},
@@ -70,6 +71,8 @@ pub struct Context {
     pub archive_database: Option<ArchiveDatabase>,
     /// Build profile exported as `MINA_PROFILE` to every mina process.
     pub profile: Profile,
+    /// Log level of the mina processes: the spec's at create, then the recorded one.
+    pub log_level: Option<LogLevel>,
     /// Version-dependent daemon flags recorded at create (probed again by create).
     pub features: DaemonFeatures,
     /// The runtime config native `mina-archive` starts with; see [`archive_config`].
@@ -97,6 +100,7 @@ impl Context {
                 postgres_uri: None,
                 archive_database: None,
                 profile: self.profile,
+                log_level: self.log_level,
                 features: self.features,
                 genesis_pending: false,
                 hardfork: None,
@@ -108,6 +112,7 @@ impl Context {
                 postgres_uri: Some(self.postgres_uri.clone()),
                 archive_database: None,
                 profile: self.profile,
+                log_level: self.log_level,
                 features: self.features,
                 genesis_pending: false,
                 hardfork: None,
@@ -128,6 +133,7 @@ impl Context {
             self.profile,
             self.runner.clone(),
         )
+        .with_log_level(self.log_level)
     }
 
     pub fn native(&self, network_id: &str) -> Result<NativeManager> {
@@ -138,6 +144,7 @@ impl Context {
             self.profile,
         )
         .with_features(self.features)
+        .with_log_level(self.log_level)
         .with_archive_config(self.archive_config.clone())
         .with_archive_handover(self.archive_handover)
         .with_dispatch(self.dispatch.clone())
@@ -189,6 +196,12 @@ pub fn run_with(
             Some(profile) => Some(profile),
             None => inputs::create_spec(args)?.profile,
         }),
+        _ => None,
+    };
+    let created_log_level = match &cli.command {
+        Command::Network(NetworkCommand::Create(args)) => {
+            Some(inputs::create_spec(args)?.log_level)
+        }
         _ => None,
     };
     let is_create = created_profile.is_some();
@@ -257,6 +270,7 @@ pub fn run_with(
         Some(Dispatch::new(script, &dirs.network_path(id), profile))
     });
     let archive_database = stored.as_ref().and_then(|m| m.archive_database.clone());
+    let log_level = created_log_level.unwrap_or(stored.as_ref().and_then(|m| m.log_level));
     let postgres_uri = stored
         .and_then(|m| m.postgres_uri)
         .or_else(|| std::env::var(POSTGRES_URI_ENV).ok())
@@ -285,6 +299,7 @@ pub fn run_with(
         postgres_uri,
         archive_database,
         profile,
+        log_level,
         features,
         archive_config,
         archive_handover,
@@ -365,6 +380,7 @@ mod archive_config_tests {
             postgres_uri: None,
             archive_database: None,
             profile: Profile::Devnet,
+            log_level: None,
             features: DaemonFeatures::default(),
             genesis_pending: false,
             hardfork: None,

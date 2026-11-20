@@ -9,6 +9,7 @@ use crate::daemon_args::{
     rosetta_args, DaemonFeatures, Layout, PRECOMPUTED_BLOCKS_DIR, ROSETTA_ENV,
 };
 use crate::genesis_ledger::GENESIS_LEDGER_JSON;
+use crate::log_level::LogLevel;
 use crate::native::binary::Binary;
 use crate::service::typed::{self, ArchiveServer, Daemon, Docker, Kind};
 use log::debug;
@@ -93,6 +94,7 @@ impl DockerCompose {
         network_path: &Path,
         profile: Profile,
         features: DaemonFeatures,
+        log_level: Option<LogLevel>,
     ) -> io::Result<String> {
         let network_path_string = path_str(network_path)?;
         let network_name = network_path
@@ -135,6 +137,7 @@ impl DockerCompose {
             config_dir: &config_dir,
             uptime_service,
             features,
+            log_level,
         };
         // client (GraphQL is client + 1) and external ports, when published
         let daemon_ports = |daemon: &Daemon<Docker>| {
@@ -206,7 +209,10 @@ impl DockerCompose {
                                 // as canonical and records the genesis accounts
                                 command: Some(format!(
                                     "mina-archive run --postgres-uri {archive_uri} --server-port {port} \
-                                     --config-file /local-network/{GENESIS_LEDGER_JSON}"
+                                     --config-file /local-network/{GENESIS_LEDGER_JSON}{}",
+                                    log_level
+                                        .map(|level| format!(" --log-level {level}"))
+                                        .unwrap_or_default()
                                 )),
                                 volumes: Some(vec![
                                     format!("{name}:/data"),
@@ -382,7 +388,7 @@ mod tests {
         features: DaemonFeatures,
     ) -> io::Result<String> {
         let services = typed::check::<Docker>(configs)?;
-        DockerCompose::generate(&services, network_path, profile, features)
+        DockerCompose::generate(&services, network_path, profile, features, None)
     }
 
     #[test]
@@ -703,5 +709,37 @@ mod tests {
             "mina-archive run --postgres-uri postgres://postgres:postgres@postgres-network-id:5432/archive \
              --server-port 8304 --config-file /local-network/genesis_ledger.json"
         ));
+        assert!(!docker_compose.contains("--log-level"), "{docker_compose}");
+    }
+
+    #[test]
+    fn the_spec_log_level_reaches_daemons_and_the_archive() {
+        let configs = vec![ServiceConfig {
+            service_name: "archive".to_string(),
+            service_type: ServiceType::ArchiveNode,
+            client_port: Some(8000),
+            docker_image: Some("archive-image".into()),
+            archive_docker_image: Some("archive-service-image".into()),
+            archive_port: Some(8304),
+            ..Default::default()
+        }];
+        let services = typed::check::<Docker>(&configs).unwrap();
+        let docker_compose = DockerCompose::generate(
+            &services,
+            Path::new("/net/network-id"),
+            Profile::Devnet,
+            DaemonFeatures::default(),
+            Some(LogLevel::Debug),
+        )
+        .unwrap();
+        assert!(
+            docker_compose.contains("-log-level Debug -file-log-level Debug"),
+            "{docker_compose}"
+        );
+        assert!(
+            docker_compose
+                .contains("--config-file /local-network/genesis_ledger.json --log-level Debug"),
+            "{docker_compose}"
+        );
     }
 }

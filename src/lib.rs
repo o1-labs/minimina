@@ -14,6 +14,7 @@ pub mod hardfork;
 pub mod install;
 pub mod keys;
 pub mod load;
+pub mod log_level;
 pub mod native;
 pub mod network_id;
 pub mod network_meta;

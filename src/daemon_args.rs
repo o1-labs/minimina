@@ -7,6 +7,7 @@
 use crate::cli::ExecutionMode;
 use crate::directory_manager::{LIBP2P_KEYPAIRS, NETWORK_KEYPAIRS};
 use crate::genesis_ledger::GENESIS_LEDGER_JSON;
+use crate::log_level::LogLevel;
 use crate::service::typed::{
     BlockProducerKey, Daemon, Libp2pKeypair, Mode, Peers, Role, Rosetta, SnarkWorker,
 };
@@ -58,6 +59,8 @@ pub struct Layout<'a> {
     /// Compose service name of the uptime service backend (docker mode only).
     pub uptime_service: Option<&'a str>,
     pub features: DaemonFeatures,
+    /// The spec's log level of the mina processes; `None`: their defaults.
+    pub log_level: Option<LogLevel>,
 }
 
 impl Layout<'_> {
@@ -112,6 +115,16 @@ impl Layout<'_> {
         }
     }
 
+    /// `-log-level` and `-file-log-level` of a daemon: the spec's level for
+    /// both, else Info to stdout, which goes to the service log, and Trace to
+    /// the config directory's mina.log, which rotates.
+    fn daemon_log_levels(&self) -> (&'static str, &'static str) {
+        match self.log_level {
+            Some(level) => (level.as_str(), level.as_str()),
+            None => ("Info", "Trace"),
+        }
+    }
+
     /// Arguments of `mina` for the daemon `name`.
     pub fn daemon<M: Mode>(&self, name: &str, daemon: &Daemon<M>) -> Vec<String> {
         let client_port = daemon.client_port;
@@ -136,9 +149,9 @@ impl Layout<'_> {
             format!("{}/{GENESIS_LEDGER_JSON}", self.network_dir),
         );
         args.push("-log-json".to_string());
-        // stdout goes to the service log; the config directory's mina.log rotates
-        arg(&mut args, "-log-level", "Info");
-        arg(&mut args, "-file-log-level", "Trace");
+        let (log_level, file_log_level) = self.daemon_log_levels();
+        arg(&mut args, "-log-level", log_level);
+        arg(&mut args, "-file-log-level", file_log_level);
         arg(&mut args, "-config-directory", self.config_dir);
         if self.features.precomputed_blocks_dir {
             arg(
@@ -242,6 +255,10 @@ impl Layout<'_> {
         if let Some(proof_level) = &worker.proof_level {
             arg(&mut args, "-proof-level", proof_level.clone());
         }
+        if let Some(level) = self.log_level {
+            arg(&mut args, "-log-level", level.as_str());
+            arg(&mut args, "-file-log-level", level.as_str());
+        }
         args
     }
 }
@@ -295,6 +312,7 @@ mod tests {
             config_dir: "/c",
             uptime_service: None,
             features: DaemonFeatures::default(),
+            log_level: None,
         }
     }
 
@@ -419,6 +437,37 @@ mod tests {
             value_of(&copied, "-uptime-url"),
             Some("http://uptime-net:8080/v1/submit")
         );
+    }
+
+    #[test]
+    fn a_log_level_sets_both_levels_of_daemons_and_workers() {
+        let seed = node("seed", Role::Seed);
+        let worker = service(
+            "worker",
+            Kind::SnarkWorker(SnarkWorker {
+                image: (),
+                coordinator: "coord".into(),
+                coordinator_port: 7000,
+                proof_level: None,
+            }),
+        );
+        let defaults = args(&seed, ExecutionMode::Native);
+        assert_eq!(value_of(&defaults, "-log-level"), Some("Info"));
+        assert_eq!(value_of(&defaults, "-file-log-level"), Some("Trace"));
+        assert_eq!(
+            value_of(&args(&worker, ExecutionMode::Native), "-log-level"),
+            None
+        );
+
+        let traced = Layout {
+            log_level: Some(LogLevel::Warn),
+            ..layout(ExecutionMode::Native)
+        };
+        for service in [&seed, &worker] {
+            let args = args_in(service, &traced);
+            assert_eq!(value_of(&args, "-log-level"), Some("Warn"), "{args:?}");
+            assert_eq!(value_of(&args, "-file-log-level"), Some("Warn"), "{args:?}");
+        }
     }
 
     #[test]

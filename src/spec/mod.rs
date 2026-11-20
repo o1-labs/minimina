@@ -3,6 +3,7 @@
 //!
 //! ```toml
 //! profile = "lightnet"            # optional; --profile overrides it
+//! log_level = "Trace"            # optional; mina processes [default: Info, file Trace]
 //!
 //! [[nodes]]
 //! role = "seed"
@@ -69,7 +70,7 @@ pub use keys::KeysSpec;
 use ledger::Balance;
 pub use uptime::UptimeFiles;
 
-use crate::{cli::Profile, hardfork::HardforkSpec};
+use crate::{cli::Profile, hardfork::HardforkSpec, log_level::LogLevel};
 use anyhow::{bail, Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -97,6 +98,9 @@ const PORT_STEP: u16 = 10;
 #[serde(deny_unknown_fields)]
 pub struct NetworkSpec {
     pub profile: Option<Profile>,
+    /// Log level of the mina processes; see [`crate::log_level`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<LogLevel>,
     #[serde(default)]
     pub nodes: Vec<NodeGroup>,
     #[serde(default)]
@@ -404,6 +408,7 @@ impl NetworkSpec {
     pub fn flags_base() -> Self {
         NetworkSpec {
             profile: None,
+            log_level: None,
             nodes: vec![
                 NodeGroup::new(Role::Seed, 1),
                 NodeGroup::new(Role::BlockProducer, 1),
@@ -431,6 +436,7 @@ impl NetworkSpec {
         coordinator.fee = Some("0.001".into());
         NetworkSpec {
             profile: None,
+            log_level: None,
             nodes: vec![
                 node(Role::Seed, "mina-seed-1", 3100),
                 node(Role::BlockProducer, "mina-bp-1", 4000),
@@ -773,6 +779,19 @@ mod tests {
 
     fn spec(toml: &str) -> NetworkSpec {
         toml::from_str(toml).unwrap()
+    }
+
+    #[test]
+    fn log_level_is_read_in_any_case() {
+        assert_eq!(spec("").log_level, None);
+        assert_eq!(
+            spec("log_level = \"trace\"").log_level,
+            Some(LogLevel::Trace)
+        );
+        let error = toml::from_str::<NetworkSpec>("log_level = \"loud\"")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown log level 'loud'"), "{error}");
     }
 
     #[test]

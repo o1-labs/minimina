@@ -365,6 +365,20 @@ the spec; default `devnet`) is recorded in the network and exported as
 fastest for local tests; `devnet` and `mainnet` compile full proofs, so each
 daemon spends 2-3 minutes on start.
 
+### Log level
+
+```toml
+log_level = "Trace"   # Spam, Trace, Debug, Info, Warn, Error or Fatal, in any case
+```
+
+`log_level` sets the log level of the network's mina processes: `-log-level`
+and `-file-log-level` of the daemons and snark workers, `--log-level` of
+`mina-archive`. It is recorded at create, and a hardfork's postfork processes
+keep it. Without it, the daemons log at Info to `<network>/logs/<node>.log`
+(docker mode: the container log) and at Trace to the `mina.log` of their
+config directory, and the snark workers and `mina-archive` at their own
+default.
+
 ### Genesis timestamp
 
 `network create` writes a temporary genesis timestamp. The first

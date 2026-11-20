@@ -9,6 +9,7 @@
 
 use crate::directory_manager::NETWORK_KEYPAIRS;
 use crate::genesis_ledger::REPLAYER_INPUT_JSON;
+use crate::log_level::LogLevel;
 use crate::{
     cli::Profile,
     daemon_args::{
@@ -92,6 +93,8 @@ pub struct DockerManager {
     pub network_path: PathBuf,
     pub compose_path: PathBuf,
     profile: Profile,
+    /// The spec's log level of the mina processes; `None`: their defaults.
+    log_level: Option<LogLevel>,
     runner: Rc<dyn Runner>,
 }
 
@@ -102,8 +105,14 @@ impl DockerManager {
             network_path: network_path.to_path_buf(),
             compose_path,
             profile,
+            log_level: None,
             runner,
         }
+    }
+
+    pub fn with_log_level(mut self, log_level: Option<LogLevel>) -> Self {
+        self.log_level = log_level;
+        self
     }
 
     fn docker(&self, args: &[&str]) -> Result<Output> {
@@ -116,8 +125,13 @@ impl DockerManager {
         features: DaemonFeatures,
     ) -> Result<()> {
         let mut file = File::create(&self.compose_path)?;
-        let contents =
-            DockerCompose::generate(services, &self.network_path, self.profile, features)?;
+        let contents = DockerCompose::generate(
+            services,
+            &self.network_path,
+            self.profile,
+            features,
+            self.log_level,
+        )?;
         file.write_all(contents.as_bytes())?;
         Ok(())
     }
