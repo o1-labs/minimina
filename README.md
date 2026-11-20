@@ -31,9 +31,9 @@ sudo apt-get update
 sudo apt-get install -y minimina
 ```
 
-Releases are also published to the unsigned `deb [trusted=yes] http://packages.o1test.net <codename> stable`, and the `.deb` is attached to each [GitHub release](https://github.com/o1-labs/minimina/releases).
+Releases are also published to the unsigned `deb [trusted=yes] http://packages.o1test.net <codename> stable`, and the `.deb` of each architecture is attached to each [GitHub release](https://github.com/o1-labs/minimina/releases).
 
-Releases are published from `v*` tags. The package depends only on libc (TLS is rustls, so it does not need OpenSSL), so the same binary is built once on the oldest supported codename (jammy) and published for every codename. Focal and bullseye are not supported: Mina 4.x has no packages for them, and their standard support has ended.
+Releases are published from `v*` tags. The package depends only on libc (TLS is rustls, so it does not need OpenSSL), so the binary is built once per architecture (amd64 and arm64) on the oldest supported codename (jammy) and published for every codename. Focal and bullseye are not supported: Mina 4.x has no packages for them, and their standard support has ended.
 
 To build the package locally: `scripts/deb-changelog.sh && cargo deb`.
 
