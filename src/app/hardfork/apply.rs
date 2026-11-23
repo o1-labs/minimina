@@ -163,15 +163,16 @@ pub fn apply(
         postfork.display()
     );
     let typed = ctx.services::<Native>(network_id)?;
-    NativeManager::new(&network_path, &postfork, &ctx.postgres_uri, ctx.profile)
-        .with_features(features)
-        .with_log_level(ctx.log_level)
-        .with_archive_config(archive_config.clone())
-        .with_archive_handover(h.archive_handover)
-        .with_dispatch(ctx.dispatch.clone())
-        .with_archive_ledgers(archive_ledgers)
-        .start_all(&typed, network_id, seed_timeout)
-        .with_context(|| format!("Failed to start network '{network_id}' after the fork"))?;
+    postfork_manager(
+        ctx.native(network_id)?,
+        &postfork,
+        features,
+        archive_config.clone(),
+        h.archive_handover,
+        archive_ledgers,
+    )
+    .start_all(&typed, network_id, seed_timeout)
+    .with_context(|| format!("Failed to start network '{network_id}' after the fork"))?;
     let (archive_postfork_genesis, warnings) = match archive.as_deref_mut() {
         Some(db) => {
             let (genesis, warnings) = repair_archive(
@@ -202,6 +203,24 @@ pub fn apply(
 }
 
 /// The postfork genesis time, from the fork config the daemons gave.
+/// The network's manager on the postfork binaries. The rest stays the
+/// network's: its archive database, log level, postgres server, dispatcher.
+fn postfork_manager(
+    network: NativeManager,
+    postfork: &Path,
+    features: DaemonFeatures,
+    archive_config: Option<PathBuf>,
+    archive_handover: bool,
+    archive_ledgers: Option<PathBuf>,
+) -> NativeManager {
+    network
+        .with_bin_path(postfork)
+        .with_features(features)
+        .with_archive_config(archive_config)
+        .with_archive_handover(archive_handover)
+        .with_archive_ledgers(archive_ledgers)
+}
+
 fn postfork_genesis_time(network_path: &Path) -> Result<Option<Timestamp>> {
     let path = network_path.join(HARDFORK_DIR).join(FORK_CONFIG_JSON);
     let config = RuntimeConfig::from_json(&genesis_ledger::read_file(&path)?)
@@ -357,7 +376,36 @@ fn upgrade_archive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{cli::Profile, log_level::LogLevel};
     use serde_json::json;
+
+    #[test]
+    fn the_postfork_network_keeps_its_archive_database_and_log_level() {
+        let network = NativeManager::new(
+            Path::new("/net/lightnet"),
+            Path::new("/prefork/bin"),
+            "postgres://u:p@db:5432",
+            Profile::Lightnet,
+        )
+        .with_archive_database(Some("archive".parse().unwrap()))
+        .with_log_level(Some(LogLevel::Info));
+        let config = PathBuf::from("/net/lightnet/hardfork/archive_config.json");
+
+        let postfork = postfork_manager(
+            network,
+            Path::new("/postfork/bin"),
+            DaemonFeatures::default(),
+            Some(config.clone()),
+            true,
+            None,
+        );
+
+        assert_eq!(postfork.bin_path, PathBuf::from("/postfork/bin"));
+        assert_eq!(postfork.archive_db_uri(), "postgres://u:p@db:5432/archive");
+        assert_eq!(postfork.log_level, Some(LogLevel::Info));
+        assert_eq!(postfork.archive_config, Some(config));
+        assert!(postfork.archive_handover);
+    }
 
     #[test]
     fn the_archive_config_is_the_shared_config_with_the_fork_config() {

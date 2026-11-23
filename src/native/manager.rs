@@ -94,6 +94,11 @@ impl NativeManager {
         self
     }
 
+    pub fn with_bin_path(mut self, bin_path: &Path) -> Self {
+        self.bin_path = bin_path.to_path_buf();
+        self
+    }
+
     pub fn with_features(mut self, features: DaemonFeatures) -> Self {
         self.features = features;
         self
